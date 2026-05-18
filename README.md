@@ -43,15 +43,20 @@ brew install glow jq
 ```sh
 claude-tail                                # follow the latest session for $PWD
 claude-tail /path/to/session.jsonl         # follow a specific session
-CLAUDE_TAIL_THEME=dracula claude-tail      # pick a bundled theme (default: tokyo-night)
-GLOW_STYLE=/path/to/other-style.json ...   # override the glow style path entirely
-CLAUDE_TAIL_BACKFILL=200 claude-tail       # replay last 200 events instead of all
-CLAUDE_TAIL_BACKFILL=0 claude-tail         # skip backfill, only render new events
+claude-tail --theme dracula                # pick a bundled theme (default: tokyo-night)
+claude-tail -t nord -b 50                  # short flags also work
+claude-tail --no-backfill                  # skip history, only follow new events
+claude-tail --list-themes                  # see what's available
+claude-tail --help                         # full options
 ```
+
+All flags also have env-var equivalents (`CLAUDE_TAIL_THEME`, `CLAUDE_TAIL_BACKFILL`,
+`GLOW_STYLE`) for shell-rc convenience — flags override env vars when both are set.
 
 ## Themes
 
-Bundled dark IDE themes, picked via `CLAUDE_TAIL_THEME=<name>`:
+Bundled dark IDE themes (run `claude-tail --list-themes` to see them with
+descriptions):
 
 - `tokyo-night` (default) — Folke's modern blue/purple palette
 - `dracula` — pink keywords, comment-blue dim text
@@ -64,10 +69,11 @@ Each theme is a pair under `themes/`:
 
 - `themes/<name>.json` — glow style (text + chroma syntax highlighting)
 - `themes/<name>.sh` — sourced for the truecolor ANSI codes used outside glow
-  (turn headers, timestamps, tool-use one-liners)
+  (turn headers, timestamps, tool-use one-liners). The first comment line is
+  the description shown by `--list-themes`.
 
-To add your own: copy a pair, rename, swap colors. The script lists all
-available themes if you pass an unknown name.
+To add your own: copy a pair, rename, swap colors. Anything that lands in
+`themes/<name>.json` + `themes/<name>.sh` is picked up automatically.
 
 **Color depth caveat.** Glow's stdout in this pipeline (`glow | awk`) is
 never a TTY, so glow downsamples each theme's hex colors to their closest
