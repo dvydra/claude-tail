@@ -194,6 +194,18 @@ print_header() {
   esac
 }
 
+# Filter terminal-query noise (OSC 10/11 + CSI cursor-position reports) out of
+# a stream. These leak from outside claude-tail — tmux/zellij heartbeats,
+# shell prompt capability probes, glow's own terminal queries — and otherwise
+# show up as literal text in some terminals and in copy-pasted scrollback.
+strip_terminal_noise() {
+  awk '{
+    gsub(/\033\]1[01];[^\033\007]*(\033\\|\007)/, "")
+    gsub(/\033\[[0-9]+;[0-9]+R/, "")
+    print
+  }'
+}
+
 # ── phase 1: backfill ────────────────────────────────────────────────────────
 #
 # Concatenate every renderable block into one big markdown document and
@@ -237,6 +249,14 @@ if (( BACKFILL_FROM > 0 )); then
         -v C_HDR="$CLAUDE_HDR_LINE" \
         -v DIM="$THEME_DIM_ANSI" '
     {
+      # Strip terminal-query noise that leaks into the stream from elsewhere
+      # in the user environment (tmux/zellij, shell prompt, glow probing
+      # capabilities) — OSC 10/11 (terminal fg/bg color set or response) and
+      # CSI cursor-position reports otherwise appear as literal text in some
+      # terminals or in copy-pasted scrollback.
+      gsub(/\033\]1[01];[^\033\007]*(\033\\|\007)/, "")
+      gsub(/\033\[[0-9]+;[0-9]+R/, "")
+
       stripped = $0
       gsub(/\033\[[0-9;]*m/, "", stripped)
       if (substr(stripped, 1, 11) == "[[CTAIL_U]]") {
@@ -294,13 +314,13 @@ tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null | jq -r --unbuffered '
       ts_token="${rest%% *}"
       body_b64="${rest#* }"
       print_header USER "${ts_token//_/ }"
-      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" -
+      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" - | strip_terminal_noise
       ;;
     ASSISTANT)
       ts_token="${rest%% *}"
       body_b64="${rest#* }"
       print_header CLAUDE "${ts_token//_/ }"
-      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" -
+      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" - | strip_terminal_noise
       ;;
     TOOLUSE)
       name="${rest%% *}"
