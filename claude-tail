@@ -206,6 +206,53 @@ strip_terminal_noise() {
   }'
 }
 
+# ── shared jq filter ─────────────────────────────────────────────────────────
+#
+# fmtts:        ISO timestamp → "YYYY-MM-DD HH:MM:SS" in local time. Strips
+#               millisecond fractions first because fromdateiso8601 rejects them.
+# tool_summary: pick the field that actually identifies what a tool ran with,
+#               instead of dumping the whole .input JSON blob.
+# normalize:    one jsonl event → {kind, ts, body, name, summary, n} record,
+#               or empty for events we don't render. Both backfill and live
+#               run normalize, then format the record their own way — so
+#               there's exactly one place that decides what counts as a
+#               renderable event.
+JQ_COMMON='
+  def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
+  def tool_summary:
+    .name as $n |
+    ( if $n == "Bash" then (.input.command // "")
+      elif $n == "Read" or $n == "Edit" or $n == "Write" or $n == "NotebookEdit" or $n == "MultiEdit" then
+        (.input.file_path // "")
+      elif $n == "Grep" then ((.input.pattern // "") + (if .input.path then " in \(.input.path)" else "" end))
+      elif $n == "Glob" then (.input.pattern // "")
+      elif $n == "WebFetch" then (.input.url // "")
+      elif $n == "WebSearch" then (.input.query // "")
+      elif $n == "TodoWrite" then "\((.input.todos // []) | length) todos"
+      elif $n == "Task" then (.input.description // .input.subagent_type // "")
+      else (.input | tostring) end
+    ) | tostring | gsub("\n"; " ");
+  def normalize:
+    if .type == "user" then
+      (.message.content) as $c |
+      (.timestamp | fmtts) as $ts |
+      if ($c | type) == "string" then
+        {kind: "USER", ts: $ts, body: $c}
+      else
+        ($c | map(select(.type=="tool_result")) | length) as $n |
+        if $n > 0 then {kind: "TOOLRESULT", n: $n} else empty end
+      end
+    elif .type == "assistant" then
+      (.timestamp | fmtts) as $ts |
+      .message.content[] |
+      if .type == "text" then
+        {kind: "CLAUDE", ts: $ts, body: .text}
+      elif .type == "tool_use" then
+        {kind: "TOOLUSE", name: .name, summary: tool_summary}
+      else empty end
+    else empty end;
+'
+
 # ── phase 1: backfill ────────────────────────────────────────────────────────
 #
 # Concatenate every renderable block into one big markdown document and
@@ -224,40 +271,12 @@ strip_terminal_noise() {
 #   [[CTAIL_T]]<name>\t<input-preview>     — tool use (tab between)
 #   [[CTAIL_R]]<count>                     — tool_result count
 if (( BACKFILL_FROM > 0 )); then
-  sed -n "${BACKFILL_FROM},${TOTAL_LINES}p" "$SESSION" | jq -r '
-    def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
-    # Per-tool one-line summary: pick the field that actually identifies what
-    # ran, instead of dumping the whole .input JSON blob.
-    def tool_summary:
-      .name as $n |
-      ( if $n == "Bash" then (.input.command // "")
-        elif $n == "Read" or $n == "Edit" or $n == "Write" or $n == "NotebookEdit" or $n == "MultiEdit" then
-          (.input.file_path // "")
-        elif $n == "Grep" then ((.input.pattern // "") + (if .input.path then " in \(.input.path)" else "" end))
-        elif $n == "Glob" then (.input.pattern // "")
-        elif $n == "WebFetch" then (.input.url // "")
-        elif $n == "WebSearch" then (.input.query // "")
-        elif $n == "TodoWrite" then "\((.input.todos // []) | length) todos"
-        elif $n == "Task" then (.input.description // .input.subagent_type // "")
-        else (.input | tostring) end
-      ) | tostring | gsub("\n"; " ");
-    if .type == "user" then
-      (.message.content) as $c |
-      (.timestamp | fmtts) as $ts |
-      if ($c | type) == "string" then
-        "\n[[CTAIL_U]]\($ts)\n\n" + $c + "\n"
-      else
-        ($c | map(select(.type=="tool_result")) | length) as $n |
-        if $n > 0 then "\n[[CTAIL_R]]\($n)\n" else empty end
-      end
-    elif .type == "assistant" then
-      (.timestamp | fmtts) as $ts |
-      .message.content[] |
-      if .type == "text" then
-        "\n[[CTAIL_C]]\($ts)\n\n" + .text + "\n"
-      elif .type == "tool_use" then
-        "\n[[CTAIL_T]]\(.name)\t\(tool_summary | .[0:140])\n"
-      else empty end
+  sed -n "${BACKFILL_FROM},${TOTAL_LINES}p" "$SESSION" | jq -r "$JQ_COMMON"'
+    normalize |
+    if   .kind == "USER"       then "\n[[CTAIL_U]]\(.ts)\n\n\(.body)\n"
+    elif .kind == "CLAUDE"     then "\n[[CTAIL_C]]\(.ts)\n\n\(.body)\n"
+    elif .kind == "TOOLUSE"    then "\n[[CTAIL_T]]\(.name)\t\(.summary | .[0:140])\n"
+    elif .kind == "TOOLRESULT" then "\n[[CTAIL_R]]\(.n)\n"
     else empty end
   ' | glow -w 0 -s "$GLOW_STYLE" - | awk \
         -v U_HDR="$USER_HDR_LINE" \
@@ -302,39 +321,13 @@ fi
 # Tail starts at the line right after the backfill snapshot so new events get
 # rendered per-message (one glow call each) at the natural pace of the
 # conversation. Same look as backfill since we use the same ANSI headers.
-tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null | jq -r --unbuffered '
-  def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
-  def tool_summary:
-    .name as $n |
-    ( if $n == "Bash" then (.input.command // "")
-      elif $n == "Read" or $n == "Edit" or $n == "Write" or $n == "NotebookEdit" or $n == "MultiEdit" then
-        (.input.file_path // "")
-      elif $n == "Grep" then ((.input.pattern // "") + (if .input.path then " in \(.input.path)" else "" end))
-      elif $n == "Glob" then (.input.pattern // "")
-      elif $n == "WebFetch" then (.input.url // "")
-      elif $n == "WebSearch" then (.input.query // "")
-      elif $n == "TodoWrite" then "\((.input.todos // []) | length) todos"
-      elif $n == "Task" then (.input.description // .input.subagent_type // "")
-      else (.input | tostring) end
-    ) | tostring | gsub("\n"; " ");
-  if .type == "user" then
-    (.message.content) as $c |
-    (.timestamp | fmtts | gsub(" "; "_")) as $ts |
-    if ($c | type) == "string" then
-      "USER \($ts) " + ($c | @base64)
-    else
-      ($c | map(select(.type=="tool_result")) | length) as $n |
-      if $n > 0 then "TOOLRESULT " + ($n|tostring) else empty end
-    end
-  elif .type == "assistant" then
-    (.timestamp | fmtts | gsub(" "; "_")) as $ts |
-    .message.content[] |
-    if .type == "text" then
-      "ASSISTANT \($ts) " + (.text | @base64)
-    elif .type == "tool_use" then
-      "TOOLUSE " + .name + " " +
-        ((tool_summary | .[0:200]) | @base64)
-    else empty end
+tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null | jq -r --unbuffered "$JQ_COMMON"'
+  normalize |
+  (.ts // "" | gsub(" "; "_")) as $tsTok |
+  if   .kind == "USER"       then "USER \($tsTok) " + (.body | @base64)
+  elif .kind == "CLAUDE"     then "ASSISTANT \($tsTok) " + (.body | @base64)
+  elif .kind == "TOOLUSE"    then "TOOLUSE \(.name) " + ((.summary | .[0:200]) | @base64)
+  elif .kind == "TOOLRESULT" then "TOOLRESULT \(.n)"
   else empty end
 ' | while read -r kind rest; do
   case "$kind" in
