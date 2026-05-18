@@ -84,6 +84,26 @@ your terminal via `printf`, so those render in full truecolor and pop in the
 exact theme palette. The downsample is the cost of the 12× backfill speedup
 that the awk pass enables.
 
+### Theme Gallery
+![[docs/images/Pasted image 20260518144159.png]]
+Original claude output inside the `claude` TUI.
+
+![[docs/images/Pasted image 20260518150130.png]]
+`claude-tail --theme=catppuccin-mocha`
+
+![[docs/images/Pasted image 20260518150205.png]]
+`claude-tail --theme=original`
+
+![[docs/images/Pasted image 20260518150227.png]]
+`claude-tail --theme=dracula`
+
+![[docs/images/Pasted image 20260518150250.png]]
+`claude-tail --theme=nord`
+
+![[docs/images/Pasted image 20260518150307.png]]
+`claude-tail --theme=tokyo-night`
+
+
 ## Files
 
 - `claude-tail` — the script
