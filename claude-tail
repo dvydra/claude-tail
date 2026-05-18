@@ -14,6 +14,10 @@ SESSION=""
 THEME="${CLAUDE_TAIL_THEME:-tokyo-night}"
 BACKFILL="${CLAUDE_TAIL_BACKFILL:-all}"
 GLOW_STYLE="${GLOW_STYLE:-}"
+# Width for glow's word-wrap. 'auto' = current terminal width (or 100 if we
+# can't tell). 0 = disable wrap entirely and let the terminal soft-wrap (often
+# breaks mid-word once ANSI escapes are involved). Any integer = that column.
+WIDTH="${CLAUDE_TAIL_WIDTH:-auto}"
 
 # ── help / list output ────────────────────────────────────────────────────────
 
@@ -42,6 +46,9 @@ OPTIONS:
   -s, --style PATH          Override the glow style path entirely. Bypasses
                             the theme's style.json but still uses the theme's
                             ANSI box header colors.
+  -w, --width N             Word-wrap column for glow. 'auto' = current
+                            terminal width (default), '0' = disable wrap,
+                            or any positive integer.
   -l, --list-themes         List available themes (with descriptions) and exit.
   -h, --help                Show this help and exit.
   -V, --version             Show version and exit.
@@ -49,6 +56,7 @@ OPTIONS:
 ENVIRONMENT (lower priority than flags):
   CLAUDE_TAIL_THEME         Same as --theme.
   CLAUDE_TAIL_BACKFILL      Same as --backfill.
+  CLAUDE_TAIL_WIDTH         Same as --width.
   GLOW_STYLE                Same as --style.
 
 EXAMPLES:
@@ -99,6 +107,8 @@ while (( $# > 0 )); do
     --no-backfill)     BACKFILL=0; shift ;;
     -s|--style)        require_arg "$@"; GLOW_STYLE="$2"; shift 2 ;;
     --style=*)         GLOW_STYLE="${1#--style=}"; shift ;;
+    -w|--width)        require_arg "$@"; WIDTH="$2"; shift 2 ;;
+    --width=*)         WIDTH="${1#--width=}"; shift ;;
     -l|--list-themes)  list_themes; exit 0 ;;
     -h|--help)         print_help; exit 0 ;;
     -V|--version)      echo "claude-tail $VERSION"; exit 0 ;;
@@ -151,6 +161,13 @@ GLOW_STYLE="${GLOW_STYLE:-$THEMES_DIR/$THEME.json}"
 # shellcheck source=/dev/null
 source "$THEMES_DIR/$THEME.sh"
 
+# ── wrap width resolution ────────────────────────────────────────────────────
+
+case "$WIDTH" in
+  auto|AUTO) WIDTH=$(tput cols 2>/dev/null || echo 100) ;;
+  *[!0-9]*)  die "invalid --width value: $WIDTH (want integer, 0, or 'auto')" ;;
+esac
+
 # ── glow color forcing ───────────────────────────────────────────────────────
 
 # Glow's stdout in our pipeline is a pipe (glow | awk for backfill, glow |
@@ -179,6 +196,7 @@ echo "claude-tail $VERSION" >&2
 echo "  session:  $SESSION" >&2
 echo "  theme:    $THEME" >&2
 echo "  backfill: $BACKFILL ($BACKFILL_FROM..$TOTAL_LINES of $TOTAL_LINES)" >&2
+echo "  width:    $WIDTH" >&2
 echo "---" >&2
 
 # ── header strings ───────────────────────────────────────────────────────────
@@ -232,7 +250,7 @@ if (( BACKFILL_FROM > 0 )); then
         "\n[[CTAIL_T]]\(.name)\t\(.input | tostring | .[0:140])\n"
       else empty end
     else empty end
-  ' | glow -w 0 -s "$GLOW_STYLE" - | awk \
+  ' | glow -w "$WIDTH" -s "$GLOW_STYLE" - | awk \
         -v U_HDR="$USER_HDR_LINE" \
         -v C_HDR="$CLAUDE_HDR_LINE" \
         -v DIM="$THEME_DIM_ANSI" '
@@ -294,13 +312,13 @@ tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null | jq -r --unbuffered '
       ts_token="${rest%% *}"
       body_b64="${rest#* }"
       print_header USER "${ts_token//_/ }"
-      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" -
+      printf '%s' "$body_b64" | base64 -d | glow -w "$WIDTH" -s "$GLOW_STYLE" -
       ;;
     ASSISTANT)
       ts_token="${rest%% *}"
       body_b64="${rest#* }"
       print_header CLAUDE "${ts_token//_/ }"
-      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" -
+      printf '%s' "$body_b64" | base64 -d | glow -w "$WIDTH" -s "$GLOW_STYLE" -
       ;;
     TOOLUSE)
       name="${rest%% *}"
