@@ -163,8 +163,20 @@ source "$THEMES_DIR/$THEME.sh"
 
 # ── wrap width resolution ────────────────────────────────────────────────────
 
+# `tput cols` inside $(…) reads from stdout — and stdout is a pipe in a
+# command substitution, so tput can't query terminal size and falls back to
+# 80. Redirect stdin from /dev/tty so tput has a real terminal to ioctl;
+# fall back to $COLUMNS or 100 if /dev/tty isn't available (script piped, no
+# controlling terminal, etc.).
+detect_width() {
+  local w
+  w=$(tput cols </dev/tty 2>/dev/null) && [[ -n "$w" && "$w" -gt 0 ]] && { echo "$w"; return; }
+  [[ -n "${COLUMNS:-}" ]] && { echo "$COLUMNS"; return; }
+  echo 100
+}
+
 case "$WIDTH" in
-  auto|AUTO) WIDTH=$(tput cols 2>/dev/null || echo 100) ;;
+  auto|AUTO) WIDTH=$(detect_width) ;;
   *[!0-9]*)  die "invalid --width value: $WIDTH (want integer, 0, or 'auto')" ;;
 esac
 
