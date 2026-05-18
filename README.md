@@ -91,16 +91,16 @@ Original claude output inside the `claude` TUI.
 ![](doc/images/Pasted%20image%2020260518150130.png)
 `claude-tail --theme=catppuccin-mocha`
 
-![doc/images/Pasted%20image%2020260518150205.png]
+![](doc/images/Pasted%20image%2020260518150205.png)
 `claude-tail --theme=original`
 
-![doc/images/Pasted%20image%2020260518150227.png]
+![](doc/images/Pasted%20image%2020260518150227.png)
 `claude-tail --theme=dracula`
 
-![doc/images/Pasted%20image%2020260518150250.png]
+![](doc/images/Pasted%20image%2020260518150250.png)
 `claude-tail --theme=nord`
 
-![doc/images/Pasted%20image%2020260518150307.png]
+![](doc/images/Pasted%20image%2020260518150307.png)
 `claude-tail --theme=tokyo-night`
 
 
