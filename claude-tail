@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# Tails the most recently modified Claude Code session jsonl and renders each
+# message as markdown via glow. Backfill at startup is batched into one glow
+# call (fast); live events render per-message as they arrive.
+#
+# Usage: claude-tail [session-jsonl-path]
+#
+# Env:
+#   CLAUDE_TAIL_THEME       theme name (default: tokyo-night). Bundled:
+#                             tokyo-night, dracula, nord, catppuccin-mocha,
+#                             one-dark, claude (the original).
+#                           Each theme lives at themes/<name>.json (the glow
+#                           style) + themes/<name>.sh (ANSI codes for the
+#                           USER/CLAUDE/timestamp lines outside glow).
+#   GLOW_STYLE              override the glow style path. Overrides the theme.
+#   CLAUDE_TAIL_BACKFILL    how many trailing jsonl events to replay at
+#                           startup before following (default: 'all', or set
+#                           an integer to limit, or 0 to skip backfill).
+
+set -euo pipefail
+
+SESSION="${1:-}"
+if [[ -z "$SESSION" ]]; then
+  # Default: most recently modified session for the current directory. Claude
+  # encodes the cwd by replacing '/' with '-' to name the project folder under
+  # ~/.claude/projects/. Fall back to the global latest if no session exists
+  # for this cwd yet.
+  cwd_slug="${PWD//\//-}"
+  SESSION=$(ls -t "$HOME/.claude/projects/$cwd_slug"/*.jsonl 2>/dev/null | head -1 || true)
+  if [[ -z "$SESSION" ]]; then
+    echo "No session jsonl for $PWD — falling back to global latest." >&2
+    SESSION=$(ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1 || true)
+  fi
+fi
+
+if [[ -z "$SESSION" || ! -f "$SESSION" ]]; then
+  echo "No session jsonl found under ~/.claude/projects/." >&2
+  exit 1
+fi
+
+for tool in jq glow tail base64 awk; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "Missing dependency: $tool" >&2
+    exit 1
+  fi
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+BACKFILL="${CLAUDE_TAIL_BACKFILL:-all}"
+
+# Force glow to emit colors even though its stdout is the awk/bash pipe rather
+# than the terminal. Without this, glow's chroma layer silently skips
+# syntax highlighting on every code block (glow falls back to NO color when
+# it can't see a TTY). With this, chroma kicks in at 256-color.
+export CLICOLOR_FORCE=1
+
+# Theme resolution. CLAUDE_TAIL_THEME picks a bundled theme; GLOW_STYLE wins
+# if set. The .sh sidecar sets THEME_USER_ANSI / THEME_CLAUDE_ANSI /
+# THEME_DIM_ANSI for the bits we paint outside of glow (turn headers,
+# timestamps, tool-use one-liners).
+THEME="${CLAUDE_TAIL_THEME:-tokyo-night}"
+if [[ ! -f "$SCRIPT_DIR/themes/$THEME.json" ]]; then
+  echo "Unknown theme '$THEME'. Available:" >&2
+  ls "$SCRIPT_DIR/themes/" 2>/dev/null | sed -n 's/\.json$//p' | sed 's/^/  /' >&2
+  exit 1
+fi
+GLOW_STYLE="${GLOW_STYLE:-$SCRIPT_DIR/themes/$THEME.json}"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/themes/$THEME.sh"
+
+# Snapshot file size — backfill reads up to here in one batched glow call,
+# then live follow starts at TOTAL_LINES+1 so we don't double-render or miss
+# anything in the gap between the two phases.
+TOTAL_LINES=$(wc -l <"$SESSION" | tr -d ' ')
+
+case "$BACKFILL" in
+  all|ALL|full) BACKFILL_FROM=1 ;;
+  0)            BACKFILL_FROM=0 ;;
+  *)
+    BACKFILL_FROM=$((TOTAL_LINES - BACKFILL + 1))
+    (( BACKFILL_FROM < 1 )) && BACKFILL_FROM=1
+    ;;
+esac
+
+echo "Tailing: $SESSION" >&2
+echo "Theme:    $THEME" >&2
+echo "Backfill: $BACKFILL events (lines $BACKFILL_FROM..$TOTAL_LINES of $TOTAL_LINES)" >&2
+echo "---" >&2
+
+USER_HDR_LINE="${THEME_USER_ANSI}─── ▶ USER ───────────────────────────────\033[0m"
+CLAUDE_HDR_LINE="${THEME_CLAUDE_ANSI}─── ◀ CLAUDE ─────────────────────────────\033[0m"
+
+# Print the ANSI box header for a turn. Args: kind ("USER" or "CLAUDE"), ts.
+print_header() {
+  case "$1" in
+    USER)   printf "\n%b %b%s\033[0m\n" "$USER_HDR_LINE"   "$THEME_DIM_ANSI" "$2" ;;
+    CLAUDE) printf "\n%b %b%s\033[0m\n" "$CLAUDE_HDR_LINE" "$THEME_DIM_ANSI" "$2" ;;
+  esac
+}
+
+# Phase 1 — backfill: emit per-event sentinels in the markdown stream,
+# render the whole concatenation through ONE glow invocation, then awk
+# rewrites the sentinels into the same ANSI headers print_header would emit
+# in live mode. Single glow call drops backfill time from ~1.5s to ~0.13s
+# on a 1500-event session.
+#
+# Sentinel format (always on its own line):
+#   [[CTAIL_U]]YYYY-MM-DD HH:MM:SS         — user header
+#   [[CTAIL_C]]YYYY-MM-DD HH:MM:SS         — assistant header
+#   [[CTAIL_T]]<name>\t<input-preview>     — tool use (tab between)
+#   [[CTAIL_R]]<count>                     — tool_result count
+#
+# Timestamps go through jq's strflocaltime (system-local TZ). fromdateiso8601
+# rejects millisecond fractions, so we strip them first.
+if (( BACKFILL_FROM > 0 )); then
+  sed -n "${BACKFILL_FROM},${TOTAL_LINES}p" "$SESSION" | jq -r '
+    def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
+    if .type == "user" then
+      (.message.content) as $c |
+      (.timestamp | fmtts) as $ts |
+      if ($c | type) == "string" then
+        "\n[[CTAIL_U]]\($ts)\n\n" + $c + "\n"
+      else
+        ($c | map(select(.type=="tool_result")) | length) as $n |
+        if $n > 0 then "\n[[CTAIL_R]]\($n)\n" else empty end
+      end
+    elif .type == "assistant" then
+      (.timestamp | fmtts) as $ts |
+      .message.content[] |
+      if .type == "text" then
+        "\n[[CTAIL_C]]\($ts)\n\n" + .text + "\n"
+      elif .type == "tool_use" then
+        "\n[[CTAIL_T]]\(.name)\t\(.input | tostring | .[0:140])\n"
+      else empty end
+    else empty end
+  ' | glow -w 0 -s "$GLOW_STYLE" - | awk \
+        -v U_HDR="$USER_HDR_LINE" \
+        -v C_HDR="$CLAUDE_HDR_LINE" \
+        -v DIM="$THEME_DIM_ANSI" '
+    # Strip ANSI from a copy of the line for sentinel matching. With chroma
+    # highlighting on (CLICOLOR_FORCE=1), glow wraps the sentinel chars in
+    # color escapes — e.g. "[[CTAIL_U]]" becomes "\033[96m[\033[0m\033[96m[
+    # \033[0m\033[96mCTAIL_…" — so a raw substring match no longer works.
+    {
+      stripped = $0
+      gsub(/\033\[[0-9;]*m/, "", stripped)
+      if (substr(stripped, 1, 11) == "[[CTAIL_U]]") {
+        ts = substr(stripped, 12)
+        printf "%s %s%s\033[0m\n", U_HDR, DIM, ts
+      } else if (substr(stripped, 1, 11) == "[[CTAIL_C]]") {
+        ts = substr(stripped, 12)
+        printf "%s %s%s\033[0m\n", C_HDR, DIM, ts
+      } else if (substr(stripped, 1, 11) == "[[CTAIL_T]]") {
+        payload = substr(stripped, 12)
+        tab = index(payload, "\t")
+        if (tab > 0) { name = substr(payload, 1, tab - 1); input = substr(payload, tab + 1) }
+        else         { name = payload;                       input = "" }
+        if (length(input) > 140) input = substr(input, 1, 140)
+        printf "%s  ⚙ %s  %s\033[0m\n", DIM, name, input
+      } else if (substr(stripped, 1, 11) == "[[CTAIL_R]]") {
+        count = substr(stripped, 12)
+        printf "%s  ↩ tool_result (×%s)\033[0m\n", DIM, count
+      } else {
+        print
+      }
+    }
+  '
+fi
+
+# Phase 2 — live: per-message glow at the natural pace of the conversation.
+# Same emission format as the original script but with a timestamp wedged
+# between the kind and the base64 body.
+tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null | jq -r --unbuffered '
+  def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
+  if .type == "user" then
+    (.message.content) as $c |
+    (.timestamp | fmtts | gsub(" "; "_")) as $ts |
+    if ($c | type) == "string" then
+      "USER \($ts) " + ($c | @base64)
+    else
+      ($c | map(select(.type=="tool_result")) | length) as $n |
+      if $n > 0 then "TOOLRESULT " + ($n|tostring) else empty end
+    end
+  elif .type == "assistant" then
+    (.timestamp | fmtts | gsub(" "; "_")) as $ts |
+    .message.content[] |
+    if .type == "text" then
+      "ASSISTANT \($ts) " + (.text | @base64)
+    elif .type == "tool_use" then
+      "TOOLUSE " + .name + " " +
+        ((.input | tostring | .[0:200]) | @base64)
+    else empty end
+  else empty end
+' | while read -r kind rest; do
+  case "$kind" in
+    USER)
+      ts_token="${rest%% *}"
+      body_b64="${rest#* }"
+      print_header USER "${ts_token//_/ }"
+      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" -
+      ;;
+    ASSISTANT)
+      ts_token="${rest%% *}"
+      body_b64="${rest#* }"
+      print_header CLAUDE "${ts_token//_/ }"
+      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" -
+      ;;
+    TOOLUSE)
+      name="${rest%% *}"
+      input_b64="${rest#* }"
+      input=$(printf '%s' "$input_b64" | base64 -d | tr '\n' ' ')
+      printf "%b  ⚙ %s  %s\033[0m\n" "$THEME_DIM_ANSI" "$name" "${input:0:140}"
+      ;;
+    TOOLRESULT)
+      printf "%b  ↩ tool_result (×%s)\033[0m\n" "$THEME_DIM_ANSI" "$rest"
+      ;;
+  esac
+done
