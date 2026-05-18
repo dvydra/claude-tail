@@ -305,14 +305,16 @@ fi
 tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null | jq -r --unbuffered '
   def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
   def tool_summary:
-    ( if .name == "Bash" then (.input.command // "")
-      elif (["Read","Edit","Write","NotebookEdit","MultiEdit"] | index(.name)) then (.input.file_path // "")
-      elif .name == "Grep" then ((.input.pattern // "") + (if .input.path then " in \(.input.path)" else "" end))
-      elif .name == "Glob" then (.input.pattern // "")
-      elif .name == "WebFetch" then (.input.url // "")
-      elif .name == "WebSearch" then (.input.query // "")
-      elif .name == "TodoWrite" then "\((.input.todos // []) | length) todos"
-      elif .name == "Task" then (.input.description // .input.subagent_type // "")
+    .name as $n |
+    ( if $n == "Bash" then (.input.command // "")
+      elif $n == "Read" or $n == "Edit" or $n == "Write" or $n == "NotebookEdit" or $n == "MultiEdit" then
+        (.input.file_path // "")
+      elif $n == "Grep" then ((.input.pattern // "") + (if .input.path then " in \(.input.path)" else "" end))
+      elif $n == "Glob" then (.input.pattern // "")
+      elif $n == "WebFetch" then (.input.url // "")
+      elif $n == "WebSearch" then (.input.query // "")
+      elif $n == "TodoWrite" then "\((.input.todos // []) | length) todos"
+      elif $n == "Task" then (.input.description // .input.subagent_type // "")
       else (.input | tostring) end
     ) | tostring | gsub("\n"; " ");
   if .type == "user" then
