@@ -1,91 +1,187 @@
 #!/usr/bin/env bash
-# Tails the most recently modified Claude Code session jsonl and renders each
-# message as markdown via glow. Backfill at startup is batched into one glow
-# call (fast); live events render per-message as they arrive.
-#
-# Usage: claude-tail [session-jsonl-path]
-#
-# Env:
-#   CLAUDE_TAIL_THEME       theme name (default: tokyo-night). Bundled:
-#                             tokyo-night, dracula, nord, catppuccin-mocha,
-#                             one-dark, claude (the original).
-#                           Each theme lives at themes/<name>.json (the glow
-#                           style) + themes/<name>.sh (ANSI codes for the
-#                           USER/CLAUDE/timestamp lines outside glow).
-#   GLOW_STYLE              override the glow style path. Overrides the theme.
-#   CLAUDE_TAIL_BACKFILL    how many trailing jsonl events to replay at
-#                           startup before following (default: 'all', or set
-#                           an integer to limit, or 0 to skip backfill).
+# claude-tail — live-view of your current Claude Code session.
+# See `claude-tail --help` for options.
 
 set -euo pipefail
 
-SESSION="${1:-}"
+VERSION="0.1.0"
+
+SCRIPT_DIR="$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+THEMES_DIR="$SCRIPT_DIR/themes"
+
+# ── defaults (env vars are fallbacks; flags override them below)
+SESSION=""
+THEME="${CLAUDE_TAIL_THEME:-tokyo-night}"
+BACKFILL="${CLAUDE_TAIL_BACKFILL:-all}"
+GLOW_STYLE="${GLOW_STYLE:-}"
+
+# ── help / list output ────────────────────────────────────────────────────────
+
+print_help() {
+  cat <<EOF
+claude-tail $VERSION — live-view of your current Claude Code session.
+
+Tails the session jsonl under ~/.claude/projects/<encoded-cwd>/ and renders
+each turn through glow. Backfill at startup is batched into one glow call;
+new events render per-message as they arrive.
+
+USAGE:
+  claude-tail [OPTIONS] [SESSION_FILE]
+
+ARGUMENTS:
+  SESSION_FILE              Path to a session jsonl. If omitted, picks the
+                            most recently modified session for \$PWD; falls
+                            back to the global newest if \$PWD has no session.
+
+OPTIONS:
+  -t, --theme NAME          Bundled theme (default: tokyo-night).
+                            See --list-themes for choices.
+  -b, --backfill N          Trailing events to replay at startup. Integer,
+                            'all', or '0' (default: all).
+      --no-backfill         Alias for --backfill 0 — only follow new events.
+  -s, --style PATH          Override the glow style path entirely. Bypasses
+                            the theme's style.json but still uses the theme's
+                            ANSI box header colors.
+  -l, --list-themes         List available themes (with descriptions) and exit.
+  -h, --help                Show this help and exit.
+  -V, --version             Show version and exit.
+
+ENVIRONMENT (lower priority than flags):
+  CLAUDE_TAIL_THEME         Same as --theme.
+  CLAUDE_TAIL_BACKFILL      Same as --backfill.
+  GLOW_STYLE                Same as --style.
+
+EXAMPLES:
+  claude-tail
+  claude-tail --theme dracula
+  claude-tail -t nord -b 50
+  claude-tail --no-backfill
+  claude-tail --list-themes
+  claude-tail ~/.claude/projects/foo/abc.jsonl
+EOF
+}
+
+# Pull the first comment line from a theme sidecar (themes/<name>.sh) as the
+# short description, stripping a leading "# " and a trailing period.
+theme_desc() {
+  local sh="$1"
+  [[ -f "$sh" ]] || { echo ""; return; }
+  head -1 "$sh" | sed -E 's/^#[[:space:]]*//; s/\.[[:space:]]*$//'
+}
+
+list_themes() {
+  printf "Available themes (in %s):\n\n" "$THEMES_DIR"
+  for json in "$THEMES_DIR"/*.json; do
+    [[ -f "$json" ]] || continue
+    local name desc marker=""
+    name=$(basename "$json" .json)
+    desc=$(theme_desc "$THEMES_DIR/$name.sh")
+    [[ "$name" == "$THEME" ]] && marker=" (default)"
+    printf "  %-18s %s%s\n" "$name" "$desc" "$marker"
+  done
+  printf "\nPick with --theme NAME or CLAUDE_TAIL_THEME=NAME.\n"
+}
+
+die() { echo "claude-tail: $*" >&2; exit 2; }
+
+# ── argument parsing ─────────────────────────────────────────────────────────
+
+require_arg() {
+  [[ $# -ge 2 && -n "${2:-}" ]] || die "option $1 requires a value (try --help)"
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    -t|--theme)        require_arg "$@"; THEME="$2"; shift 2 ;;
+    --theme=*)         THEME="${1#--theme=}"; shift ;;
+    -b|--backfill)     require_arg "$@"; BACKFILL="$2"; shift 2 ;;
+    --backfill=*)      BACKFILL="${1#--backfill=}"; shift ;;
+    --no-backfill)     BACKFILL=0; shift ;;
+    -s|--style)        require_arg "$@"; GLOW_STYLE="$2"; shift 2 ;;
+    --style=*)         GLOW_STYLE="${1#--style=}"; shift ;;
+    -l|--list-themes)  list_themes; exit 0 ;;
+    -h|--help)         print_help; exit 0 ;;
+    -V|--version)      echo "claude-tail $VERSION"; exit 0 ;;
+    --)                shift; break ;;
+    -*)                die "unknown option: $1 (try --help)" ;;
+    *)
+      [[ -z "$SESSION" ]] || die "too many positional arguments (got '$1' after '$SESSION')"
+      SESSION="$1"; shift
+      ;;
+  esac
+done
+
+# Anything after `--` is treated as a session path.
+if (( $# > 0 )); then
+  [[ -z "$SESSION" ]] || die "too many positional arguments"
+  SESSION="$1"; shift
+  (( $# > 0 )) && die "too many positional arguments"
+fi
+
+# ── session resolution ───────────────────────────────────────────────────────
+
 if [[ -z "$SESSION" ]]; then
-  # Default: most recently modified session for the current directory. Claude
-  # encodes the cwd by replacing '/' with '-' to name the project folder under
-  # ~/.claude/projects/. Fall back to the global latest if no session exists
-  # for this cwd yet.
+  # Claude encodes the cwd by replacing '/' with '-' to name the project folder
+  # under ~/.claude/projects/. Try that first; fall back to the global newest.
   cwd_slug="${PWD//\//-}"
   SESSION=$(ls -t "$HOME/.claude/projects/$cwd_slug"/*.jsonl 2>/dev/null | head -1 || true)
   if [[ -z "$SESSION" ]]; then
-    echo "No session jsonl for $PWD — falling back to global latest." >&2
+    echo "claude-tail: no session for $PWD — falling back to global latest." >&2
     SESSION=$(ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1 || true)
   fi
 fi
 
-if [[ -z "$SESSION" || ! -f "$SESSION" ]]; then
-  echo "No session jsonl found under ~/.claude/projects/." >&2
-  exit 1
-fi
+[[ -n "$SESSION" && -f "$SESSION" ]] || die "no session jsonl found (tried \$PWD and ~/.claude/projects/)."
+
+# ── dependency check ─────────────────────────────────────────────────────────
 
 for tool in jq glow tail base64 awk; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "Missing dependency: $tool" >&2
-    exit 1
-  fi
+  command -v "$tool" >/dev/null 2>&1 || die "missing dependency: $tool"
 done
 
-SCRIPT_DIR="$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-BACKFILL="${CLAUDE_TAIL_BACKFILL:-all}"
+# ── theme resolution ─────────────────────────────────────────────────────────
 
-# Force glow to emit colors even though its stdout is the awk/bash pipe rather
-# than the terminal. Without this, glow's chroma layer silently skips
-# syntax highlighting on every code block (glow falls back to NO color when
-# it can't see a TTY). With this, chroma kicks in at 256-color.
+if [[ ! -f "$THEMES_DIR/$THEME.json" ]]; then
+  echo "claude-tail: unknown theme '$THEME'." >&2
+  echo >&2
+  list_themes >&2
+  exit 2
+fi
+GLOW_STYLE="${GLOW_STYLE:-$THEMES_DIR/$THEME.json}"
+# shellcheck source=/dev/null
+source "$THEMES_DIR/$THEME.sh"
+
+# ── glow color forcing ───────────────────────────────────────────────────────
+
+# Glow's stdout in our pipeline is a pipe (glow | awk for backfill, glow |
+# bash-loop for live). Without CLICOLOR_FORCE, glow's chroma layer silently
+# drops all code-block syntax highlighting; with it, chroma kicks in at
+# 256-color depth.
 export CLICOLOR_FORCE=1
 
-# Theme resolution. CLAUDE_TAIL_THEME picks a bundled theme; GLOW_STYLE wins
-# if set. The .sh sidecar sets THEME_USER_ANSI / THEME_CLAUDE_ANSI /
-# THEME_DIM_ANSI for the bits we paint outside of glow (turn headers,
-# timestamps, tool-use one-liners).
-THEME="${CLAUDE_TAIL_THEME:-tokyo-night}"
-if [[ ! -f "$SCRIPT_DIR/themes/$THEME.json" ]]; then
-  echo "Unknown theme '$THEME'. Available:" >&2
-  ls "$SCRIPT_DIR/themes/" 2>/dev/null | sed -n 's/\.json$//p' | sed 's/^/  /' >&2
-  exit 1
-fi
-GLOW_STYLE="${GLOW_STYLE:-$SCRIPT_DIR/themes/$THEME.json}"
-# shellcheck source=/dev/null
-source "$SCRIPT_DIR/themes/$THEME.sh"
+# ── backfill range snapshot ──────────────────────────────────────────────────
 
-# Snapshot file size — backfill reads up to here in one batched glow call,
-# then live follow starts at TOTAL_LINES+1 so we don't double-render or miss
-# anything in the gap between the two phases.
 TOTAL_LINES=$(wc -l <"$SESSION" | tr -d ' ')
 
 case "$BACKFILL" in
   all|ALL|full) BACKFILL_FROM=1 ;;
   0)            BACKFILL_FROM=0 ;;
+  *[!0-9]*)     die "invalid --backfill value: $BACKFILL (want integer, 'all', or '0')" ;;
   *)
     BACKFILL_FROM=$((TOTAL_LINES - BACKFILL + 1))
     (( BACKFILL_FROM < 1 )) && BACKFILL_FROM=1
     ;;
 esac
 
-echo "Tailing: $SESSION" >&2
-echo "Theme:    $THEME" >&2
-echo "Backfill: $BACKFILL events (lines $BACKFILL_FROM..$TOTAL_LINES of $TOTAL_LINES)" >&2
+# ── startup banner ───────────────────────────────────────────────────────────
+
+echo "claude-tail $VERSION" >&2
+echo "  session:  $SESSION" >&2
+echo "  theme:    $THEME" >&2
+echo "  backfill: $BACKFILL ($BACKFILL_FROM..$TOTAL_LINES of $TOTAL_LINES)" >&2
 echo "---" >&2
+
+# ── header strings ───────────────────────────────────────────────────────────
 
 USER_HDR_LINE="${THEME_USER_ANSI}─── ▶ USER ───────────────────────────────\033[0m"
 CLAUDE_HDR_LINE="${THEME_CLAUDE_ANSI}─── ◀ CLAUDE ─────────────────────────────\033[0m"
@@ -98,20 +194,23 @@ print_header() {
   esac
 }
 
-# Phase 1 — backfill: emit per-event sentinels in the markdown stream,
-# render the whole concatenation through ONE glow invocation, then awk
-# rewrites the sentinels into the same ANSI headers print_header would emit
-# in live mode. Single glow call drops backfill time from ~1.5s to ~0.13s
-# on a 1500-event session.
+# ── phase 1: backfill ────────────────────────────────────────────────────────
+#
+# Concatenate every renderable block into one big markdown document and
+# render through a SINGLE glow invocation. Per-event glow calls cost real
+# time each (Go binary startup + chroma); on a 1500-event session per-event
+# takes ~1.5s while batched runs in ~0.13s.
+#
+# In-band sentinels mark turn boundaries; awk rewrites them into the same
+# ANSI box headers print_header would emit in live mode. CLICOLOR_FORCE=1
+# makes glow wrap every char (including sentinel chars) in chroma color
+# escapes, so awk strips ANSI from a copy of each line before matching.
 #
 # Sentinel format (always on its own line):
 #   [[CTAIL_U]]YYYY-MM-DD HH:MM:SS         — user header
 #   [[CTAIL_C]]YYYY-MM-DD HH:MM:SS         — assistant header
 #   [[CTAIL_T]]<name>\t<input-preview>     — tool use (tab between)
 #   [[CTAIL_R]]<count>                     — tool_result count
-#
-# Timestamps go through jq's strflocaltime (system-local TZ). fromdateiso8601
-# rejects millisecond fractions, so we strip them first.
 if (( BACKFILL_FROM > 0 )); then
   sed -n "${BACKFILL_FROM},${TOTAL_LINES}p" "$SESSION" | jq -r '
     def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
@@ -137,10 +236,6 @@ if (( BACKFILL_FROM > 0 )); then
         -v U_HDR="$USER_HDR_LINE" \
         -v C_HDR="$CLAUDE_HDR_LINE" \
         -v DIM="$THEME_DIM_ANSI" '
-    # Strip ANSI from a copy of the line for sentinel matching. With chroma
-    # highlighting on (CLICOLOR_FORCE=1), glow wraps the sentinel chars in
-    # color escapes — e.g. "[[CTAIL_U]]" becomes "\033[96m[\033[0m\033[96m[
-    # \033[0m\033[96mCTAIL_…" — so a raw substring match no longer works.
     {
       stripped = $0
       gsub(/\033\[[0-9;]*m/, "", stripped)
@@ -167,9 +262,11 @@ if (( BACKFILL_FROM > 0 )); then
   '
 fi
 
-# Phase 2 — live: per-message glow at the natural pace of the conversation.
-# Same emission format as the original script but with a timestamp wedged
-# between the kind and the base64 body.
+# ── phase 2: live follow ─────────────────────────────────────────────────────
+#
+# Tail starts at the line right after the backfill snapshot so new events get
+# rendered per-message (one glow call each) at the natural pace of the
+# conversation. Same look as backfill since we use the same ANSI headers.
 tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null | jq -r --unbuffered '
   def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
   if .type == "user" then
