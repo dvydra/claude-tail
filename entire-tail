@@ -724,10 +724,35 @@ dot_color() {
 
 # ── phase 2: live follow ─────────────────────────────────────────────────────
 #
-# Tail starts at the line right after the backfill snapshot so new events get
-# rendered per-message (one glow call each) at the natural pace of the
-# conversation. Same look as backfill since we use the same ANSI headers.
-tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null | jq -r --unbuffered --arg style "$TOOL_STYLE" "$JQ_COMMON"'
+# Claude and Codex append to the jsonl, so we can cheaply skip the backfilled
+# prefix by tailing from line TOTAL_LINES+1.
+#
+# Antigravity is different: it rewrites the entire transcript on every step
+# (either by atomic rename or by truncating in place), so `tail -F` rewinds
+# to byte 0 on each change. To dedup, we tail from the start and pipe through
+# a stateful awk that drops any line whose step_index has already been
+# rendered. `max` is seeded from the backfill snapshot.
+if [[ "$AGENT" == "agy" ]]; then
+  MAX_STEP=$(jq -s 'map(.step_index // 0) | (max // 0)' "$SESSION" 2>/dev/null || echo 0)
+  TAIL_AND_FILTER() {
+    tail -F -n +1 "$SESSION" 2>/dev/null | awk -v max="$MAX_STEP" '
+      {
+        if (match($0, /"step_index"[[:space:]]*:[[:space:]]*[0-9]+/)) {
+          s = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", s)
+          si = s + 0
+          if (si <= max) next
+          max = si
+        }
+        print
+        fflush()
+      }
+    '
+  }
+else
+  TAIL_AND_FILTER() { tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null; }
+fi
+
+TAIL_AND_FILTER | jq -r --unbuffered --arg style "$TOOL_STYLE" "$JQ_COMMON"'
   normalize |
   (.ts // "" | gsub(" "; "_")) as $tsTok |
   if   .kind == "USER"       then "USER \($tsTok) " + (.body | @base64)
