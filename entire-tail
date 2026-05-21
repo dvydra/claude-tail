@@ -1,0 +1,778 @@
+#!/usr/bin/env bash
+# entire-tail — live-view of your current AI coding agent session.
+#
+# Discovers the latest session file written by Claude Code or Codex CLI
+# for $PWD, follows it, and renders each turn through glow with a chosen
+# theme. Designed to run alongside the agent (e.g. in a Zellij pane) so
+# you have a clean, scrollable transcript of the conversation.
+#
+# Installs as an `entire` plugin: rename or symlink as `entire-tail` on
+# $PATH (or run `entire plugin install ./entire-tail`) and invoke via
+# `entire tail`. The standalone command still works on its own.
+#
+# See `entire-tail --help` for options.
+
+set -euo pipefail
+
+VERSION="0.2.0"
+
+SCRIPT_DIR="$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+THEMES_DIR="$SCRIPT_DIR/themes"
+
+# ── defaults (env vars are fallbacks; flags override them below) ─────────────
+#
+# ENTIRE_TAIL_* is the canonical env-var prefix; CLAUDE_TAIL_* is honored as a
+# back-compat fallback for users who set those before the rename.
+SESSION=""
+AGENT="${ENTIRE_TAIL_AGENT:-auto}"   # auto|claude|codex
+THEME="${ENTIRE_TAIL_THEME:-${CLAUDE_TAIL_THEME:-tokyo-night}}"
+BACKFILL="${ENTIRE_TAIL_BACKFILL:-${CLAUDE_TAIL_BACKFILL:-all}}"
+GLOW_STYLE="${GLOW_STYLE:-}"
+TOOL_STYLE="${ENTIRE_TAIL_TOOL_STYLE:-${CLAUDE_TAIL_TOOL_STYLE:-dots}}"  # none|dots|lines
+
+# ── help / list output ────────────────────────────────────────────────────────
+
+print_help() {
+  cat <<EOF
+entire-tail $VERSION — live-view of your current AI coding agent session.
+
+Tails the agent's session jsonl (Claude Code, Codex CLI, or Antigravity CLI)
+for the current working directory and renders each turn through glow.
+Backfill at startup is batched into one glow call; new events render
+per-message as they arrive.
+
+USAGE:
+  entire-tail [OPTIONS] [SESSION_FILE]
+  entire tail [OPTIONS] [SESSION_FILE]    # when installed as an entire plugin
+
+ARGUMENTS:
+  SESSION_FILE              Path to a session jsonl. If omitted, picks the
+                            most recently modified session for \$PWD across
+                            all supported agents (or just the agent forced
+                            via --agent).
+
+OPTIONS:
+  -a, --agent NAME          Which agent's session to tail:
+                              auto    (default) pick the agent with the most
+                                      recently modified session for \$PWD,
+                                      falling back to the global newest.
+                              claude  Claude Code (~/.claude/projects/...).
+                              codex   Codex CLI (~/.codex/sessions/...).
+                              agy     Antigravity CLI
+                                      (~/.gemini/antigravity-cli/brain/...).
+  -t, --theme NAME          Bundled theme (default: tokyo-night).
+                            See --list-themes for choices.
+  -b, --backfill N          Trailing events to replay at startup. Integer,
+                            'all', or '0' (default: all).
+      --no-backfill         Alias for --backfill 0 — only follow new events.
+  -s, --style PATH          Override the glow style path entirely. Bypasses
+                            the theme's style.json but still uses the theme's
+                            ANSI box header colors.
+      --tool-style STYLE    How to render tool-use events:
+                              dots   (default) one colored dot per tool
+                                     call — blue=read, green=edit,
+                                     yellow=bash/exec, magenta=grep,
+                                     cyan=web, lavender=task, orange=mcp.
+                                     Tool results are dropped (1:1 with
+                                     tool_use, so a dot would just
+                                     double-count).
+                              none   drop tool events entirely; show only
+                                     user + assistant text.
+                              lines  verbose '⚙ Tool  input-preview' line
+                                     per call (the original style).
+      --no-compact-tools    Alias for --tool-style lines.
+  -l, --list-themes         List available themes (with descriptions) and exit.
+  -h, --help                Show this help and exit.
+  -V, --version             Show version and exit.
+
+ENVIRONMENT (lower priority than flags):
+  ENTIRE_TAIL_AGENT         Same as --agent.
+  ENTIRE_TAIL_THEME         Same as --theme.
+  ENTIRE_TAIL_BACKFILL      Same as --backfill.
+  ENTIRE_TAIL_TOOL_STYLE    Same as --tool-style.
+  GLOW_STYLE                Same as --style.
+
+  CLAUDE_TAIL_* variants of the above are honored for back-compat.
+
+EXAMPLES:
+  entire-tail                                 # auto-detect agent for \$PWD
+  entire-tail --agent codex                   # follow the latest Codex session
+  entire-tail --agent agy                     # follow the latest Antigravity session
+  entire-tail --theme dracula
+  entire-tail -t nord -b 50
+  entire-tail --no-backfill
+  entire-tail --list-themes
+  entire-tail ~/.codex/sessions/2026/05/.../rollout-...jsonl
+EOF
+}
+
+# Pull the first comment line from a theme sidecar (themes/<name>.sh) as the
+# short description, stripping a leading "# " and a trailing period.
+theme_desc() {
+  local sh="$1"
+  [[ -f "$sh" ]] || { echo ""; return; }
+  head -1 "$sh" | sed -E 's/^#[[:space:]]*//; s/\.[[:space:]]*$//'
+}
+
+list_themes() {
+  printf "Available themes (in %s):\n\n" "$THEMES_DIR"
+  for json in "$THEMES_DIR"/*.json; do
+    [[ -f "$json" ]] || continue
+    local name desc marker=""
+    name=$(basename "$json" .json)
+    desc=$(theme_desc "$THEMES_DIR/$name.sh")
+    [[ "$name" == "$THEME" ]] && marker=" (default)"
+    printf "  %-18s %s%s\n" "$name" "$desc" "$marker"
+  done
+  printf "\nPick with --theme NAME or ENTIRE_TAIL_THEME=NAME.\n"
+}
+
+die() { echo "entire-tail: $*" >&2; exit 2; }
+
+# ── argument parsing ─────────────────────────────────────────────────────────
+
+require_arg() {
+  [[ $# -ge 2 && -n "${2:-}" ]] || die "option $1 requires a value (try --help)"
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    -a|--agent)        require_arg "$@"; AGENT="$2"; shift 2 ;;
+    --agent=*)         AGENT="${1#--agent=}"; shift ;;
+    -t|--theme)        require_arg "$@"; THEME="$2"; shift 2 ;;
+    --theme=*)         THEME="${1#--theme=}"; shift ;;
+    -b|--backfill)     require_arg "$@"; BACKFILL="$2"; shift 2 ;;
+    --backfill=*)      BACKFILL="${1#--backfill=}"; shift ;;
+    --no-backfill)     BACKFILL=0; shift ;;
+    -s|--style)        require_arg "$@"; GLOW_STYLE="$2"; shift 2 ;;
+    --style=*)         GLOW_STYLE="${1#--style=}"; shift ;;
+    --tool-style)      require_arg "$@"; TOOL_STYLE="$2"; shift 2 ;;
+    --tool-style=*)    TOOL_STYLE="${1#--tool-style=}"; shift ;;
+    --no-compact-tools) TOOL_STYLE="lines"; shift ;;
+    -l|--list-themes)  list_themes; exit 0 ;;
+    -h|--help)         print_help; exit 0 ;;
+    -V|--version)      echo "entire-tail $VERSION"; exit 0 ;;
+    --)                shift; break ;;
+    -*)                die "unknown option: $1 (try --help)" ;;
+    *)
+      [[ -z "$SESSION" ]] || die "too many positional arguments (got '$1' after '$SESSION')"
+      SESSION="$1"; shift
+      ;;
+  esac
+done
+
+# Anything after `--` is treated as a session path.
+if (( $# > 0 )); then
+  [[ -z "$SESSION" ]] || die "too many positional arguments"
+  SESSION="$1"; shift
+  (( $# > 0 )) && die "too many positional arguments"
+fi
+
+case "$AGENT" in
+  auto|claude|codex|agy|antigravity) ;;
+  *) die "invalid --agent value: $AGENT (want 'auto', 'claude', 'codex', or 'agy')" ;;
+esac
+# Accept the long form `--agent antigravity` as an alias for `agy`.
+[[ "$AGENT" == "antigravity" ]] && AGENT="agy"
+
+# ── session discovery (per-agent) ────────────────────────────────────────────
+#
+# Each find_session_<agent> echoes a path or nothing. Auto-detect picks the
+# newest session across all supported agents (in $PWD), then falls back to
+# the global newest of whichever agent yielded *anything*.
+
+# Claude encodes the cwd by replacing '/' with '-' to name the project folder
+# under ~/.claude/projects/. Try that first; fall back to the global newest.
+find_session_claude() {
+  local cwd_slug="${PWD//\//-}"
+  local f
+  f=$(ls -t "$HOME/.claude/projects/$cwd_slug"/*.jsonl 2>/dev/null | head -1 || true)
+  [[ -n "$f" ]] && { echo "$f"; return; }
+  ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1 || true
+}
+
+# Codex sessions live under ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl and
+# don't encode the cwd in the path — the first event (session_meta) carries
+# payload.cwd. Walk recent sessions newest-first, return the first one whose
+# session_meta.cwd matches $PWD; otherwise fall back to the global newest.
+find_session_codex() {
+  local f cwd
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    cwd=$(head -1 "$f" 2>/dev/null | jq -r '.payload.cwd // empty' 2>/dev/null || true)
+    if [[ "$cwd" == "$PWD" ]]; then
+      echo "$f"
+      return
+    fi
+  done < <(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -200)
+  ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -1 || true
+}
+
+# Antigravity CLI stores per-conversation transcripts at
+# ~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl
+# and maintains cwd → conversation_id in cache/last_conversations.json.
+# Discovery: look up the id for $PWD first; on miss, return the newest
+# transcript globally so the user can still tail something.
+find_session_agy() {
+  local root="$HOME/.gemini/antigravity-cli"
+  [[ -d "$root/brain" ]] || return 0
+  local id transcript
+  id=$(jq -r --arg cwd "$PWD" '.[$cwd] // empty' \
+        "$root/cache/last_conversations.json" 2>/dev/null || true)
+  if [[ -n "$id" ]]; then
+    transcript="$root/brain/$id/.system_generated/logs/transcript.jsonl"
+    [[ -f "$transcript" ]] && { echo "$transcript"; return; }
+  fi
+  ls -t "$root"/brain/*/.system_generated/logs/transcript.jsonl 2>/dev/null | head -1 || true
+}
+
+# Identify the agent owning a given session path (for --agent auto when the
+# user passes an explicit SESSION_FILE).
+detect_agent_for_file() {
+  case "$1" in
+    "$HOME"/.claude/projects/*)         echo "claude" ;;
+    "$HOME"/.codex/sessions/*)          echo "codex" ;;
+    "$HOME"/.gemini/antigravity-cli/*)  echo "agy" ;;
+    *)
+      # Sniff the first line. Each agent has a distinctive shape:
+      #   codex:  .type == "session_meta" or .payload.type set
+      #   agy:    .type is an uppercase enum like "USER_INPUT"
+      #   claude: .type == "user" / "assistant" (lowercase)
+      local first
+      first=$(head -1 "$1" 2>/dev/null)
+      if printf '%s' "$first" | jq -e '.payload.type or (.type == "session_meta")' >/dev/null 2>&1; then
+        echo "codex"
+      elif printf '%s' "$first" | jq -e '.type | tostring | test("^[A-Z_]+$")' >/dev/null 2>&1; then
+        echo "agy"
+      else
+        echo "claude"
+      fi
+      ;;
+  esac
+}
+
+# ── dependency check ─────────────────────────────────────────────────────────
+
+for tool in jq glow tail base64 awk; do
+  command -v "$tool" >/dev/null 2>&1 || die "missing dependency: $tool"
+done
+
+# ── resolve agent + session ──────────────────────────────────────────────────
+
+if [[ -n "$SESSION" ]]; then
+  [[ -f "$SESSION" ]] || die "session file not found: $SESSION"
+  if [[ "$AGENT" == "auto" ]]; then
+    AGENT=$(detect_agent_for_file "$SESSION")
+  fi
+else
+  case "$AGENT" in
+    claude) SESSION=$(find_session_claude) ;;
+    codex)  SESSION=$(find_session_codex) ;;
+    agy)    SESSION=$(find_session_agy) ;;
+    auto)
+      # Walk the candidates and keep whichever is newest on disk. Storing
+      # candidates in two parallel arrays lets us pick the matching agent
+      # name without re-sniffing the path.
+      candidates=()
+      agents=()
+      c=$(find_session_claude); [[ -n "$c" ]] && { candidates+=("$c"); agents+=("claude"); }
+      x=$(find_session_codex);  [[ -n "$x" ]] && { candidates+=("$x"); agents+=("codex"); }
+      g=$(find_session_agy);    [[ -n "$g" ]] && { candidates+=("$g"); agents+=("agy"); }
+      for i in "${!candidates[@]}"; do
+        if [[ -z "$SESSION" || "${candidates[$i]}" -nt "$SESSION" ]]; then
+          SESSION="${candidates[$i]}"; AGENT="${agents[$i]}"
+        fi
+      done
+      ;;
+  esac
+fi
+
+[[ -n "$SESSION" && -f "$SESSION" ]] || die "no session jsonl found for agent=$AGENT (tried \$PWD and agent default dirs)."
+
+# Verify cwd against $PWD for the chosen session; print a stderr note if it
+# doesn't match so the user knows they're looking at a fallback.
+case "$AGENT" in
+  claude)
+    cwd_slug="${PWD//\//-}"
+    [[ "$SESSION" == "$HOME/.claude/projects/$cwd_slug/"* ]] || \
+      echo "entire-tail: no Claude session for $PWD — using global latest." >&2
+    ;;
+  codex)
+    sess_cwd=$(head -1 "$SESSION" 2>/dev/null | jq -r '.payload.cwd // empty' 2>/dev/null || true)
+    if [[ -n "$sess_cwd" && "$sess_cwd" != "$PWD" ]]; then
+      echo "entire-tail: no Codex session for $PWD — using global latest (cwd=$sess_cwd)." >&2
+    fi
+    ;;
+  agy)
+    # Reverse-lookup the conversation id (the directory two levels up from
+    # .system_generated) against last_conversations.json to confirm the
+    # transcript belongs to $PWD.
+    sess_id=$(basename "$(dirname "$(dirname "$(dirname "$SESSION")")")")
+    expected=$(jq -r --arg cwd "$PWD" '.[$cwd] // empty' \
+        "$HOME/.gemini/antigravity-cli/cache/last_conversations.json" 2>/dev/null || true)
+    if [[ -n "$expected" && "$expected" != "$sess_id" ]] || [[ -z "$expected" ]]; then
+      echo "entire-tail: no Antigravity session for $PWD — using global latest." >&2
+    fi
+    ;;
+esac
+
+# ── theme resolution ─────────────────────────────────────────────────────────
+
+if [[ ! -f "$THEMES_DIR/$THEME.json" ]]; then
+  echo "entire-tail: unknown theme '$THEME'." >&2
+  echo >&2
+  list_themes >&2
+  exit 2
+fi
+GLOW_STYLE="${GLOW_STYLE:-$THEMES_DIR/$THEME.json}"
+# shellcheck source=/dev/null
+source "$THEMES_DIR/$THEME.sh"
+
+# ── glow color forcing + probe suppression ─────────────────────────────────
+
+# Glow's stdout in our pipeline is a pipe (glow | awk for backfill, glow |
+# bash-loop for live). Without CLICOLOR_FORCE, glow's chroma layer silently
+# drops all code-block syntax highlighting; with it, chroma kicks in at
+# 256-color depth.
+export CLICOLOR_FORCE=1
+
+# Glow uses termenv, which writes OSC 10/11 + CSI 6n probes to *stderr* (the
+# user's TTY) on every invocation to detect fg/bg color. With stdout piped,
+# glow can't read the responses back, so they land in the kernel's TTY input
+# buffer and get echoed verbatim. termenv short-circuits its probe when
+# $TERM starts with dumb/screen/tmux, so override it for our subprocesses.
+# CLICOLOR_FORCE still wins for color depth, so this costs us nothing.
+export TERM=dumb
+
+# ── backfill range snapshot ──────────────────────────────────────────────────
+
+TOTAL_LINES=$(wc -l <"$SESSION" | tr -d ' ')
+
+case "$BACKFILL" in
+  all|ALL|full) BACKFILL_FROM=1 ;;
+  0)            BACKFILL_FROM=0 ;;
+  *[!0-9]*)     die "invalid --backfill value: $BACKFILL (want integer, 'all', or '0')" ;;
+  *)
+    BACKFILL_FROM=$((TOTAL_LINES - BACKFILL + 1))
+    (( BACKFILL_FROM < 1 )) && BACKFILL_FROM=1
+    ;;
+esac
+
+case "$TOOL_STYLE" in
+  none|dots|lines) ;;
+  *) die "invalid --tool-style value: $TOOL_STYLE (want 'none', 'dots', or 'lines')" ;;
+esac
+
+# ── startup banner ───────────────────────────────────────────────────────────
+
+echo "entire-tail $VERSION" >&2
+echo "  agent:    $AGENT" >&2
+echo "  session:  $SESSION" >&2
+echo "  theme:    $THEME" >&2
+echo "  backfill: $BACKFILL ($BACKFILL_FROM..$TOTAL_LINES of $TOTAL_LINES)" >&2
+echo "  tools:    $TOOL_STYLE" >&2
+if [[ "$TOOL_STYLE" == "dots" ]]; then
+  # Legend for the colored-dot mode: same color codes as dot_color() below,
+  # so the banner doubles as a key the user can refer back to. tool_result
+  # is intentionally absent — each result is 1:1 with a preceding tool_use,
+  # so a dot for it would just double-count every action.
+  printf "  legend:   " >&2
+  printf '\033[38;2;125;185;235m●\033[0m read  '  >&2
+  printf '\033[38;2;125;215;145m●\033[0m edit  '  >&2
+  printf '\033[38;2;240;200;110m●\033[0m bash/exec  '  >&2
+  printf '\033[38;2;220;140;230m●\033[0m grep  '  >&2
+  printf '\033[38;2;110;220;220m●\033[0m web  '   >&2
+  printf '\033[38;2;205;155;255m●\033[0m task  '  >&2
+  printf '\033[38;2;255;180;130m●\033[0m mcp\n'   >&2
+fi
+echo "---" >&2
+
+# ── header strings ───────────────────────────────────────────────────────────
+
+USER_HDR_LINE="${THEME_USER_ANSI}─── ▶ USER ───────────────────────────────\033[0m"
+CLAUDE_HDR_LINE="${THEME_CLAUDE_ANSI}─── ◀ AGENT ──────────────────────────────\033[0m"
+
+# Print the ANSI box header for a turn. Args: kind ("USER" or "CLAUDE"), ts.
+print_header() {
+  case "$1" in
+    USER)   printf "\n%b %b%s\033[0m\n" "$USER_HDR_LINE"   "$THEME_DIM_ANSI" "$2" ;;
+    CLAUDE) printf "\n%b %b%s\033[0m\n" "$CLAUDE_HDR_LINE" "$THEME_DIM_ANSI" "$2" ;;
+  esac
+}
+
+# Filter terminal-query noise (OSC 10/11 + CSI cursor-position reports) out of
+# a stream. These leak from outside entire-tail — tmux/zellij heartbeats,
+# shell prompt capability probes, glow's own terminal queries — and otherwise
+# show up as literal text in some terminals and in copy-pasted scrollback.
+strip_terminal_noise() {
+  awk '{
+    gsub(/\033\]1[01];[^\033\007]*(\033\\|\007)/, "")
+    gsub(/\033\[[0-9]+;[0-9]+R/, "")
+    print
+  }'
+}
+
+# ── shared jq helpers ────────────────────────────────────────────────────────
+#
+# fmtts: ISO timestamp → "YYYY-MM-DD HH:MM:SS" in local time. Strips ms
+#        fractions first because fromdateiso8601 rejects them.
+#
+# Every agent's normalize: lowers one jsonl event to a record matching:
+#   {kind: "USER"|"CLAUDE"|"TOOLUSE"|"TOOLRESULT",
+#    ts: "YYYY-MM-DD HH:MM:SS",     (USER/CLAUDE only)
+#    body: <markdown string>,        (USER/CLAUDE only)
+#    name: <tool name>,              (TOOLUSE only)
+#    summary: <one-line input>,      (TOOLUSE only)
+#    n: <count>}                     (TOOLRESULT only)
+# or returns `empty` for events we don't render. Both backfill and live
+# share one record schema, so all the downstream formatting code only
+# needs to know about the record shape, not per-agent event types.
+
+JQ_HELPERS='
+  def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
+'
+
+# ── claude adapter ───────────────────────────────────────────────────────────
+
+JQ_CLAUDE='
+  def tool_summary:
+    .name as $n |
+    ( if $n == "Bash" then (.input.command // "")
+      elif $n == "Read" or $n == "Edit" or $n == "Write" or $n == "NotebookEdit" or $n == "MultiEdit" then
+        (.input.file_path // "")
+      elif $n == "Grep" then ((.input.pattern // "") + (if .input.path then " in \(.input.path)" else "" end))
+      elif $n == "Glob" then (.input.pattern // "")
+      elif $n == "WebFetch" then (.input.url // "")
+      elif $n == "WebSearch" then (.input.query // "")
+      elif $n == "TodoWrite" then "\((.input.todos // []) | length) todos"
+      elif $n == "Task" then (.input.description // .input.subagent_type // "")
+      else (.input | tostring) end
+    ) | tostring | gsub("\n"; " ");
+  def normalize:
+    if .type == "user" then
+      (.message.content) as $c |
+      (.timestamp | fmtts) as $ts |
+      if ($c | type) == "string" then
+        {kind: "USER", ts: $ts, body: $c}
+      else
+        ($c | map(select(.type=="tool_result")) | length) as $n |
+        if $n > 0 then {kind: "TOOLRESULT", n: $n} else empty end
+      end
+    elif .type == "assistant" then
+      (.timestamp | fmtts) as $ts |
+      .message.content[] |
+      if .type == "text" then
+        {kind: "CLAUDE", ts: $ts, body: .text}
+      elif .type == "tool_use" then
+        {kind: "TOOLUSE", name: .name, summary: tool_summary}
+      else empty end
+    else empty end;
+'
+
+# ── codex adapter ────────────────────────────────────────────────────────────
+#
+# Codex CLI rollouts wrap everything in {timestamp, type, payload}. The
+# response_item entries are the interesting ones; we ignore event_msg (UI
+# state), turn_context (boundary marker), and session_meta (already used
+# during discovery).
+#
+# function_call.arguments is a JSON string. We parse it best-effort to
+# extract the most useful field per known tool:
+#   exec_command  → .cmd
+#   apply_patch   → .input (first non-empty line)
+#   update_plan   → step count
+#   view_image    → .path
+#   anything else → the arguments object stringified
+#
+# Each function_call_output emits TOOLRESULT n=1 (1:1 with its function_call),
+# which matches Claude's one-per-tool-result invariant the rendering pipeline
+# already assumes.
+
+JQ_CODEX='
+  def tool_summary:
+    .name as $n |
+    ((try (.arguments | fromjson) catch null) // {}) as $args |
+    ( if $n == "exec_command" then ($args.cmd // "")
+      elif $n == "apply_patch" then
+        (($args.input // "") | split("\n") | map(select(length > 0)) | (.[0] // ""))
+      elif $n == "update_plan" then "\((($args.plan // []) | length)) steps"
+      elif $n == "view_image" then ($args.path // "")
+      elif $n == "shell" then ((($args.command // []) | join(" ")))
+      else ($args | tostring) end
+    ) | tostring | gsub("\n"; " ");
+  def normalize:
+    if .type == "response_item" then
+      (.timestamp | fmtts) as $ts |
+      .payload as $p |
+      if $p.type == "message" then
+        # role=developer entries are the system/instruction prefill at the
+        # start of every codex session — they are not user input and would
+        # otherwise dwarf the actual conversation.
+        if $p.role == "user" then
+          {kind: "USER", ts: $ts,
+           body: ([$p.content[] | select(.type == "input_text" or .type == "text") | .text] | join("\n"))}
+        elif $p.role == "assistant" then
+          {kind: "CLAUDE", ts: $ts,
+           body: ([$p.content[] | select(.type == "output_text" or .type == "text") | .text] | join("\n"))}
+        else empty end
+      elif $p.type == "function_call" or $p.type == "custom_tool_call" or $p.type == "local_shell_call" then
+        {kind: "TOOLUSE", name: ($p.name // "tool"), summary: ($p | tool_summary)}
+      elif $p.type == "function_call_output" or $p.type == "custom_tool_call_output" or $p.type == "local_shell_call_output" then
+        {kind: "TOOLRESULT", n: 1}
+      else empty end
+    else empty end;
+'
+
+# ── antigravity (agy) adapter ────────────────────────────────────────────────
+#
+# Antigravity CLI transcripts are line-per-step records:
+#   {step_index, source, type, status, created_at, content?, thinking?,
+#    tool_calls?, …}
+#
+# Step types we render:
+#   USER_INPUT (source=USER_EXPLICIT) — content is wrapped in
+#       <USER_REQUEST>…</USER_REQUEST> plus <ADDITIONAL_METADATA>…</…>.
+#       We extract just the USER_REQUEST body so the user sees the message
+#       they actually typed, not the metadata envelope.
+#   PLANNER_RESPONSE (source=MODEL) — combined assistant turn. May have
+#       a `content` field (narrative prose), a `tool_calls` array (each
+#       {name, args}), both, or neither (pure-thinking turn). We emit one
+#       CLAUDE record for the content and one TOOLUSE per tool_call.
+#       `thinking` is skipped (matches Claude/Codex behaviour).
+#   RUN_COMMAND / VIEW_FILE / LIST_DIRECTORY / GREP_SEARCH / VIEW_CODE_ITEM /
+#   WRITE_TO_FILE / REPLACE_FILE_CONTENT / SEARCH_WEB / READ_URL_CONTENT /
+#   GENERIC — tool *output* events. Each is 1:1 with a preceding tool_call
+#       inside the prior PLANNER_RESPONSE, so we emit TOOLRESULT n=1
+#       (matches Claude tool_result / Codex function_call_output).
+#   CONVERSATION_HISTORY (source=SYSTEM) — boundary marker, skip.
+#
+# tool_call.args values arrive pre-stringified (the value is itself a JSON
+# string with extra surrounding quotes), so the summary extractor uses
+# `fromjson?` to unwrap them.
+
+JQ_AGY='
+  def strip_user_envelope:
+    capture("<USER_REQUEST>\\s*(?<m>[\\s\\S]*?)\\s*</USER_REQUEST>"; "g")
+    | .m
+    // .;
+  def unq: tostring | (try fromjson catch .) | tostring;
+  def agy_call_summary:
+    .name as $n |
+    (.args // {}) as $a |
+    ( if $n == "run_command" then ($a.Command // $a.CommandLine // $a.cmd // "" | unq)
+      elif $n == "view_file" or $n == "view_code_item" then
+        ($a.AbsolutePath // $a.Path // $a.file_path // "" | unq)
+      elif $n == "list_dir" then ($a.DirectoryPath // $a.Path // "" | unq)
+      elif $n == "grep_search" then ($a.SearchPattern // $a.Query // $a.Pattern // "" | unq)
+      elif $n == "write_to_file" or $n == "replace_file_content" or $n == "edit_file" then
+        ($a.TargetFile // $a.AbsolutePath // $a.Path // "" | unq)
+      elif $n == "search_web" or $n == "read_url_content" then
+        ($a.Url // $a.URL // $a.Query // "" | unq)
+      else ($a.toolSummary // $a.toolAction // ($a | tostring) | unq) end
+    ) | gsub("\n"; " ");
+  def normalize:
+    (.created_at | fmtts) as $ts |
+    .type as $t |
+    if $t == "USER_INPUT" then
+      {kind: "USER", ts: $ts, body: ((.content // "") | strip_user_envelope)}
+    elif $t == "PLANNER_RESPONSE" then
+      (
+        ( if (.content // "") != "" then {kind: "CLAUDE", ts: $ts, body: .content} else empty end ),
+        ( (.tool_calls // [])[] | {kind: "TOOLUSE", name: .name, summary: agy_call_summary} )
+      )
+    elif $t == "RUN_COMMAND" or $t == "VIEW_FILE" or $t == "LIST_DIRECTORY"
+      or $t == "GREP_SEARCH" or $t == "VIEW_CODE_ITEM" or $t == "WRITE_TO_FILE"
+      or $t == "REPLACE_FILE_CONTENT" or $t == "EDIT_FILE" or $t == "SEARCH_WEB"
+      or $t == "READ_URL_CONTENT" or $t == "GENERIC" then
+      {kind: "TOOLRESULT", n: 1}
+    else empty end;
+'
+
+case "$AGENT" in
+  claude) JQ_COMMON="${JQ_HELPERS}${JQ_CLAUDE}" ;;
+  codex)  JQ_COMMON="${JQ_HELPERS}${JQ_CODEX}" ;;
+  agy)    JQ_COMMON="${JQ_HELPERS}${JQ_AGY}" ;;
+esac
+
+# ── phase 1: backfill ────────────────────────────────────────────────────────
+#
+# Concatenate every renderable block into one big markdown document and
+# render through a SINGLE glow invocation. Per-event glow calls cost real
+# time each (Go binary startup + chroma); on a 1500-event session per-event
+# takes ~1.5s while batched runs in ~0.13s.
+#
+# In-band sentinels mark turn boundaries; awk rewrites them into the same
+# ANSI box headers print_header would emit in live mode. CLICOLOR_FORCE=1
+# makes glow wrap every char (including sentinel chars) in chroma color
+# escapes, so awk strips ANSI from a copy of each line before matching.
+#
+# Sentinel format (always on its own line):
+#   [[CTAIL_U]]YYYY-MM-DD HH:MM:SS         — user header
+#   [[CTAIL_C]]YYYY-MM-DD HH:MM:SS         — assistant header
+#   [[CTAIL_T]]<name>\t<input-preview>     — tool use (tab between)
+#   [[CTAIL_R]]<count>                     — tool_result count
+if (( BACKFILL_FROM > 0 )); then
+  sed -n "${BACKFILL_FROM},${TOTAL_LINES}p" "$SESSION" | jq -r --arg style "$TOOL_STYLE" "$JQ_COMMON"'
+    normalize |
+    if   .kind == "USER"       then "\n[[CTAIL_U]]\(.ts)\n\n\(.body)\n"
+    elif .kind == "CLAUDE"     then "\n[[CTAIL_C]]\(.ts)\n\n\(.body)\n"
+    elif .kind == "TOOLUSE"    then (if $style == "none" then empty else "\n[[CTAIL_T]]\(.name)\t\(.summary | .[0:140])\n" end)
+    elif .kind == "TOOLRESULT" then (if $style == "lines" then "\n[[CTAIL_R]]\(.n)\n" else empty end)
+    else empty end
+  ' | glow -w 0 -s "$GLOW_STYLE" - | awk \
+        -v U_HDR="$USER_HDR_LINE" \
+        -v C_HDR="$CLAUDE_HDR_LINE" \
+        -v DIM="$THEME_DIM_ANSI" \
+        -v TOOL_STYLE="$TOOL_STYLE" '
+    # In dots mode each tool call becomes a single colored "." with no
+    # trailing newline, so a streak of tools renders as "..........". We
+    # track dot_run so that the next non-tool output (a header, a body
+    # line, anything else) can flush a newline first and break the streak.
+    function flush_dots() {
+      if (dot_run) { printf "\n"; dot_run = 0 }
+    }
+    # Tool-name → truecolor SGR. Keep in sync with the dot_color() bash
+    # function used by the live loop and with the startup legend above.
+    # Knows about both Claude tool names (Read/Edit/Bash/…) and Codex
+    # tool names (exec_command/apply_patch/update_plan/…).
+    function dot_color(name) {
+      if (name == "Read" || name == "NotebookRead" || name == "view_file" || name == "view_code_item") return "\033[38;2;125;185;235m"
+      if (name == "LS"   || name == "Glob" || name == "list_dir" || name == "list_permissions")        return "\033[38;2;160;200;240m"
+      if (name == "Grep" || name == "zoekt" || name == "grep_search")                                  return "\033[38;2;220;140;230m"
+      if (name == "Write" || name == "Edit" || name == "MultiEdit" || name == "NotebookEdit") return "\033[38;2;125;215;145m"
+      if (name == "apply_patch" || name == "write_to_file" || name == "replace_file_content" || name == "edit_file") return "\033[38;2;125;215;145m"
+      if (name == "Bash" || name == "exec_command" || name == "shell" || name == "local_shell_call" || name == "run_command") return "\033[38;2;240;200;110m"
+      if (name == "WebFetch" || name == "WebSearch" || name == "search_web" || name == "read_url_content") return "\033[38;2;110;220;220m"
+      if (name == "view_image")                                           return "\033[38;2;110;220;220m"
+      if (name == "Task" || name == "Agent")                              return "\033[38;2;205;155;255m"
+      if (name == "TodoWrite" || name == "update_plan")                   return "\033[38;2;150;160;180m"
+      if (name == "result")                                               return "\033[2;38;2;110;110;120m"
+      if (name ~ /^mcp__/)                                                return "\033[38;2;255;180;130m"
+      return "\033[38;2;200;200;200m"
+    }
+    {
+      # Strip terminal-query noise that leaks into the stream from elsewhere
+      # in the user environment (tmux/zellij, shell prompt, glow probing
+      # capabilities) — OSC 10/11 (terminal fg/bg color set or response) and
+      # CSI cursor-position reports otherwise appear as literal text in some
+      # terminals or in copy-pasted scrollback.
+      gsub(/\033\]1[01];[^\033\007]*(\033\\|\007)/, "")
+      gsub(/\033\[[0-9]+;[0-9]+R/, "")
+
+      stripped = $0
+      gsub(/\033\[[0-9;]*m/, "", stripped)
+      if (substr(stripped, 1, 11) == "[[CTAIL_U]]") {
+        flush_dots()
+        ts = substr(stripped, 12)
+        printf "%s %s%s\033[0m\n", U_HDR, DIM, ts
+      } else if (substr(stripped, 1, 11) == "[[CTAIL_C]]") {
+        flush_dots()
+        ts = substr(stripped, 12)
+        printf "%s %s%s\033[0m\n", C_HDR, DIM, ts
+      } else if (substr(stripped, 1, 11) == "[[CTAIL_T]]") {
+        payload = substr(stripped, 12)
+        tab = index(payload, "\t")
+        if (tab > 0) { name = substr(payload, 1, tab - 1); input = substr(payload, tab + 1) }
+        else         { name = payload;                       input = "" }
+        if (TOOL_STYLE == "dots") {
+          printf "%s.\033[0m", dot_color(name)
+          dot_run = 1
+        } else {
+          if (length(input) > 140) input = substr(input, 1, 140)
+          printf "%s  ⚙ %s  %s\033[0m\n", DIM, name, input
+        }
+      } else if (substr(stripped, 1, 11) == "[[CTAIL_R]]") {
+        count = substr(stripped, 12)
+        if (TOOL_STYLE == "dots") {
+          printf "%s.\033[0m", dot_color("result")
+          dot_run = 1
+        } else {
+          printf "%s  ↩ tool_result (×%s)\033[0m\n", DIM, count
+        }
+      } else {
+        # Sentinels are emitted by jq as "\n[[CTAIL_*]]…\n", so each one
+        # arrives flanked by blank lines. In dots mode those blanks would
+        # otherwise terminate every streak after a single dot — absorb
+        # them so the streak stays horizontal until real content arrives.
+        if (TOOL_STYLE == "dots" && dot_run && stripped ~ /^[[:space:]]*$/) next
+        flush_dots()
+        print
+      }
+    }
+    END { flush_dots() }
+  '
+fi
+
+# Truecolor SGR for a single tool dot. Mirrors the awk dot_color() used in
+# backfill and the legend printed at startup — change all three together.
+dot_color() {
+  case "$1" in
+    Read|NotebookRead|view_file|view_code_item)            printf '\033[38;2;125;185;235m' ;;
+    LS|Glob|list_dir|list_permissions)                     printf '\033[38;2;160;200;240m' ;;
+    Grep|zoekt|grep_search)                                printf '\033[38;2;220;140;230m' ;;
+    Write|Edit|MultiEdit|NotebookEdit)                     printf '\033[38;2;125;215;145m' ;;
+    apply_patch|write_to_file|replace_file_content|edit_file) printf '\033[38;2;125;215;145m' ;;
+    Bash|exec_command|shell|local_shell_call|run_command)  printf '\033[38;2;240;200;110m' ;;
+    WebFetch|WebSearch|search_web|read_url_content|view_image) printf '\033[38;2;110;220;220m' ;;
+    Task|Agent)                                            printf '\033[38;2;205;155;255m' ;;
+    TodoWrite|update_plan)                                 printf '\033[38;2;150;160;180m' ;;
+    result)                                                printf '\033[2;38;2;110;110;120m' ;;
+    mcp__*)                                                printf '\033[38;2;255;180;130m' ;;
+    *)                                                     printf '\033[38;2;200;200;200m' ;;
+  esac
+}
+
+# ── phase 2: live follow ─────────────────────────────────────────────────────
+#
+# Tail starts at the line right after the backfill snapshot so new events get
+# rendered per-message (one glow call each) at the natural pace of the
+# conversation. Same look as backfill since we use the same ANSI headers.
+tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null | jq -r --unbuffered --arg style "$TOOL_STYLE" "$JQ_COMMON"'
+  normalize |
+  (.ts // "" | gsub(" "; "_")) as $tsTok |
+  if   .kind == "USER"       then "USER \($tsTok) " + (.body | @base64)
+  elif .kind == "CLAUDE"     then "ASSISTANT \($tsTok) " + (.body | @base64)
+  elif .kind == "TOOLUSE"    then (if $style == "none" then empty else "TOOLUSE \(.name) " + ((.summary | .[0:200]) | @base64) end)
+  elif .kind == "TOOLRESULT" then (if $style == "lines" then "TOOLRESULT \(.n)" else empty end)
+  else empty end
+' | while read -r kind rest; do
+  case "$kind" in
+    USER)
+      ts_token="${rest%% *}"
+      body_b64="${rest#* }"
+      print_header USER "${ts_token//_/ }"
+      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" - | strip_terminal_noise
+      ;;
+    ASSISTANT)
+      ts_token="${rest%% *}"
+      body_b64="${rest#* }"
+      # BEL on each new assistant turn — lets the user wander off and get
+      # pinged when the agent actually responds. Live-only on purpose:
+      # backfill renders historical turns through the same print_header but
+      # bypasses this branch, so replay doesn't spam the bell.
+      printf '\a'
+      print_header CLAUDE "${ts_token//_/ }"
+      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" - | strip_terminal_noise
+      ;;
+    TOOLUSE)
+      name="${rest%% *}"
+      if [[ "$TOOL_STYLE" == "dots" ]]; then
+        # No trailing newline — accumulates into a horizontal streak. The
+        # next print_header starts with \n, which both flushes stdio and
+        # breaks the streak naturally.
+        printf '%s.\033[0m' "$(dot_color "$name")"
+      else
+        input_b64="${rest#* }"
+        input=$(printf '%s' "$input_b64" | base64 -d | tr '\n' ' ')
+        printf "%b  ⚙ %s  %s\033[0m\n" "$THEME_DIM_ANSI" "$name" "${input:0:140}"
+      fi
+      ;;
+    TOOLRESULT)
+      if [[ "$TOOL_STYLE" == "dots" ]]; then
+        printf '%s.\033[0m' "$(dot_color result)"
+      else
+        printf "%b  ↩ tool_result (×%s)\033[0m\n" "$THEME_DIM_ANSI" "$rest"
+      fi
+      ;;
+  esac
+done
