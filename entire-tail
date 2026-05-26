@@ -397,21 +397,53 @@ CLAUDE_HDR_LINE="${THEME_CLAUDE_ANSI}─── ◀ AGENT ───────�
 # Tool events don't change this — a text→tool→text streak inside one
 # assistant turn still counts as one continuous CLAUDE participant.
 LAST_KIND=""
+LAST_HEADER_COMPACT=0
+# Tool dots are printf'd without a trailing newline so they accumulate into a
+# horizontal streak. Track that with IN_DOT_STREAK so anything that follows
+# (a header, a body, a "lines"-mode tool) can prepend the one newline needed
+# to break out of the streak, without leaving an extra blank line behind when
+# the previous output was already a finished line.
+IN_DOT_STREAK=0
 
 # Print the ANSI box header for a turn. Args: kind ("USER" or "CLAUDE"), ts.
 # When the kind matches LAST_KIND we emit a single dim "⋯ <ts>" line instead
 # of a fresh box so a long agent turn doesn't get fragmented by repeated
-# headers between its tool calls.
+# headers between its tool calls. The compact form sits flush against the
+# surrounding content — only emitting a leading newline if needed to break
+# an unfinished dot streak — and the caller pipes the body through render_body
+# which strips glow's leading blank when LAST_HEADER_COMPACT is set.
 print_header() {
   if [[ "$1" == "$LAST_KIND" ]]; then
-    printf "\n%b  ⋯ %s\033[0m\n" "$THEME_DIM_ANSI" "$2"
+    if (( IN_DOT_STREAK )); then
+      printf "\n%b  ⋯ %s\033[0m\n" "$THEME_DIM_ANSI" "$2"
+    else
+      printf "%b  ⋯ %s\033[0m\n" "$THEME_DIM_ANSI" "$2"
+    fi
+    LAST_HEADER_COMPACT=1
   else
     case "$1" in
       USER)   printf "\n%b %b%s\033[0m\n" "$USER_HDR_LINE"   "$THEME_DIM_ANSI" "$2" ;;
       CLAUDE) printf "\n%b %b%s\033[0m\n" "$CLAUDE_HDR_LINE" "$THEME_DIM_ANSI" "$2" ;;
     esac
+    LAST_HEADER_COMPACT=0
   fi
+  IN_DOT_STREAK=0
   LAST_KIND="$1"
+}
+
+# Render a markdown body via glow. Always strip glow's trailing blank line so
+# the next dot streak or compact marker can hug the body; additionally strip
+# the leading blank when we just emitted a compact ⋯ marker.
+render_body() {
+  glow -w 0 -s "$GLOW_STYLE" - | strip_terminal_noise | awk -v sl="$LAST_HEADER_COMPACT" '
+    { lines[NR] = $0; n = NR }
+    END {
+      end = n
+      while (end > 0 && lines[end] !~ /[^[:space:]]/) end--
+      start = 1
+      if (sl) while (start <= end && lines[start] !~ /[^[:space:]]/) start++
+      for (i = start; i <= end; i++) print lines[i]
+    }'
 }
 
 # Filter terminal-query noise (OSC 10/11 + CSI cursor-position reports) out of
@@ -685,17 +717,29 @@ if (( BACKFILL_FROM > 0 )); then
     function flush_dots() {
       if (dot_run) { printf "\n"; dot_run = 0 }
     }
+    # Hold the most recent blank body line so we can drop it when the next
+    # record is a sentinel — that closes the gap glow leaves between a body
+    # and the dot streak / compact marker that follows it.
+    function flush_held_blank() {
+      if (held_blank) { printf "\n"; held_blank = 0 }
+    }
     # Emit either a full box header or a dim "⋯ <ts>" continuation marker,
     # depending on whether the previous USER/CLAUDE turn was the same
     # participant. Tool events do not touch last_kind, so a text→tool→text
     # streak inside one assistant turn collapses to one header + one marker.
+    # The compact form sits flush — no leading blank — and sets
+    # compact_suppress so the immediately-following blank (jq inserts one
+    # between the sentinel and the body) is dropped.
     function emit_header(kind, ts) {
       if (kind == last_kind) {
-        printf "\n%s  ⋯ %s\033[0m\n", DIM, ts
+        printf "%s  ⋯ %s\033[0m\n", DIM, ts
+        compact_suppress = 1
       } else if (kind == "USER") {
         printf "\n%s %s%s\033[0m\n", U_HDR, DIM, ts
+        compact_suppress = 0
       } else {
         printf "\n%s %s%s\033[0m\n", C_HDR, DIM, ts
+        compact_suppress = 0
       }
       last_kind = kind
     }
@@ -729,13 +773,23 @@ if (( BACKFILL_FROM > 0 )); then
 
       stripped = $0
       gsub(/\033\[[0-9;]*m/, "", stripped)
+      # Right after a compact dim marker, swallow exactly one blank line —
+      # the gap jq inserts between the sentinel and the body. Without this
+      # the marker is still visually separated from the text below it.
+      if (compact_suppress) {
+        if (stripped ~ /^[[:space:]]*$/) { compact_suppress = 0; next }
+        compact_suppress = 0
+      }
       if (substr(stripped, 1, 11) == "[[CTAIL_U]]") {
+        held_blank = 0
         flush_dots()
         emit_header("USER", substr(stripped, 12))
       } else if (substr(stripped, 1, 11) == "[[CTAIL_C]]") {
+        held_blank = 0
         flush_dots()
         emit_header("CLAUDE", substr(stripped, 12))
       } else if (substr(stripped, 1, 11) == "[[CTAIL_T]]") {
+        held_blank = 0
         payload = substr(stripped, 12)
         tab = index(payload, "\t")
         if (tab > 0) { name = substr(payload, 1, tab - 1); input = substr(payload, tab + 1) }
@@ -748,6 +802,7 @@ if (( BACKFILL_FROM > 0 )); then
           printf "%s  ⚙ %s  %s\033[0m\n", DIM, name, input
         }
       } else if (substr(stripped, 1, 11) == "[[CTAIL_R]]") {
+        held_blank = 0
         count = substr(stripped, 12)
         if (TOOL_STYLE == "dots") {
           printf "%s.\033[0m", dot_color("result")
@@ -761,6 +816,12 @@ if (( BACKFILL_FROM > 0 )); then
         # otherwise terminate every streak after a single dot — absorb
         # them so the streak stays horizontal until real content arrives.
         if (TOOL_STYLE == "dots" && dot_run && stripped ~ /^[[:space:]]*$/) next
+        # Hold trailing body blanks instead of printing them immediately —
+        # if the very next record is a sentinel (dot streak or another
+        # compact marker), we drop the held blank so the body and the next
+        # event sit flush against each other.
+        if (stripped ~ /^[[:space:]]*$/) { held_blank = 1; next }
+        flush_held_blank()
         flush_dots()
         print
       }
@@ -845,7 +906,7 @@ TAIL_AND_FILTER | jq -r --unbuffered --arg style "$TOOL_STYLE" "$JQ_COMMON"'
       ts_token="${rest%% *}"
       body_b64="${rest#* }"
       print_header USER "${ts_token//_/ }"
-      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" - | strip_terminal_noise
+      printf '%s' "$body_b64" | base64 -d | render_body
       ;;
     ASSISTANT)
       ts_token="${rest%% *}"
@@ -856,16 +917,18 @@ TAIL_AND_FILTER | jq -r --unbuffered --arg style "$TOOL_STYLE" "$JQ_COMMON"'
       # bypasses this branch, so replay doesn't spam the bell.
       printf '\a'
       print_header CLAUDE "${ts_token//_/ }"
-      printf '%s' "$body_b64" | base64 -d | glow -w 0 -s "$GLOW_STYLE" - | strip_terminal_noise
+      printf '%s' "$body_b64" | base64 -d | render_body
       ;;
     TOOLUSE)
       name="${rest%% *}"
       if [[ "$TOOL_STYLE" == "dots" ]]; then
         # No trailing newline — accumulates into a horizontal streak. The
-        # next print_header starts with \n, which both flushes stdio and
-        # breaks the streak naturally.
+        # next print_header / lines-mode tool breaks the streak with a
+        # leading newline based on IN_DOT_STREAK.
         printf '%s.\033[0m' "$(dot_color "$name")"
+        IN_DOT_STREAK=1
       else
+        (( IN_DOT_STREAK )) && { printf '\n'; IN_DOT_STREAK=0; }
         input_b64="${rest#* }"
         input=$(printf '%s' "$input_b64" | base64 -d | tr '\n' ' ')
         printf "%b  ⚙ %s  %s\033[0m\n" "$THEME_DIM_ANSI" "$name" "${input:0:140}"
@@ -874,7 +937,9 @@ TAIL_AND_FILTER | jq -r --unbuffered --arg style "$TOOL_STYLE" "$JQ_COMMON"'
     TOOLRESULT)
       if [[ "$TOOL_STYLE" == "dots" ]]; then
         printf '%s.\033[0m' "$(dot_color result)"
+        IN_DOT_STREAK=1
       else
+        (( IN_DOT_STREAK )) && { printf '\n'; IN_DOT_STREAK=0; }
         printf "%b  ↩ tool_result (×%s)\033[0m\n" "$THEME_DIM_ANSI" "$rest"
       fi
       ;;
