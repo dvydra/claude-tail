@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 SCRIPT_DIR="$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 THEMES_DIR="$SCRIPT_DIR/themes"
@@ -392,12 +392,26 @@ echo "---" >&2
 USER_HDR_LINE="${THEME_USER_ANSI}─── ▶ USER ───────────────────────────────\033[0m"
 CLAUDE_HDR_LINE="${THEME_CLAUDE_ANSI}─── ◀ AGENT ──────────────────────────────\033[0m"
 
+# Track the previous USER/CLAUDE turn so consecutive turns from the same
+# participant collapse the full ANSI box header into just a dim timestamp.
+# Tool events don't change this — a text→tool→text streak inside one
+# assistant turn still counts as one continuous CLAUDE participant.
+LAST_KIND=""
+
 # Print the ANSI box header for a turn. Args: kind ("USER" or "CLAUDE"), ts.
+# When the kind matches LAST_KIND we emit a single dim "⋯ <ts>" line instead
+# of a fresh box so a long agent turn doesn't get fragmented by repeated
+# headers between its tool calls.
 print_header() {
-  case "$1" in
-    USER)   printf "\n%b %b%s\033[0m\n" "$USER_HDR_LINE"   "$THEME_DIM_ANSI" "$2" ;;
-    CLAUDE) printf "\n%b %b%s\033[0m\n" "$CLAUDE_HDR_LINE" "$THEME_DIM_ANSI" "$2" ;;
-  esac
+  if [[ "$1" == "$LAST_KIND" ]]; then
+    printf "\n%b  ⋯ %s\033[0m\n" "$THEME_DIM_ANSI" "$2"
+  else
+    case "$1" in
+      USER)   printf "\n%b %b%s\033[0m\n" "$USER_HDR_LINE"   "$THEME_DIM_ANSI" "$2" ;;
+      CLAUDE) printf "\n%b %b%s\033[0m\n" "$CLAUDE_HDR_LINE" "$THEME_DIM_ANSI" "$2" ;;
+    esac
+  fi
+  LAST_KIND="$1"
 }
 
 # Filter terminal-query noise (OSC 10/11 + CSI cursor-position reports) out of
@@ -448,6 +462,23 @@ JQ_CLAUDE='
       elif $n == "Task" then (.input.description // .input.subagent_type // "")
       else (.input | tostring) end
     ) | tostring | gsub("\n"; " ");
+  # AskUserQuestion arrives as a tool_use whose .input.questions[] carries the
+  # actual prompt the user sees. Default rendering would collapse it to a
+  # single gray "tool" dot — so the question appears to vanish from the log
+  # until the answer turns up. Format it as markdown the same renderer can
+  # show as a real CLAUDE turn instead.
+  def askq_body:
+    ((.input.questions // [])
+      | map(
+          "**❓ " + (.question // "") + "**" +
+          (if ((.options // []) | length) > 0 then
+            "\n\n" + ((.options // []) | map(
+              "- **" + (.label // "") + "**" +
+              (if (.description // "") != "" then " — " + .description else "" end)
+            ) | join("\n"))
+          else "" end)
+        )
+      | join("\n\n"));
   def normalize:
     if .type == "user" then
       (.message.content) as $c |
@@ -455,8 +486,23 @@ JQ_CLAUDE='
       if ($c | type) == "string" then
         {kind: "USER", ts: $ts, body: $c}
       else
-        ($c | map(select(.type=="tool_result")) | length) as $n |
-        if $n > 0 then {kind: "TOOLRESULT", n: $n} else empty end
+        ($c | map(select(.type=="tool_result"))) as $results |
+        # AskUserQuestion answers come back inside a tool_result whose content
+        # is a fixed-template string. Surface it as a real USER turn (with the
+        # boilerplate trimmed) instead of a single tool_result dot.
+        ($results | map(select(
+            (.content | type) == "string"
+            and (.content | startswith("User has answered your questions:"))
+          ))) as $answers |
+        if ($answers | length) > 0 then
+          {kind: "USER", ts: $ts,
+           body: ($answers[0].content
+             | sub("^User has answered your questions: "; "")
+             | sub("\\. You can now continue with the user.s answers in mind\\.\\s*$"; ""))}
+        else
+          ($results | length) as $n |
+          if $n > 0 then {kind: "TOOLRESULT", n: $n} else empty end
+        end
       end
     elif .type == "assistant" then
       (.timestamp | fmtts) as $ts |
@@ -464,7 +510,9 @@ JQ_CLAUDE='
       if .type == "text" then
         {kind: "CLAUDE", ts: $ts, body: .text}
       elif .type == "tool_use" then
-        {kind: "TOOLUSE", name: .name, summary: tool_summary}
+        if .name == "AskUserQuestion" then
+          {kind: "CLAUDE", ts: $ts, body: askq_body}
+        else {kind: "TOOLUSE", name: .name, summary: tool_summary} end
       else empty end
     else empty end;
 '
@@ -594,6 +642,11 @@ case "$AGENT" in
   agy)    JQ_COMMON="${JQ_HELPERS}${JQ_AGY}" ;;
 esac
 
+# Small scratch file the backfill awk uses to hand its final participant
+# kind to the live loop. See emit_header / LAST_KIND for what it carries.
+STATE_FILE=$(mktemp -t entire-tail.XXXXXX) || die "could not create state tempfile"
+trap 'rm -f "$STATE_FILE"' EXIT
+
 # ── phase 1: backfill ────────────────────────────────────────────────────────
 #
 # Concatenate every renderable block into one big markdown document and
@@ -623,13 +676,28 @@ if (( BACKFILL_FROM > 0 )); then
         -v U_HDR="$USER_HDR_LINE" \
         -v C_HDR="$CLAUDE_HDR_LINE" \
         -v DIM="$THEME_DIM_ANSI" \
-        -v TOOL_STYLE="$TOOL_STYLE" '
+        -v TOOL_STYLE="$TOOL_STYLE" \
+        -v STATE_FILE="$STATE_FILE" '
     # In dots mode each tool call becomes a single colored "." with no
     # trailing newline, so a streak of tools renders as "..........". We
     # track dot_run so that the next non-tool output (a header, a body
     # line, anything else) can flush a newline first and break the streak.
     function flush_dots() {
       if (dot_run) { printf "\n"; dot_run = 0 }
+    }
+    # Emit either a full box header or a dim "⋯ <ts>" continuation marker,
+    # depending on whether the previous USER/CLAUDE turn was the same
+    # participant. Tool events do not touch last_kind, so a text→tool→text
+    # streak inside one assistant turn collapses to one header + one marker.
+    function emit_header(kind, ts) {
+      if (kind == last_kind) {
+        printf "\n%s  ⋯ %s\033[0m\n", DIM, ts
+      } else if (kind == "USER") {
+        printf "\n%s %s%s\033[0m\n", U_HDR, DIM, ts
+      } else {
+        printf "\n%s %s%s\033[0m\n", C_HDR, DIM, ts
+      }
+      last_kind = kind
     }
     # Tool-name → truecolor SGR. Keep in sync with the dot_color() bash
     # function used by the live loop and with the startup legend above.
@@ -663,12 +731,10 @@ if (( BACKFILL_FROM > 0 )); then
       gsub(/\033\[[0-9;]*m/, "", stripped)
       if (substr(stripped, 1, 11) == "[[CTAIL_U]]") {
         flush_dots()
-        ts = substr(stripped, 12)
-        printf "%s %s%s\033[0m\n", U_HDR, DIM, ts
+        emit_header("USER", substr(stripped, 12))
       } else if (substr(stripped, 1, 11) == "[[CTAIL_C]]") {
         flush_dots()
-        ts = substr(stripped, 12)
-        printf "%s %s%s\033[0m\n", C_HDR, DIM, ts
+        emit_header("CLAUDE", substr(stripped, 12))
       } else if (substr(stripped, 1, 11) == "[[CTAIL_T]]") {
         payload = substr(stripped, 12)
         tab = index(payload, "\t")
@@ -699,8 +765,21 @@ if (( BACKFILL_FROM > 0 )); then
         print
       }
     }
-    END { flush_dots() }
+    END {
+      flush_dots()
+      # Hand the final participant kind to the live loop via STATE_FILE so a
+      # text→tool→text streak that straddles the backfill/live boundary still
+      # collapses into one box + continuation markers.
+      if (STATE_FILE != "" && last_kind != "") print last_kind > STATE_FILE
+    }
   '
+fi
+
+# Bridge backfill state into the live loop: read whichever participant the
+# awk above last emitted, if any. No file → first live header is always
+# full, which is also the right behaviour when --no-backfill is set.
+if [[ -s "$STATE_FILE" ]]; then
+  LAST_KIND=$(<"$STATE_FILE")
 fi
 
 # Truecolor SGR for a single tool dot. Mirrors the awk dot_color() used in
