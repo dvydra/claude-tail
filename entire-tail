@@ -397,7 +397,6 @@ CLAUDE_HDR_LINE="${THEME_CLAUDE_ANSI}─── ◀ AGENT ───────�
 # Tool events don't change this — a text→tool→text streak inside one
 # assistant turn still counts as one continuous CLAUDE participant.
 LAST_KIND=""
-LAST_HEADER_COMPACT=0
 # Tool dots are printf'd without a trailing newline so they accumulate into a
 # horizontal streak. Track that with IN_DOT_STREAK so anything that follows
 # (a header, a body, a "lines"-mode tool) can prepend the one newline needed
@@ -407,41 +406,36 @@ IN_DOT_STREAK=0
 
 # Print the ANSI box header for a turn. Args: kind ("USER" or "CLAUDE"), ts.
 # When the kind matches LAST_KIND we emit a single dim "⋯ <ts>" line instead
-# of a fresh box so a long agent turn doesn't get fragmented by repeated
-# headers between its tool calls. The compact form sits flush against the
-# surrounding content — only emitting a leading newline if needed to break
-# an unfinished dot streak — and the caller pipes the body through render_body
-# which strips glow's leading blank when LAST_HEADER_COMPACT is set.
+# of a fresh box. Either form sits flush against the surrounding content —
+# only emitting a leading newline when needed to close an unfinished dot
+# streak — and the caller pipes the body through render_body which strips
+# the blank line glow leaves between the header and the body.
 print_header() {
+  local lead=""
+  (( IN_DOT_STREAK )) && lead=$'\n'
   if [[ "$1" == "$LAST_KIND" ]]; then
-    if (( IN_DOT_STREAK )); then
-      printf "\n%b  ⋯ %s\033[0m\n" "$THEME_DIM_ANSI" "$2"
-    else
-      printf "%b  ⋯ %s\033[0m\n" "$THEME_DIM_ANSI" "$2"
-    fi
-    LAST_HEADER_COMPACT=1
+    printf "%s%b  ⋯ %s\033[0m\n" "$lead" "$THEME_DIM_ANSI" "$2"
   else
     case "$1" in
-      USER)   printf "\n%b %b%s\033[0m\n" "$USER_HDR_LINE"   "$THEME_DIM_ANSI" "$2" ;;
-      CLAUDE) printf "\n%b %b%s\033[0m\n" "$CLAUDE_HDR_LINE" "$THEME_DIM_ANSI" "$2" ;;
+      USER)   printf "%s%b %b%s\033[0m\n" "$lead" "$USER_HDR_LINE"   "$THEME_DIM_ANSI" "$2" ;;
+      CLAUDE) printf "%s%b %b%s\033[0m\n" "$lead" "$CLAUDE_HDR_LINE" "$THEME_DIM_ANSI" "$2" ;;
     esac
-    LAST_HEADER_COMPACT=0
   fi
   IN_DOT_STREAK=0
   LAST_KIND="$1"
 }
 
-# Render a markdown body via glow. Always strip glow's trailing blank line so
-# the next dot streak or compact marker can hug the body; additionally strip
-# the leading blank when we just emitted a compact ⋯ marker.
+# Render a markdown body via glow. Always strip glow's leading and trailing
+# blank lines so the header above and the next event below hug the body
+# directly — no breathing-room blanks anywhere.
 render_body() {
-  glow -w 0 -s "$GLOW_STYLE" - | strip_terminal_noise | awk -v sl="$LAST_HEADER_COMPACT" '
+  glow -w 0 -s "$GLOW_STYLE" - | strip_terminal_noise | awk '
     { lines[NR] = $0; n = NR }
     END {
       end = n
       while (end > 0 && lines[end] !~ /[^[:space:]]/) end--
       start = 1
-      if (sl) while (start <= end && lines[start] !~ /[^[:space:]]/) start++
+      while (start <= end && lines[start] !~ /[^[:space:]]/) start++
       for (i = start; i <= end; i++) print lines[i]
     }'
 }
@@ -727,20 +721,19 @@ if (( BACKFILL_FROM > 0 )); then
     # depending on whether the previous USER/CLAUDE turn was the same
     # participant. Tool events do not touch last_kind, so a text→tool→text
     # streak inside one assistant turn collapses to one header + one marker.
-    # The compact form sits flush — no leading blank — and sets
-    # compact_suppress so the immediately-following blank (jq inserts one
-    # between the sentinel and the body) is dropped.
+    # Both forms sit flush — no leading blank above, and compact_suppress is
+    # set so the blank jq inserts between the sentinel and the body is also
+    # dropped. Any newline needed to close a dot streak is emitted by
+    # flush_dots() in the caller, not by this function.
     function emit_header(kind, ts) {
       if (kind == last_kind) {
         printf "%s  ⋯ %s\033[0m\n", DIM, ts
-        compact_suppress = 1
       } else if (kind == "USER") {
-        printf "\n%s %s%s\033[0m\n", U_HDR, DIM, ts
-        compact_suppress = 0
+        printf "%s %s%s\033[0m\n", U_HDR, DIM, ts
       } else {
-        printf "\n%s %s%s\033[0m\n", C_HDR, DIM, ts
-        compact_suppress = 0
+        printf "%s %s%s\033[0m\n", C_HDR, DIM, ts
       }
+      compact_suppress = 1
       last_kind = kind
     }
     # Tool-name → truecolor SGR. Keep in sync with the dot_color() bash
