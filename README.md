@@ -73,15 +73,72 @@ entire tail --tool-style dots              # show tool calls as colored dots
 entire tail --no-compact-tools             # show verbose `⚙ Tool  args` per call
 entire tail --collapse 10                  # collapse user pastes over 10 lines
 entire tail --no-collapse                  # show every user message in full
+entire tail --pick                         # choose among live Claude sessions
+entire tail --no-pick                      # never prompt; always auto-discover
 entire tail --list-themes                  # see what's available
 entire tail --help                         # full options
 ```
 
 All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 `ENTIRE_TAIL_THEME`, `ENTIRE_TAIL_BACKFILL`, `ENTIRE_TAIL_TOOL_STYLE`,
-`ENTIRE_TAIL_COLLAPSE`, `GLOW_STYLE`) for shell-rc convenience — flags
-override env vars when both are set. The legacy `CLAUDE_TAIL_*` variants are
-still honored.
+`ENTIRE_TAIL_COLLAPSE`, `ENTIRE_TAIL_PICK`, `GLOW_STYLE`) for shell-rc
+convenience — flags override env vars when both are set. The legacy
+`CLAUDE_TAIL_*` variants are still honored.
+
+## Picking among live sessions
+
+When you have several agent panes open at once, `entire tail` finds every
+working directory with a running agent process and — if more than one session
+is live — drops you into a small picker before tailing:
+
+```
+Active agent sessions:
+
+   1) claude  entirehq/infra            just now  Let me pull the authoritative `alert_type` list…
+   2) claude  entirehq/infra              2m ago  Want me to dig into the permsreconciler alert…
+   3) claude  dvydra/agent-planner        3m ago  Let me map the cwd→plan binding subsystem and…
+
+Pick a session [1-3] (Enter=1, q=quit):
+```
+
+Each row shows the agent, the directory (last two path components, `(here)` if
+it's `$PWD`), how long ago the session was last written, and a one-line preview
+of its most recent message so you can tell them apart at a glance. Press the
+number, or Enter for the most-recently-active one.
+
+**Multiple panes in the same directory** each get their own row: for every live
+cwd, entire-tail lists as many of its newest sessions as there are agent
+processes running there (so two `claude` panes in `infra` show as two rows, told
+apart by their previews).
+
+The menu appears **automatically only when two or more sessions are live** and
+you're on an interactive terminal — a single live session (or a non-interactive
+run, e.g. a cron pane) tails silently as before. Force the menu with `--pick`
+(useful to confirm which session you're about to follow), or disable it with
+`--no-pick`. Set a default via `ENTIRE_TAIL_PICK=always|never|auto`. The picker
+is scoped to `--agent`: `auto` scans Claude, Codex, and Antigravity; forcing
+`--agent claude`/`codex`/`agy` scans just that one.
+
+A few caveats from how agents store sessions:
+
+- **Claude** maps cleanly — a live pane always writes its session under
+  `~/.claude/projects/<cwd>/`, so every pane shows up at any age (including
+  idle-but-open ones).
+- **Codex** doesn't encode the cwd in its session path (it's in the rollout's
+  `session_meta`), and frequently runs *embedded* (driven by an editor or
+  plugin) with no interactive rollout at all. So a running `codex` process only
+  appears if it has a matching rollout written in the last ~12h — which filters
+  out the embedded/headless ones that aren't tailable.
+- **Antigravity (agy)** runs as a process named `agy`, so it's detected like
+  the others, but it maps each cwd to a single conversation id (in
+  `cache/last_conversations.json`) — so it always contributes **one row per
+  cwd**, never per pane. Note the cache only updates once you send a message,
+  so a freshly-launched agy session shows its *previous* conversation for that
+  directory until you interact with it.
+
+Discovery is best-effort and needs `pgrep` + `lsof` (present on macOS and most
+Linux); without them the picker is silently disabled. Pass an explicit
+`SESSION_FILE` to tail anything the picker doesn't surface.
 
 ## Tool calls
 
