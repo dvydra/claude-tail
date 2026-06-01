@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 
 SCRIPT_DIR="$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 THEMES_DIR="$SCRIPT_DIR/themes"
@@ -35,6 +35,16 @@ TOOL_STYLE="${ENTIRE_TAIL_TOOL_STYLE:-${CLAUDE_TAIL_TOOL_STYLE:-dots}}"  # none|
 COLLAPSE="${ENTIRE_TAIL_COLLAPSE:-5}"
 case "$COLLAPSE" in
   off|none|false|no|OFF|NONE) COLLAPSE=0 ;;
+esac
+# When multiple Claude sessions are live (a `claude` process running in more
+# than one cwd), offer an interactive picker instead of silently auto-choosing.
+#   auto   (default) prompt only when 2+ active sessions and stdin/out is a tty
+#   always (--pick)  prompt whenever any active session exists
+#   never  (--no-pick) never prompt; use normal auto-discovery
+PICK="${ENTIRE_TAIL_PICK:-auto}"
+case "$PICK" in
+  off|none|false|no|OFF|NONE|never) PICK=never ;;
+  on|yes|true|always)               PICK=always ;;
 esac
 
 # ── help / list output ────────────────────────────────────────────────────────
@@ -94,6 +104,16 @@ OPTIONS:
                             overwhelm the view. Integer >= 1 (default: 5).
                             Re-run with --no-collapse to see the full text.
       --no-collapse         Never collapse — show every user message in full.
+  -p, --pick                Pick which live session to tail from a menu.
+                            Finds every cwd with a running agent process
+                            (Claude or Codex), lists each one's most recent
+                            sessions — one row per running pane, with a preview
+                            of its last message — and tails your choice. By
+                            default the menu appears automatically only when 2+
+                            sessions are live; --pick forces it even for one.
+                            Scoped to --agent ('auto' scans claude/codex/agy).
+                            claude and codex split per pane; agy is one per cwd.
+      --no-pick             Never show the picker — always auto-discover.
   -l, --list-themes         List available themes (with descriptions) and exit.
   -h, --help                Show this help and exit.
   -V, --version             Show version and exit.
@@ -104,6 +124,7 @@ ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_BACKFILL      Same as --backfill.
   ENTIRE_TAIL_TOOL_STYLE    Same as --tool-style.
   ENTIRE_TAIL_COLLAPSE      Same as --collapse (or 'off' to disable).
+  ENTIRE_TAIL_PICK          'always'/'never'/'auto' — same as --pick/--no-pick.
   GLOW_STYLE                Same as --style.
 
   CLAUDE_TAIL_* variants of the above are honored for back-compat.
@@ -115,6 +136,7 @@ EXAMPLES:
   entire-tail --theme dracula
   entire-tail -t nord -b 50
   entire-tail --no-backfill
+  entire-tail --pick                          # choose among live Claude sessions
   entire-tail --list-themes
   entire-tail ~/.codex/sessions/2026/05/.../rollout-...jsonl
 EOF
@@ -166,6 +188,8 @@ while (( $# > 0 )); do
     -c|--collapse)     require_arg "$@"; COLLAPSE="$2"; shift 2 ;;
     --collapse=*)      COLLAPSE="${1#--collapse=}"; shift ;;
     --no-collapse)     COLLAPSE=0; shift ;;
+    -p|--pick)         PICK=always; shift ;;
+    --no-pick)         PICK=never; shift ;;
     -l|--list-themes)  list_themes; exit 0 ;;
     -h|--help)         print_help; exit 0 ;;
     -V|--version)      echo "entire-tail $VERSION"; exit 0 ;;
@@ -268,6 +292,235 @@ detect_agent_for_file() {
   esac
 }
 
+# ── live session picker ──────────────────────────────────────────────────────
+#
+# A "live" session belongs to a cwd that has a running agent process. We can't
+# map a process to an exact session via open fds (agents append to the jsonl
+# and close it between events), so for each live cwd we show as many of its
+# newest sessions as there are agent processes in that cwd — so N panes open in
+# the same directory surface as N rows, told apart by their last-message
+# preview. Needs pgrep + lsof; the picker is silently disabled without them.
+#
+# Antigravity (agy) runs as a process named `agy` and maps a cwd to a single
+# conversation id (in cache/last_conversations.json) — so it's detectable but
+# always one session per cwd (no per-pane split like claude/codex).
+agent_procname() {
+  case "$1" in
+    claude) echo claude ;;
+    codex)  echo codex ;;
+    agy)    echo agy ;;
+    *)      echo "" ;;
+  esac
+}
+
+# Max age (seconds) a matched session may have and still count as live; 0 = no
+# limit. Claude's process<->session mapping is reliable (a live pane is always
+# writing its newest cwd-session), so any age is fine — this keeps idle-but-open
+# panes. Codex often runs embedded/headless (driven by an editor or the codex
+# plugin) with no interactive rollout, so a running `codex` process may have no
+# tailable session at all; requiring a recent rollout avoids surfacing a stale
+# leftover for one of those.
+agent_max_age_secs() {
+  case "$1" in
+    codex) echo 43200 ;;   # 12h
+    *)     echo 0 ;;
+  esac
+}
+
+# stat(1) is %m on BSD/macOS, %Y on GNU/Linux. Echo epoch mtime (0 on failure).
+file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+
+# Relative age ("just now" / "3m ago" / "2h ago" / "4d ago") from an epoch mtime.
+rel_age() {
+  local t=$1 now delta
+  now=$(date +%s)
+  delta=$(( now - t )); (( delta < 0 )) && delta=0
+  if   (( delta < 45 ));     then echo "just now"
+  elif (( delta < 5400 ));   then echo "$(( (delta + 30) / 60 ))m ago"
+  elif (( delta < 129600 )); then echo "$(( (delta + 1800) / 3600 ))h ago"
+  else                            echo "$(( (delta + 43200) / 86400 ))d ago"
+  fi
+}
+
+# Emit "<cwd>\t<process-count>" for each distinct cwd that has a running process
+# named $1, newest-first ordering not required (the caller re-sorts by mtime).
+active_cwd_counts() {
+  local procname=$1 pid cwd
+  for pid in $(pgrep -x "$procname" 2>/dev/null); do
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    [[ -n "$cwd" ]] && printf '%s\n' "$cwd"
+  done | sort | uniq -c | awk '{cnt=$1; $1=""; sub(/^[ \t]+/,""); print $0 "\t" cnt}'
+}
+
+# Echo up to $2 newest session files for cwd $1, for the given agent.
+sessions_for_cwd() {
+  local agent=$1 cwd=$2 n=$3
+  case "$agent" in
+    claude)
+      local slug="${cwd//\//-}"
+      ls -t "$HOME/.claude/projects/$slug"/*.jsonl 2>/dev/null | head -n "$n"
+      ;;
+    codex)
+      # Codex paths don't encode the cwd; session_meta (line 1) carries it.
+      # Walk recent rollouts newest-first, keep the first $n with a matching cwd.
+      local f c count=0
+      while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        c=$(head -1 "$f" 2>/dev/null | jq -r '.payload.cwd // empty' 2>/dev/null || true)
+        if [[ "$c" == "$cwd" ]]; then
+          echo "$f"; count=$(( count + 1 ))
+          (( count >= n )) && break
+        fi
+      done < <(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -200)
+      ;;
+    agy)
+      # agy maps each cwd to a single conversation id in the cache, so there's
+      # always exactly one session per cwd (n is ignored). No global fallback —
+      # the picker only wants the session that belongs to this active cwd.
+      local root="$HOME/.gemini/antigravity-cli" id t
+      id=$(jq -r --arg cwd "$cwd" '.[$cwd] // empty' \
+            "$root/cache/last_conversations.json" 2>/dev/null || true)
+      [[ -n "$id" ]] || return 0
+      t="$root/brain/$id/.system_generated/logs/transcript.jsonl"
+      [[ -f "$t" ]] && echo "$t"
+      ;;
+  esac
+}
+
+# One-line preview of a session's last human-readable message, whitespace-
+# collapsed and truncated. Reads only the tail of the file to stay fast.
+session_preview() {
+  local agent=$1 f=$2 text
+  case "$agent" in
+    claude)
+      text=$(tail -n 100 "$f" 2>/dev/null | jq -r '
+          def textof:
+            if .type == "user" then
+              (.message.content) as $c
+              | if ($c | type) == "string" then $c
+                else ($c | map(select(.type == "text") | .text) | join(" ")) end
+            elif .type == "assistant" then
+              (.message.content | map(select(.type == "text") | .text) | join(" "))
+            else empty end;
+          textof | select(type == "string" and (gsub("\\s"; "") != ""))
+        ' 2>/dev/null | tail -n 1 || true)
+      ;;
+    codex)
+      text=$(tail -n 100 "$f" 2>/dev/null | jq -r '
+          def textof:
+            if .type == "event_msg" and .payload.type == "agent_message" then
+              .payload.message
+            elif .type == "response_item" and .payload.type == "message" then
+              (.payload.content // [] | map(.text // empty) | join(" "))
+            else empty end;
+          textof | select(type == "string" and (gsub("\\s"; "") != ""))
+        ' 2>/dev/null | tail -n 1 || true)
+      ;;
+    agy)
+      text=$(tail -n 100 "$f" 2>/dev/null | jq -r '
+          def textof:
+            if .type == "USER_INPUT" then
+              (.content // "" | tostring
+                | sub("(?s)^.*<USER_REQUEST>\\s*"; "")
+                | sub("(?s)\\s*</USER_REQUEST>.*$"; ""))
+            elif .type == "PLANNER_RESPONSE" then (.content // "")
+            else empty end;
+          textof | select(type == "string" and (gsub("\\s"; "") != ""))
+        ' 2>/dev/null | tail -n 1 || true)
+      ;;
+  esac
+  text=$(printf '%s' "$text" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//')
+  (( ${#text} > 60 )) && text="${text:0:57}…"
+  printf '%s' "$text"
+}
+
+# Emit one TSV row per live session — "<mtime>\t<agent>\t<path>\t<cwd>" — across
+# all agents named in "$@", newest-first.
+find_active_sessions() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  command -v lsof  >/dev/null 2>&1 || return 0
+  local agent procname maxage now cwd n f mtime
+  now=$(date +%s)
+  {
+    for agent in "$@"; do
+      procname=$(agent_procname "$agent")
+      [[ -n "$procname" ]] || continue
+      maxage=$(agent_max_age_secs "$agent")
+      while IFS=$'\t' read -r cwd n; do
+        [[ -n "$cwd" ]] || continue
+        while IFS= read -r f; do
+          [[ -n "$f" && -f "$f" ]] || continue
+          mtime=$(file_mtime "$f")
+          (( maxage > 0 && now - mtime > maxage )) && continue
+          printf '%s\t%s\t%s\t%s\n' "$mtime" "$agent" "$f" "$cwd"
+        done < <(sessions_for_cwd "$agent" "$cwd" "$n")
+      done < <(active_cwd_counts "$procname")
+    done
+  } | sort -t"$(printf '\t')" -k1,1nr
+}
+
+# Run the picker over the agents in "$@". Sets PICKED_SESSION + PICKED_AGENT on
+# a selection (empty = no pick → caller falls back to normal discovery). Menu
+# chrome goes to /dev/tty; quitting the menu (q) exits the program.
+PICKED_SESSION=""
+PICKED_AGENT=""
+run_picker() {
+  local -a mtimes agents paths cwds
+  local mt ag pa cw n=0
+  while IFS=$'\t' read -r mt ag pa cw; do
+    [[ -n "$pa" ]] || continue
+    mtimes+=("$mt"); agents+=("$ag"); paths+=("$pa"); cwds+=("$cw")
+    n=$(( n + 1 ))
+  done < <(find_active_sessions "$@")
+
+  # Guard the array length via the counter — a declared-but-empty array trips
+  # `set -u` on ${#arr[@]}, and codex/agy scans legitimately find nothing.
+  (( n > 0 )) || return 0
+
+  # auto: prompt only when ambiguous (2+) and a tty is usable. always: prompt
+  # whenever there's a choice; with exactly one session just use it.
+  local tty_ok=0
+  [[ -t 1 && -r /dev/tty ]] && tty_ok=1
+  if [[ "$PICK" == "auto" ]]; then
+    (( n >= 2 && tty_ok )) || return 0
+  else
+    if (( n == 1 || ! tty_ok )); then
+      PICKED_SESSION="${paths[0]}"; PICKED_AGENT="${agents[0]}"; return 0
+    fi
+  fi
+
+  local i num cw_short age prev here
+  {
+    echo
+    echo "Active agent sessions:"
+    echo
+    for i in "${!paths[@]}"; do
+      num=$(( i + 1 ))
+      cw_short=$(printf '%s' "${cwds[$i]}" | awk -F/ '{ if (NF>=2) print $(NF-1)"/"$NF; else print $NF }')
+      [[ "${cwds[$i]}" == "$PWD" ]] && here=" (here)" || here=""
+      age=$(rel_age "${mtimes[$i]}")
+      prev=$(session_preview "${agents[$i]}" "${paths[$i]}")
+      printf '  %2d) %-7s %-24s %9s  %s\n' "$num" "${agents[$i]}" "$cw_short$here" "$age" "$prev"
+    done
+    echo
+  } >/dev/tty
+
+  local choice
+  while :; do
+    printf 'Pick a session [1-%d] (Enter=1, q=quit): ' "$n" >/dev/tty
+    IFS= read -r choice </dev/tty || { echo >/dev/tty; exit 0; }
+    case "$choice" in
+      "")        choice=1; break ;;
+      q|Q)       echo >/dev/tty; exit 0 ;;
+      *[!0-9]*)  echo "  not a number" >/dev/tty ;;
+      *)         if (( choice >= 1 && choice <= n )); then break
+                 else echo "  out of range" >/dev/tty; fi ;;
+    esac
+  done
+  PICKED_SESSION="${paths[$(( choice - 1 ))]}"
+  PICKED_AGENT="${agents[$(( choice - 1 ))]}"
+}
+
 # ── dependency check ─────────────────────────────────────────────────────────
 
 for tool in jq glow tail base64 awk; do
@@ -281,6 +534,13 @@ if [[ -n "$SESSION" ]]; then
   if [[ "$AGENT" == "auto" ]]; then
     AGENT=$(detect_agent_for_file "$SESSION")
   fi
+elif [[ "$PICK" != "never" ]] \
+     && { case "$AGENT" in
+            auto) run_picker claude codex agy ;;
+            *)    run_picker "$AGENT" ;;
+          esac
+          [[ -n "$PICKED_SESSION" ]]; }; then
+  SESSION="$PICKED_SESSION"; AGENT="$PICKED_AGENT"
 else
   case "$AGENT" in
     claude) SESSION=$(find_session_claude) ;;
