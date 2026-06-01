@@ -71,14 +71,17 @@ entire tail -t nord -b 50                  # short flags also work
 entire tail --no-backfill                  # skip history, only follow new events
 entire tail --tool-style dots              # show tool calls as colored dots
 entire tail --no-compact-tools             # show verbose `⚙ Tool  args` per call
+entire tail --collapse 10                  # collapse user pastes over 10 lines
+entire tail --no-collapse                  # show every user message in full
 entire tail --list-themes                  # see what's available
 entire tail --help                         # full options
 ```
 
 All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 `ENTIRE_TAIL_THEME`, `ENTIRE_TAIL_BACKFILL`, `ENTIRE_TAIL_TOOL_STYLE`,
-`GLOW_STYLE`) for shell-rc convenience — flags override env vars when both
-are set. The legacy `CLAUDE_TAIL_*` variants are still honored.
+`ENTIRE_TAIL_COLLAPSE`, `GLOW_STYLE`) for shell-rc convenience — flags
+override env vars when both are set. The legacy `CLAUDE_TAIL_*` variants are
+still honored.
 
 ## Tool calls
 
@@ -103,6 +106,35 @@ Two other modes:
   line per event.
 
 Override the default via `ENTIRE_TAIL_TOOL_STYLE=none|dots|lines`.
+
+## Collapsing long pastes
+
+When you paste a big blob into the agent — command output, a stack trace, a
+log dump — that single user turn can dwarf the rest of the conversation in the
+tail. By default, any **user** message longer than **5 lines** is collapsed to
+its first 5 lines followed by a marker:
+
+```
+… 29 more lines — re-run with --no-collapse to expand
+```
+
+- `--collapse N` — change the threshold to N lines (default 5).
+- `--no-collapse` — never collapse; show every user message in full.
+- `ENTIRE_TAIL_COLLAPSE=N` (or `off`) — env equivalent.
+
+Only user turns collapse — assistant replies and tool calls are never
+truncated. The line count is the raw number of lines you pasted, so it matches
+what you typed regardless of terminal width (a single very long line that
+soft-wraps still counts as one line). If a paste is cut off mid-code-fence, the
+preview gets a synthetic closing ``` ``` ``` so the rest of the transcript
+still renders cleanly.
+
+This is a **render-time** collapse, not an interactive fold: the tail appends
+to the terminal scrollback rather than running an alt-screen TUI, so there's no
+in-window key to expand a block after it scrolls past. To see the full text,
+re-run with `--no-collapse` (or scroll the agent's own pane). See
+[Architecture](#architecture) for why the streaming design rules out a live
+toggle.
 
 ## Themes
 

@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 
 SCRIPT_DIR="$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 THEMES_DIR="$SCRIPT_DIR/themes"
@@ -29,6 +29,13 @@ THEME="${ENTIRE_TAIL_THEME:-${CLAUDE_TAIL_THEME:-tokyo-night}}"
 BACKFILL="${ENTIRE_TAIL_BACKFILL:-${CLAUDE_TAIL_BACKFILL:-all}}"
 GLOW_STYLE="${GLOW_STYLE:-}"
 TOOL_STYLE="${ENTIRE_TAIL_TOOL_STYLE:-${CLAUDE_TAIL_TOOL_STYLE:-dots}}"  # none|dots|lines
+# Collapse user pastes longer than this many lines down to a preview + a
+# "N more lines" marker (0 = never collapse). Accept off/none/false as
+# synonyms for 0. Final integer validation happens after arg parsing.
+COLLAPSE="${ENTIRE_TAIL_COLLAPSE:-5}"
+case "$COLLAPSE" in
+  off|none|false|no|OFF|NONE) COLLAPSE=0 ;;
+esac
 
 # ── help / list output ────────────────────────────────────────────────────────
 
@@ -81,6 +88,12 @@ OPTIONS:
                               lines  verbose '⚙ Tool  input-preview' line
                                      per call (the original style).
       --no-compact-tools    Alias for --tool-style lines.
+  -c, --collapse N          Collapse user pastes longer than N lines down to
+                            the first N lines plus a "… M more lines" marker,
+                            so a big pasted blob (command output, logs) doesn't
+                            overwhelm the view. Integer >= 1 (default: 5).
+                            Re-run with --no-collapse to see the full text.
+      --no-collapse         Never collapse — show every user message in full.
   -l, --list-themes         List available themes (with descriptions) and exit.
   -h, --help                Show this help and exit.
   -V, --version             Show version and exit.
@@ -90,6 +103,7 @@ ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_THEME         Same as --theme.
   ENTIRE_TAIL_BACKFILL      Same as --backfill.
   ENTIRE_TAIL_TOOL_STYLE    Same as --tool-style.
+  ENTIRE_TAIL_COLLAPSE      Same as --collapse (or 'off' to disable).
   GLOW_STYLE                Same as --style.
 
   CLAUDE_TAIL_* variants of the above are honored for back-compat.
@@ -149,6 +163,9 @@ while (( $# > 0 )); do
     --tool-style)      require_arg "$@"; TOOL_STYLE="$2"; shift 2 ;;
     --tool-style=*)    TOOL_STYLE="${1#--tool-style=}"; shift ;;
     --no-compact-tools) TOOL_STYLE="lines"; shift ;;
+    -c|--collapse)     require_arg "$@"; COLLAPSE="$2"; shift 2 ;;
+    --collapse=*)      COLLAPSE="${1#--collapse=}"; shift ;;
+    --no-collapse)     COLLAPSE=0; shift ;;
     -l|--list-themes)  list_themes; exit 0 ;;
     -h|--help)         print_help; exit 0 ;;
     -V|--version)      echo "entire-tail $VERSION"; exit 0 ;;
@@ -363,6 +380,15 @@ case "$TOOL_STYLE" in
   *) die "invalid --tool-style value: $TOOL_STYLE (want 'none', 'dots', or 'lines')" ;;
 esac
 
+# Accept off/none/false from the flag too, then require a bare integer so it
+# can be handed to jq via --argjson.
+case "$COLLAPSE" in
+  off|none|false|no|OFF|NONE) COLLAPSE=0 ;;
+esac
+case "$COLLAPSE" in
+  ''|*[!0-9]*) die "invalid --collapse value: $COLLAPSE (want integer >= 0, or 'off')" ;;
+esac
+
 # ── startup banner ───────────────────────────────────────────────────────────
 
 echo "entire-tail $VERSION" >&2
@@ -371,6 +397,11 @@ echo "  session:  $SESSION" >&2
 echo "  theme:    $THEME" >&2
 echo "  backfill: $BACKFILL ($BACKFILL_FROM..$TOTAL_LINES of $TOTAL_LINES)" >&2
 echo "  tools:    $TOOL_STYLE" >&2
+if (( COLLAPSE > 0 )); then
+  echo "  collapse: user pastes > $COLLAPSE lines" >&2
+else
+  echo "  collapse: off" >&2
+fi
 if [[ "$TOOL_STYLE" == "dots" ]]; then
   # Legend for the colored-dot mode: same color codes as dot_color() below,
   # so the banner doubles as a key the user can refer back to. tool_result
@@ -470,6 +501,22 @@ strip_terminal_noise() {
 
 JQ_HELPERS='
   def fmtts: sub("\\..*Z$"; "Z") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S");
+  # Collapse a long user-paste body to its first $t lines plus an italic
+  # "N more lines" marker. $t <= 0 disables. Operates on the raw markdown
+  # before glow, so the count matches the lines the user actually pasted.
+  # If the preview ends inside an unclosed ``` fence, append a closing fence
+  # so glow does not mis-render everything after the marker.
+  def collapse_body($t):
+    (. / "\n") as $lines |
+    if $t > 0 and ($lines | length) > $t then
+      ($lines[0:$t]) as $head |
+      ([$head[] | select(startswith("```"))] | length) as $fences |
+      (($lines | length) - $t) as $rest |
+      ($head | join("\n"))
+      + (if ($fences % 2) == 1 then "\n```" else "" end)
+      + "\n\n*… \($rest) more line" + (if $rest == 1 then "" else "s" end)
+      + " — re-run with --no-collapse to expand*"
+    else . end;
 '
 
 # ── claude adapter ───────────────────────────────────────────────────────────
@@ -691,9 +738,9 @@ trap 'rm -f "$STATE_FILE"' EXIT
 #   [[CTAIL_T]]<name>\t<input-preview>     — tool use (tab between)
 #   [[CTAIL_R]]<count>                     — tool_result count
 if (( BACKFILL_FROM > 0 )); then
-  sed -n "${BACKFILL_FROM},${TOTAL_LINES}p" "$SESSION" | jq -r --arg style "$TOOL_STYLE" "$JQ_COMMON"'
+  sed -n "${BACKFILL_FROM},${TOTAL_LINES}p" "$SESSION" | jq -r --arg style "$TOOL_STYLE" --argjson collapse "$COLLAPSE" "$JQ_COMMON"'
     normalize |
-    if   .kind == "USER"       then "\n[[CTAIL_U]]\(.ts)\n\n\(.body)\n"
+    if   .kind == "USER"       then "\n[[CTAIL_U]]\(.ts)\n\n\(.body | collapse_body($collapse))\n"
     elif .kind == "CLAUDE"     then "\n[[CTAIL_C]]\(.ts)\n\n\(.body)\n"
     elif .kind == "TOOLUSE"    then (if $style == "none" then empty else "\n[[CTAIL_T]]\(.name)\t\(.summary | .[0:140])\n" end)
     elif .kind == "TOOLRESULT" then (if $style == "lines" then "\n[[CTAIL_R]]\(.n)\n" else empty end)
@@ -885,10 +932,10 @@ else
   TAIL_AND_FILTER() { tail -F -n +$((TOTAL_LINES + 1)) "$SESSION" 2>/dev/null; }
 fi
 
-TAIL_AND_FILTER | jq -r --unbuffered --arg style "$TOOL_STYLE" "$JQ_COMMON"'
+TAIL_AND_FILTER | jq -r --unbuffered --arg style "$TOOL_STYLE" --argjson collapse "$COLLAPSE" "$JQ_COMMON"'
   normalize |
   (.ts // "" | gsub(" "; "_")) as $tsTok |
-  if   .kind == "USER"       then "USER \($tsTok) " + (.body | @base64)
+  if   .kind == "USER"       then "USER \($tsTok) " + (.body | collapse_body($collapse) | @base64)
   elif .kind == "CLAUDE"     then "ASSISTANT \($tsTok) " + (.body | @base64)
   elif .kind == "TOOLUSE"    then (if $style == "none" then empty else "TOOLUSE \(.name) " + ((.summary | .[0:200]) | @base64) end)
   elif .kind == "TOOLRESULT" then (if $style == "lines" then "TOOLRESULT \(.n)" else empty end)
