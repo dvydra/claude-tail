@@ -59,7 +59,7 @@ entire-tail $VERSION — live-view of your current AI coding agent session.
 Tails the agent's session jsonl (Claude Code, Codex CLI, or Antigravity CLI)
 for the current working directory and renders each turn through glow.
 Backfill at startup is batched into one glow call; new events render
-per-message as they arrive.
+per-message as they arrive. Quit with Ctrl-D or Ctrl-C.
 
 USAGE:
   entire-tail [OPTIONS] [SESSION_FILE]
@@ -1003,7 +1003,38 @@ esac
 # Small scratch file the backfill awk uses to hand its final participant
 # kind to the live loop. See emit_header / LAST_KIND for what it carries.
 STATE_FILE=$(mktemp -t entire-tail.XXXXXX) || die "could not create state tempfile"
-trap 'rm -f "$STATE_FILE"' EXIT
+# set -e stays active inside traps, and the watcher is usually already dead
+# by the time this runs (it TERMs its own group) — so the kill must not be
+# allowed to fail the trap, or it overwrites the script's exit status.
+trap 'rm -f "$STATE_FILE"; { [[ -z "$STDIN_WATCHER" ]] || kill "$STDIN_WATCHER"; } 2>/dev/null || true' EXIT
+
+# ── Ctrl-D quits ─────────────────────────────────────────────────────────────
+#
+# Nothing reads the terminal once the picker is done, so a background reader
+# can own it: `read` only fails on EOF, i.e. Ctrl-D on an empty line. At that
+# point TERM the whole process group — tail/jq/the render loop included. The
+# explicit </dev/tty matters: without it, bash redirects async commands'
+# stdin to /dev/null (instant EOF → instant exit).
+#
+# The main shell traps INT/TERM so either exit path (Ctrl-C or Ctrl-D) runs
+# the EXIT cleanup above and leaves with a plain `exit` instead of dying by
+# signal (which would skip cleanup and make the calling shell print
+# "terminated"). While the main shell is blocked on the pipeline the trap is
+# deferred, but the group-wide signal kills the pipeline members directly,
+# which unblocks it. Killing the watcher in the EXIT trap is load-bearing on
+# the Ctrl-C path: async commands ignore SIGINT, so the watcher survives the
+# group INT and would otherwise linger, eating the next line of terminal
+# input after exit.
+STDIN_WATCHER=""
+if [[ -t 0 ]]; then
+  {
+    while IFS= read -r _; do :; done
+    kill -TERM 0 2>/dev/null
+  } </dev/tty &
+  STDIN_WATCHER=$!
+fi
+trap 'printf "\n" >&2; exit 130' INT
+trap 'printf "\n" >&2; exit 0' TERM
 
 # ── phase 1: backfill ────────────────────────────────────────────────────────
 #
