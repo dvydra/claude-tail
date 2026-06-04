@@ -111,13 +111,19 @@ cwd, entire-tail lists as many of its newest sessions as there are agent
 processes running there (so two `claude` panes in `infra` show as two rows, told
 apart by their previews).
 
-The menu appears **automatically only when two or more sessions are live** and
-you're on an interactive terminal — a single live session (or a non-interactive
-run, e.g. a cron pane) tails silently as before. Force the menu with `--pick`
-(useful to confirm which session you're about to follow), or disable it with
-`--no-pick`. Set a default via `ENTIRE_TAIL_PICK=always|never|auto`. The picker
-is scoped to `--agent`: `auto` scans Claude, Codex, and Antigravity; forcing
-`--agent claude`/`codex`/`agy` scans just that one.
+By default (`auto`) the picker is **directory-aware**: if exactly one live
+session is rooted in `$PWD`, that's unambiguously "the session here" — it tails
+silently without a menu, even when other agents are live in other directories
+(it prints a one-line note so you know others exist). The menu only appears when
+the current directory is genuinely ambiguous — **2+ live sessions in `$PWD`** —
+or when `$PWD` has none but **2+ are live elsewhere** and you need to choose
+where to attach (and you're on an interactive terminal; a non-interactive run,
+e.g. a cron pane, tails silently). Force the menu with `--pick` (useful to
+confirm which session you're about to follow, or to attach to one in another
+directory), or disable it with `--no-pick`. Set a default via
+`ENTIRE_TAIL_PICK=always|never|auto`. The picker is scoped to `--agent`: `auto`
+scans Claude, Codex, and Antigravity; forcing `--agent claude`/`codex`/`agy`
+scans just that one.
 
 A few caveats from how agents store sessions:
 

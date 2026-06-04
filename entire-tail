@@ -36,9 +36,12 @@ COLLAPSE="${ENTIRE_TAIL_COLLAPSE:-5}"
 case "$COLLAPSE" in
   off|none|false|no|OFF|NONE) COLLAPSE=0 ;;
 esac
-# When multiple Claude sessions are live (a `claude` process running in more
-# than one cwd), offer an interactive picker instead of silently auto-choosing.
-#   auto   (default) prompt only when 2+ active sessions and stdin/out is a tty
+# When multiple agent sessions are live (a `claude`/`codex`/`agy` process
+# running in more than one cwd), offer an interactive picker instead of
+# silently auto-choosing.
+#   auto   (default) tail the one live session rooted in $PWD without asking;
+#                    only prompt when $PWD itself is ambiguous (2+ live here)
+#                    or has none but 2+ are live elsewhere (and a tty is usable)
 #   always (--pick)  prompt whenever any active session exists
 #   never  (--no-pick) never prompt; use normal auto-discovery
 PICK="${ENTIRE_TAIL_PICK:-auto}"
@@ -109,8 +112,10 @@ OPTIONS:
                             (Claude or Codex), lists each one's most recent
                             sessions — one row per running pane, with a preview
                             of its last message — and tails your choice. By
-                            default the menu appears automatically only when 2+
-                            sessions are live; --pick forces it even for one.
+                            default (auto) the one live session in \$PWD is
+                            tailed without asking; the menu only appears when
+                            \$PWD is ambiguous (2+ live here) or has none but 2+
+                            are live elsewhere. --pick forces it even for one.
                             Scoped to --agent ('auto' scans claude/codex/agy).
                             claude and codex split per pane; agy is one per cwd.
       --no-pick             Never show the picker — always auto-discover.
@@ -477,19 +482,39 @@ run_picker() {
   # `set -u` on ${#arr[@]}, and codex/agy scans legitimately find nothing.
   (( n > 0 )) || return 0
 
-  # auto: prompt only when ambiguous (2+) and a tty is usable. always: prompt
-  # whenever there's a choice; with exactly one session just use it.
   local tty_ok=0
   [[ -t 1 && -r /dev/tty ]] && tty_ok=1
+
+  # Count the sessions rooted in exactly $PWD ("local") and remember the first.
+  # That subset — not the global count — is what decides ambiguity in auto mode.
+  local i local_n=0 local_idx=-1
+  for i in "${!cwds[@]}"; do
+    [[ "${cwds[$i]}" == "$PWD" ]] || continue
+    local_n=$(( local_n + 1 ))
+    (( local_idx < 0 )) && local_idx=$i
+  done
+
+  # auto: the goal is "tail the session here" with no fuss.
+  #   - exactly one live session in $PWD → unambiguous; tail it (no prompt, no
+  #     tty needed), even when other agents are live in other directories.
+  #   - 2+ in $PWD, or none here but 2+ live elsewhere → genuine choice; prompt
+  #     if a tty is usable, else fall back to normal discovery.
+  # always: prompt whenever there's a choice; with one session just use it.
   if [[ "$PICK" == "auto" ]]; then
-    (( n >= 2 && tty_ok )) || return 0
+    if (( local_n == 1 )); then
+      PICKED_SESSION="${paths[$local_idx]}"; PICKED_AGENT="${agents[$local_idx]}"
+      # Note the auto-pick only when it suppressed an otherwise-shown menu.
+      (( n > 1 )) && echo "entire-tail: tailing the live session here ($(( n - 1 )) other live; --pick to choose)." >&2
+      return 0
+    fi
+    (( tty_ok && (local_n >= 2 || n >= 2) )) || return 0
   else
     if (( n == 1 || ! tty_ok )); then
       PICKED_SESSION="${paths[0]}"; PICKED_AGENT="${agents[0]}"; return 0
     fi
   fi
 
-  local i num cw_short age prev here
+  local num cw_short age prev here
   {
     echo
     echo "Active agent sessions:"
