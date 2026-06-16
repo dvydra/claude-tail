@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/muesli/termenv"
@@ -18,6 +19,39 @@ const (
 	reset         = "\x1b[0m"
 )
 
+// toolStyleKind is how tool-use events render. Stored as an atomic int32 on the
+// Renderer so the keyboard goroutine can flip it live without racing the render
+// goroutine.
+type toolStyleKind int32
+
+const (
+	toolNone  toolStyleKind = iota // drop tool events
+	toolDots                       // one colored dot per call
+	toolLines                      // verbose "⚙ name  input" line
+)
+
+func parseToolStyle(s string) toolStyleKind {
+	switch s {
+	case "none":
+		return toolNone
+	case "lines":
+		return toolLines
+	default:
+		return toolDots
+	}
+}
+
+func (k toolStyleKind) String() string {
+	switch k {
+	case toolNone:
+		return "none"
+	case toolLines:
+		return "lines"
+	default:
+		return "dots"
+	}
+}
+
 // Renderer turns a stream of Records into the styled transcript, maintaining
 // the cross-event state the layout depends on: which participant spoke last
 // (so consecutive same-participant turns collapse to a dim "⋯ ts" marker) and
@@ -27,11 +61,17 @@ const (
 // the bash version needed two (a batched glow+awk pipeline for backfill, a
 // per-event loop for live) only because spawning glow per event was slow.
 type Renderer struct {
-	w         io.Writer
-	render    func(string) (string, error) // markdown → styled string (glamour)
-	theme     Theme
-	toolStyle string // none | dots | lines
-	collapse  int
+	w      io.Writer
+	render func(string) (string, error) // markdown → styled string (glamour)
+	theme  Theme
+
+	// Live-mutable display settings (atomic: the keyboard goroutine flips them
+	// while the render goroutine reads them in emit).
+	toolStyle atomic.Int32 // current toolStyleKind
+	collapse  atomic.Int32 // current paste-collapse threshold (0 = off)
+	// Immutable "restore" targets for the toggles.
+	shownStyle      int32 // style to restore when un-hiding tools
+	collapseDefault int32 // threshold to restore when re-enabling collapse
 
 	userHdr   string // full USER box header line (color + body + reset)
 	claudeHdr string // full AGENT box header line
@@ -64,15 +104,48 @@ func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse int) (*Ren
 // function, so the layout state machine can be tested without glamour's
 // color-dependent output.
 func newRendererWith(w io.Writer, theme Theme, toolStyle string, collapse int, render func(string) (string, error)) *Renderer {
-	return &Renderer{
-		w:         w,
-		render:    render,
-		theme:     theme,
-		toolStyle: toolStyle,
-		collapse:  collapse,
-		userHdr:   theme.UserANSI + userHdrBody + reset,
-		claudeHdr: theme.ClaudeANSI + claudeHdrBody + reset,
+	style := parseToolStyle(toolStyle)
+	shown := style
+	if shown == toolNone { // started hidden → "show" reveals dots
+		shown = toolDots
 	}
+	collapseDefault := int32(collapse)
+	if collapseDefault == 0 { // started off → "enable" uses the standard threshold
+		collapseDefault = 5
+	}
+	r := &Renderer{
+		w:               w,
+		render:          render,
+		theme:           theme,
+		shownStyle:      int32(shown),
+		collapseDefault: collapseDefault,
+		userHdr:         theme.UserANSI + userHdrBody + reset,
+		claudeHdr:       theme.ClaudeANSI + claudeHdrBody + reset,
+	}
+	r.toolStyle.Store(int32(style))
+	r.collapse.Store(int32(collapse))
+	return r
+}
+
+// toggleTools flips tool-call rendering between hidden and shown (future events
+// only). Returns a short status string for the user.
+func (r *Renderer) toggleTools() string {
+	if toolStyleKind(r.toolStyle.Load()) == toolNone {
+		r.toolStyle.Store(r.shownStyle)
+		return "tools shown (" + toolStyleKind(r.shownStyle).String() + ")"
+	}
+	r.toolStyle.Store(int32(toolNone))
+	return "tools hidden"
+}
+
+// toggleCollapse flips long-user-paste collapsing on/off (future events only).
+func (r *Renderer) toggleCollapse() string {
+	if r.collapse.Load() > 0 {
+		r.collapse.Store(0)
+		return "collapse off (full user pastes)"
+	}
+	r.collapse.Store(r.collapseDefault)
+	return "collapse on (user pastes > " + strconv.Itoa(int(r.collapseDefault)) + " lines)"
 }
 
 // emit renders one record, advancing the layout state.
@@ -80,7 +153,7 @@ func (r *Renderer) emit(rec Record) {
 	switch rec.Kind {
 	case KindUser:
 		r.header(KindUser, rec.Ts)
-		r.body(collapseBody(rec.Body, r.collapse))
+		r.body(collapseBody(rec.Body, int(r.collapse.Load())))
 	case KindAssistant:
 		if r.live {
 			// BEL on each live assistant turn — lets the user wander off and
@@ -152,13 +225,13 @@ func (r *Renderer) body(mdText string) {
 }
 
 func (r *Renderer) toolUse(name, summary string) {
-	switch r.toolStyle {
-	case "none":
+	switch toolStyleKind(r.toolStyle.Load()) {
+	case toolNone:
 		return
-	case "dots":
+	case toolDots:
 		io.WriteString(r.w, dotColor(name)+"."+reset)
 		r.inDotStreak = true
-	default: // lines
+	default: // toolLines
 		r.breakDotStreak()
 		io.WriteString(r.w, r.theme.DimANSI+"  ⚙ "+name+"  "+truncateRunes(summary, 140)+reset+"\n")
 	}
@@ -167,7 +240,7 @@ func (r *Renderer) toolUse(name, summary string) {
 func (r *Renderer) toolResult(n int) {
 	// Only the verbose "lines" style shows results; in dots mode a result dot
 	// would just double-count the tool_use it pairs with.
-	if r.toolStyle != "lines" {
+	if toolStyleKind(r.toolStyle.Load()) != toolLines {
 		return
 	}
 	r.breakDotStreak()

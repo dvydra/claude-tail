@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const version = "0.6.0"
+const version = "0.7.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -138,7 +138,22 @@ func run(cfg Config) {
 	// torn or lost output on exit.
 	r.live = true
 	stop := make(chan struct{})
-	exitCode := watchForQuit(stop)
+	codeCh := make(chan int, 3) // signal + keyboard senders; never block a sender
+	installSignals(codeCh)      // SIGINT → 130, SIGTERM → 0
+	// Single-key live controls (t/c toggles, q/Ctrl-D quit). The keyboard
+	// goroutine only flips the renderer's atomic flags and reports quit on
+	// codeCh — it never writes stdout, so the render goroutine stays the sole
+	// writer. restoreTTY undoes cbreak mode; deferred for panic safety and
+	// called explicitly before the normal exit (os.Exit skips defers).
+	restoreTTY := startKeyboard(r, codeCh)
+	defer restoreTTY()
+
+	result := make(chan int, 1)
+	go func() {
+		result <- <-codeCh // first quit wins
+		close(stop)
+	}()
+
 	emit := func(line []byte) {
 		for _, rec := range normalize(agent, line, loc) {
 			r.emit(rec)
@@ -156,12 +171,14 @@ func run(cfg Config) {
 		followAppend(session, liveOffset(data), emit, stop)
 	}
 
-	// The follower returned because a quit was requested: do the final flush on
-	// this goroutine, then exit with the requested code (130 for Ctrl-C / SIGINT,
-	// 0 for Ctrl-D / SIGTERM), matching the bash version's INT/TERM traps.
+	// The follower returned because a quit was requested: restore the terminal,
+	// do the final flush on this goroutine, then exit with the requested code
+	// (130 for Ctrl-C / SIGINT, 0 for Ctrl-D / SIGTERM / q), matching the bash
+	// version's INT/TERM traps.
+	restoreTTY()
 	out.Flush()
 	fmt.Fprintln(os.Stderr)
-	os.Exit(<-exitCode)
+	os.Exit(<-result)
 }
 
 // discoverSession resolves a session path + concrete agent via per-agent
@@ -207,14 +224,10 @@ func fileMtimeNano(path string) int64 {
 	return fi.ModTime().UnixNano()
 }
 
-// watchForQuit installs the Ctrl-C (SIGINT → 130), SIGTERM (→ 0), and Ctrl-D
-// (EOF on the tty → 0) watchers. Each only reports its exit code on a channel
-// and closes stop — it never touches stdout — so the main goroutine remains the
-// sole writer of the buffered output (no data race, no lost final flush). The
-// returned channel yields the exit code once a quit is requested.
-func watchForQuit(stop chan struct{}) <-chan int {
-	codeCh := make(chan int, 2) // sig + ctrl-D may both fire; never block a sender
-
+// installSignals reports an exit code on codeCh for Ctrl-C (SIGINT → 130) and
+// SIGTERM (→ 0). It never touches stdout, so the render goroutine stays the sole
+// writer of the buffered output.
+func installSignals(codeCh chan<- int) {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -224,34 +237,6 @@ func watchForQuit(stop chan struct{}) <-chan int {
 			codeCh <- 0
 		}
 	}()
-
-	// Ctrl-D on an empty line closes the tty; nothing else reads it once the
-	// picker is done, so a reader goroutine can own it and quit on EOF (or any
-	// read error — the bash watcher's `while read` loop exits the same way).
-	if isCharDevice(os.Stdin) {
-		go func() {
-			tty, err := os.Open("/dev/tty")
-			if err != nil {
-				return
-			}
-			defer tty.Close()
-			buf := make([]byte, 256)
-			for {
-				if _, err := tty.Read(buf); err != nil {
-					codeCh <- 0
-					return
-				}
-			}
-		}()
-	}
-
-	// First quit wins: record its code, then unblock the follow loop.
-	result := make(chan int, 1)
-	go func() {
-		result <- <-codeCh
-		close(stop)
-	}()
-	return result
 }
 
 func isCharDevice(f *os.File) bool {
@@ -271,6 +256,9 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		fmt.Fprintf(w, "  collapse: user pastes > %d lines\n", collapse)
 	} else {
 		fmt.Fprintln(w, "  collapse: off")
+	}
+	if isCharDevice(os.Stdin) {
+		fmt.Fprintln(w, "  keys:     t=toggle tools  c=toggle collapse  q/Ctrl-D=quit")
 	}
 	if cfg.ToolStyle == "dots" {
 		fmt.Fprint(w, bannerLegend())
@@ -392,6 +380,17 @@ OPTIONS:
   -l, --list-themes         List available themes (with descriptions) and exit.
   -h, --help                Show this help and exit.
   -V, --version             Show version and exit.
+
+LIVE KEYS (while following, on an interactive terminal):
+  t                         Toggle tool-call rendering (hide / show) for new
+                            events as they stream.
+  c                         Toggle collapsing of long user pastes for new
+                            events.
+  q, Ctrl-D, Ctrl-C         Quit.
+
+  These affect events rendered from now on; already-printed lines stay in the
+  terminal scrollback unchanged (this is a streaming view, not an alt-screen
+  TUI). Re-run with a different --tool-style/--collapse to re-render history.
 
 ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_AGENT         Same as --agent.

@@ -151,6 +151,79 @@ func TestBodySqueezesConsecutiveBlankLines(t *testing.T) {
 	}
 }
 
+func TestToggleTools(t *testing.T) {
+	var b strings.Builder
+	r := newRendererWith(&b, testTheme(), "dots", 5, identityRender)
+
+	r.emit(Record{Kind: KindToolUse, Name: "Read"})
+	if b.Len() == 0 {
+		t.Fatal("dots mode should render a tool dot")
+	}
+
+	if got := r.toggleTools(); got != "tools hidden" {
+		t.Errorf("toggleTools status = %q", got)
+	}
+	at := b.Len()
+	r.emit(Record{Kind: KindToolUse, Name: "Read"})
+	if b.Len() != at {
+		t.Error("tool use should produce no output while hidden")
+	}
+
+	if got := r.toggleTools(); got != "tools shown (dots)" {
+		t.Errorf("toggleTools status = %q", got)
+	}
+	at = b.Len()
+	r.emit(Record{Kind: KindToolUse, Name: "Read"})
+	if b.Len() == at {
+		t.Error("tool use should render again after un-hiding")
+	}
+}
+
+func TestToggleToolsFromNoneRevealsDots(t *testing.T) {
+	var b strings.Builder
+	r := newRendererWith(&b, testTheme(), "none", 0, identityRender)
+	if got := r.toggleTools(); got != "tools shown (dots)" {
+		t.Errorf("starting from none, toggle should reveal dots; got %q", got)
+	}
+}
+
+func TestToggleCollapse(t *testing.T) {
+	var b strings.Builder
+	r := newRendererWith(&b, testTheme(), "dots", 2, identityRender)
+	long := "l1\nl2\nl3\nl4\nl5"
+
+	r.emit(Record{Kind: KindUser, Ts: "T1", Body: long})
+	if !strings.Contains(b.String(), "more lines") {
+		t.Error("should collapse initially")
+	}
+
+	if got := r.toggleCollapse(); got != "collapse off (full user pastes)" {
+		t.Errorf("toggleCollapse status = %q", got)
+	}
+	b.Reset()
+	r.emit(Record{Kind: KindUser, Ts: "T2", Body: long})
+	if strings.Contains(b.String(), "more lines") || !strings.Contains(b.String(), "l5") {
+		t.Errorf("should show full body when collapse off, got:\n%q", b.String())
+	}
+
+	if got := r.toggleCollapse(); got != "collapse on (user pastes > 2 lines)" {
+		t.Errorf("toggleCollapse status = %q", got)
+	}
+	b.Reset()
+	r.emit(Record{Kind: KindUser, Ts: "T3", Body: long})
+	if !strings.Contains(b.String(), "more lines") {
+		t.Error("should collapse again after re-enabling")
+	}
+}
+
+func TestToggleCollapseFromOffUsesDefault(t *testing.T) {
+	var b strings.Builder
+	r := newRendererWith(&b, testTheme(), "dots", 0, identityRender) // started --no-collapse
+	if got := r.toggleCollapse(); got != "collapse on (user pastes > 5 lines)" {
+		t.Errorf("starting off, toggle should enable at the default threshold; got %q", got)
+	}
+}
+
 func TestStripTerminalNoise(t *testing.T) {
 	cases := map[string]string{
 		"a\x1b]11;rgb:0000/0000/0000\x07b": "ab",
