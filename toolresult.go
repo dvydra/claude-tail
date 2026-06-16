@@ -7,9 +7,6 @@ import (
 	"strings"
 )
 
-// maxOutputLines caps how many output/preview lines a tool result shows under ⎿.
-const maxOutputLines = 8
-
 // patchHunk is one entry of Claude's toolUseResult.structuredPatch.
 type patchHunk struct {
 	OldStart int      `json:"oldStart"`
@@ -48,7 +45,7 @@ func parseClaudeToolResult(raw json.RawMessage) *ToolResult {
 			if out == "" {
 				out = o.Stderr
 			}
-			return &ToolResult{Output: previewLines(out, maxOutputLines)}
+			return &ToolResult{Output: outputLines(out)}
 		case o.File != nil:
 			return &ToolResult{Summary: "Read " + plural(o.File.NumLines, "line")}
 		}
@@ -56,7 +53,7 @@ func parseClaudeToolResult(raw json.RawMessage) *ToolResult {
 	case '"':
 		var s string
 		if json.Unmarshal(t, &s) == nil && strings.TrimSpace(s) != "" {
-			return &ToolResult{Output: previewLines(s, maxOutputLines)}
+			return &ToolResult{Output: outputLines(s)}
 		}
 	}
 	return nil
@@ -113,13 +110,13 @@ func plural(n int, word string) string {
 	return s
 }
 
-// previewLines returns up to max lines of s, with a "… (+N more lines)" marker
-// appended when truncated.
-func previewLines(s string, max int) []string {
-	all := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	if len(all) <= max {
-		return all
+// outputLines splits command output into all its lines (full mode renders
+// everything — no truncation; that's the point of "full"). A single trailing
+// newline is dropped.
+func outputLines(s string) []string {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return nil
 	}
-	out := append([]string(nil), all[:max]...)
-	return append(out, "… (+"+strconv.Itoa(len(all)-max)+" more lines)")
+	return strings.Split(s, "\n")
 }

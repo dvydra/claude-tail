@@ -190,8 +190,9 @@ or cycle it live with the `t` key (full → dots → hidden):
 - `full` — Claude-Code-style tool rendering: a `⏺ Label(arg)` line per call
   (`⏺ Update(main.go)`, `⏺ Bash(go test ./...)`, `⏺ Read(render.go)`) and, under
   a `⎿`, the result — a **line-numbered red/green diff** for edits (from the
-  session's `structuredPatch`), a few lines of output for commands, or a short
-  summary (`Read 1304 lines`). (aliases: `lines`; `--no-compact-tools`.)
+  session's `structuredPatch`), the command's **full** output, or a short
+  summary (`Read 1304 lines`). Full means full: command output is never
+  truncated. (aliases: `lines`; `--no-compact-tools`.)
 - `hidden` — drop tool events entirely; just user + assistant text. Useful
   when re-reading a long session as prose. (alias: `none`.)
 

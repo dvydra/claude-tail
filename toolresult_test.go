@@ -34,14 +34,14 @@ func TestParseClaudeToolResultBashOutput(t *testing.T) {
 	}
 }
 
-func TestParseClaudeToolResultOutputTruncated(t *testing.T) {
-	// 10 lines, cap 8 → 8 + a "more" marker.
+func TestParseClaudeToolResultOutputFull(t *testing.T) {
+	// "full" means full — every line is kept, no truncation marker.
 	r := parseClaudeToolResult([]byte(`{"stdout":"a\nb\nc\nd\ne\nf\ng\nh\ni\nj"}`))
-	if r == nil || len(r.Output) != maxOutputLines+1 {
-		t.Fatalf("got %d lines", len(r.Output))
+	if r == nil || len(r.Output) != 10 {
+		t.Fatalf("expected 10 lines, got %d", len(r.Output))
 	}
-	if last := r.Output[len(r.Output)-1]; last != "… (+2 more lines)" {
-		t.Errorf("truncation marker = %q", last)
+	if r.Output[9] != "j" {
+		t.Errorf("last line = %q, want j", r.Output[9])
 	}
 }
 
