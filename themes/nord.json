@@ -10,7 +10,7 @@
   "list": { "level_indent": 2 },
   "heading": { "block_suffix": "\n", "color": "#88c0d0", "bold": true },
   "h1": { "prefix": "# ", "color": "#8fbcbb", "bold": true },
-  "h2": { "prefix": "## ", "color": "#8fbcbb", "bold": true },
+  "h2": { "prefix": "## ", "color": "#81a1c1", "bold": true },
   "h3": { "prefix": "### ", "color": "#b48ead", "bold": true },
   "h4": { "prefix": "#### ", "color": "#a3be8c", "bold": true },
   "h5": { "prefix": "##### ", "color": "#ebcb8b", "bold": true },

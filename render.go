@@ -49,6 +49,10 @@ func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse int) (*Ren
 		// CLICOLOR_FORCE, which capped rendering at 256 colors; rendering in
 		// our own process lets us emit the theme's exact hex colors.
 		glamour.WithColorProfile(termenv.TrueColor),
+		// glamour defaults code-block syntax highlighting to chroma's
+		// "terminal256"; use the 24-bit formatter so code blocks are truecolor
+		// too (otherwise the markdown is truecolor but the code isn't).
+		glamour.WithChromaFormatter("terminal16m"),
 	)
 	if err != nil {
 		return nil, err
