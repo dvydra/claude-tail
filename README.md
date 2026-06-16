@@ -87,6 +87,25 @@ All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 convenience — flags override env vars when both are set. The legacy
 `CLAUDE_TAIL_*` variants are still honored.
 
+## Live keys
+
+While following on an interactive terminal, single keypresses adjust what new
+events show as they stream:
+
+| key            | effect                                                        |
+|----------------|---------------------------------------------------------------|
+| `t`            | toggle tool-call rendering (hide ⇄ show)                      |
+| `c`            | toggle collapsing of long user pastes                         |
+| `q` / Ctrl-D / Ctrl-C | quit                                                   |
+
+These declutter the view on the fly without restarting — handy when an agent
+goes on a long tool-call spree and you just want to read the prose. They affect
+events rendered **from now on**; lines already in your scrollback are left as
+they are (this is a streaming view, not an alt-screen TUI, so it never repaints
+the screen — your terminal's / Zellij's native scrollback keeps working). To
+re-render history with different settings, re-run with `--tool-style` /
+`--collapse`. A one-line `keys:` legend prints in the startup banner.
+
 ## Picking among live sessions
 
 When you have several agent panes open at once, `entire tail` finds every
@@ -195,11 +214,10 @@ preview gets a synthetic closing ``` ``` ``` so the rest of the transcript
 still renders cleanly.
 
 This is a **render-time** collapse, not an interactive fold: the tail appends
-to the terminal scrollback rather than running an alt-screen TUI, so there's no
-in-window key to expand a block after it scrolls past. To see the full text,
-re-run with `--no-collapse` (or scroll the agent's own pane). See
-[Architecture](#architecture) for why the streaming design rules out a live
-toggle.
+to the terminal scrollback rather than running an alt-screen TUI. You can press
+`c` while following to toggle collapsing for *new* events (see [Live
+keys](#live-keys)), but already-printed lines stay as they are — to re-expand
+history, re-run with `--no-collapse` (or scroll the agent's own pane).
 
 ## Themes
 
