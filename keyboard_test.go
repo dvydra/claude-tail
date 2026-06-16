@@ -8,6 +8,8 @@ func TestKeyActionFor(t *testing.T) {
 		'T':  keyCycleTools,
 		'c':  keyToggleCollapse,
 		'C':  keyToggleCollapse,
+		'r':  keyReload,
+		'R':  keyReload,
 		'q':  keyQuit,
 		'Q':  keyQuit,
 		0x04: keyQuit, // Ctrl-D

@@ -5,9 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"sync"
 	"testing"
-	"time"
 )
 
 func TestSplitLines(t *testing.T) {
@@ -88,100 +86,50 @@ func TestAgyDedup(t *testing.T) {
 	}
 }
 
-func TestFollowAppend(t *testing.T) {
+func TestAppendStep(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
 	if err := os.WriteFile(path, []byte("line1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	var mu sync.Mutex
 	var got []string
-	emit := func(b []byte) {
-		mu.Lock()
-		got = append(got, string(b))
-		mu.Unlock()
-	}
-	stop := make(chan struct{})
-	go followAppend(path, 6, emit, stop) // start past "line1\n"
+	emit := func(b []byte) { got = append(got, string(b)) }
 
-	// Append two lines.
+	// Start past "line1\n": nothing new yet.
+	off := appendStep(path, 6, emit)
+	if len(got) != 0 || off != 6 {
+		t.Fatalf("expected no new lines, got %v off=%d", got, off)
+	}
+	// Append two lines → appendStep emits them and advances the offset.
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	f.WriteString("line2\nline3\n")
 	f.Close()
-
-	waitFor(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(got) == 2
-	})
-	close(stop)
+	off = appendStep(path, off, emit)
 	if !reflect.DeepEqual(got, []string{"line2", "line3"}) {
 		t.Errorf("got %v", got)
 	}
+	if off != int64(len("line1\nline2\nline3\n")) {
+		t.Errorf("offset = %d", off)
+	}
+	// No further appends → no more lines.
+	got = nil
+	appendStep(path, off, emit)
+	if len(got) != 0 {
+		t.Errorf("expected nothing new, got %v", got)
+	}
 }
 
-func TestFollowAppendTruncation(t *testing.T) {
+func TestAppendStepTruncation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
 	os.WriteFile(path, []byte("aaaa\nbbbb\n"), 0o644)
-
-	var mu sync.Mutex
 	var got []string
-	emit := func(b []byte) { mu.Lock(); got = append(got, string(b)); mu.Unlock() }
-	stop := make(chan struct{})
-	go followAppend(path, 10, emit, stop) // start at EOF
+	emit := func(b []byte) { got = append(got, string(b)) }
 
-	// Truncate + rewrite shorter → follower resets to 0 and re-reads.
+	// Offset past EOF, then the file is rewritten shorter → reset to 0 and re-read.
 	os.WriteFile(path, []byte("new\n"), 0o644)
-
-	waitFor(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return slices.Contains(got, "new")
-	})
-	close(stop)
-}
-
-func TestFollowRewrite(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "t.jsonl")
-	os.WriteFile(path, []byte(`{"step_index":1}`+"\n"), 0o644)
-
-	var mu sync.Mutex
-	var got []int
-	keep := newAgyDedup(1) // seed: step 1 already rendered
-	emit := func(b []byte) {
-		if keep(b) {
-			n, _ := agyStepIndex(b)
-			mu.Lock()
-			got = append(got, n)
-			mu.Unlock()
-		}
+	appendStep(path, 10, emit)
+	if !slices.Contains(got, "new") {
+		t.Errorf("expected re-read after truncation, got %v", got)
 	}
-	stop := make(chan struct{})
-	go followRewrite(path, emit, stop)
-
-	// Whole-file rewrite adding step 2.
-	os.WriteFile(path, []byte(`{"step_index":1}`+"\n"+`{"step_index":2}`+"\n"), 0o644)
-
-	waitFor(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(got) == 1 && got[0] == 2
-	})
-	close(stop)
-}
-
-// waitFor polls cond until true or a timeout fires.
-func waitFor(t *testing.T, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("condition not met before timeout")
 }

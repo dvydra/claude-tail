@@ -35,24 +35,23 @@ func liveOffset(data []byte) int64 {
 	return 0
 }
 
-// followAppend tails an append-only session file from offset, emitting each
-// newly-appended complete line. It resets to the start if the file is truncated.
-// It loops until stop is closed.
-func followAppend(path string, offset int64, emit func([]byte), stop <-chan struct{}) {
-	for {
-		if fi, err := os.Stat(path); err == nil {
-			size := fi.Size()
-			if size < offset {
-				offset = 0 // truncated or rotated
-			}
-			if size > offset {
-				offset = readAppended(path, offset, emit)
-			}
-		}
-		if sleepOrStop(stop) {
-			return
-		}
+// appendStep emits any newly-appended complete lines on an append-only session
+// file since offset and returns the new offset. It resets to the start if the
+// file was truncated/rotated. Called once per poll tick by the live loop (which
+// also handles reload/quit), so polling, rendering, and quitting all stay on the
+// one render goroutine.
+func appendStep(path string, offset int64, emit func([]byte)) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return offset
 	}
+	if fi.Size() < offset {
+		offset = 0 // truncated or rotated
+	}
+	if fi.Size() > offset {
+		offset = readAppended(path, offset, emit)
+	}
+	return offset
 }
 
 // readAppended reads complete lines starting at offset and returns the new
@@ -76,39 +75,6 @@ func readAppended(path string, offset int64, emit func([]byte)) int64 {
 		if err != nil {
 			return offset
 		}
-	}
-}
-
-// followRewrite tails a session file that is rewritten wholesale on each change
-// (agy atomically renames or truncates-in-place). It re-reads the whole file on
-// every change and emits all lines; emit is expected to dedup by step index.
-func followRewrite(path string, emit func([]byte), stop <-chan struct{}) {
-	var lastSize int64 = -1
-	var lastMtime int64 = -1
-	for {
-		if fi, err := os.Stat(path); err == nil {
-			size, mtime := fi.Size(), fi.ModTime().UnixNano()
-			if size != lastSize || mtime != lastMtime {
-				lastSize, lastMtime = size, mtime
-				if data, err := os.ReadFile(path); err == nil {
-					for _, line := range splitLines(data) {
-						emit(line)
-					}
-				}
-			}
-		}
-		if sleepOrStop(stop) {
-			return
-		}
-	}
-}
-
-func sleepOrStop(stop <-chan struct{}) bool {
-	select {
-	case <-stop:
-		return true
-	case <-time.After(pollInterval):
-		return false
 	}
 }
 

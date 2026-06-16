@@ -16,6 +16,7 @@ const (
 	keyNone keyAction = iota
 	keyCycleTools
 	keyToggleCollapse
+	keyReload
 	keyQuit
 )
 
@@ -28,6 +29,8 @@ func keyActionFor(b byte) keyAction {
 		return keyCycleTools
 	case 'c', 'C':
 		return keyToggleCollapse
+	case 'r', 'R':
+		return keyReload
 	case 'q', 'Q', 0x04:
 		return keyQuit
 	}
@@ -41,7 +44,7 @@ func keyActionFor(b byte) keyAction {
 // are atomic, so this is race-free with the render goroutine). A quit key
 // reports exit code 0 on codeCh. Returns a restore func the caller must run
 // before exit; it's a no-op when there's no usable tty.
-func startKeyboard(r *Renderer, codeCh chan<- int) func() {
+func startKeyboard(r *Renderer, codeCh chan<- int, reloadCh chan<- struct{}) func() {
 	if !isCharDevice(os.Stdin) {
 		return func() {}
 	}
@@ -79,9 +82,15 @@ func startKeyboard(r *Renderer, codeCh chan<- int) func() {
 				codeCh <- 0
 				return
 			case keyCycleTools:
-				fmt.Fprintln(os.Stderr, "entire-tail: "+r.cycleTools())
+				fmt.Fprintln(os.Stderr, "entire-tail: "+r.cycleTools()+" (press r to re-render history)")
 			case keyToggleCollapse:
-				fmt.Fprintln(os.Stderr, "entire-tail: "+r.toggleCollapse())
+				fmt.Fprintln(os.Stderr, "entire-tail: "+r.toggleCollapse()+" (press r to re-render history)")
+			case keyReload:
+				// Signal the render goroutine; never write stdout from here.
+				select {
+				case reloadCh <- struct{}{}:
+				default: // a reload is already pending; coalesce
+				}
 			}
 		}
 	}()

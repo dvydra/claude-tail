@@ -72,7 +72,7 @@ entire tail --theme dracula                # pick a bundled theme (default: toky
 entire tail -t nord -b 50                  # short flags also work
 entire tail --no-backfill                  # skip history, only follow new events
 entire tail --tool-style dots              # show tool calls as colored dots
-entire tail --no-compact-tools             # show verbose `⚙ Tool  args` per call
+entire tail --tool-style full              # Claude-style: ⏺ Update(main.go) + ⎿ diff
 entire tail --collapse 10                  # collapse user pastes over 10 lines
 entire tail --no-collapse                  # show every user message in full
 entire tail --pick                         # choose among live Claude sessions
@@ -96,15 +96,17 @@ events show as they stream:
 |----------------|---------------------------------------------------------------|
 | `t`            | cycle tool-call rendering: **full → dots → hidden**           |
 | `c`            | toggle collapsing of long user pastes                         |
+| `r`            | reload — re-render the whole transcript with current settings |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 
-These declutter the view on the fly without restarting — handy when an agent
-goes on a long tool-call spree and you just want to read the prose. They affect
-events rendered **from now on**; lines already in your scrollback are left as
-they are (this is a streaming view, not an alt-screen TUI, so it never repaints
-the screen — your terminal's / Zellij's native scrollback keeps working). To
-re-render history with different settings, re-run with `--tool-style` /
-`--collapse`. A one-line `keys:` legend prints in the startup banner.
+`t`/`c` declutter the view on the fly — handy when an agent goes on a long
+tool-call spree and you just want the prose. They affect events rendered **from
+now on** (this is a streaming view, not an alt-screen TUI, so it never repaints
+in place — your terminal's / Zellij's native scrollback keeps working). To apply
+them to the **history**, press **`r`**: it re-renders the whole current
+transcript with the live settings, appending a fresh copy to the scrollback. So
+the usual flow is "cycle to full with `t`, then `r` to redraw everything as
+rich diffs." A one-line `keys:` legend prints in the startup banner.
 
 ## Picking among live sessions
 
@@ -185,10 +187,20 @@ Tool rendering is a **tristate** — set it with `--tool-style` (default `dots`)
 or cycle it live with the `t` key (full → dots → hidden):
 
 - `dots` — the colored-dot streak described above.
-- `full` — the verbose `⚙ Tool  input-preview` / `↩ tool_result (×N)` output,
-  one line per event. (alias: `lines`; `--no-compact-tools` is shorthand.)
+- `full` — Claude-Code-style tool rendering: a `⏺ Label(arg)` line per call
+  (`⏺ Update(main.go)`, `⏺ Bash(go test ./...)`, `⏺ Read(render.go)`) and, under
+  a `⎿`, the result — a **line-numbered red/green diff** for edits (from the
+  session's `structuredPatch`), a few lines of output for commands, or a short
+  summary (`Read 1304 lines`). (aliases: `lines`; `--no-compact-tools`.)
 - `hidden` — drop tool events entirely; just user + assistant text. Useful
   when re-reading a long session as prose. (alias: `none`.)
+
+The rich diff/output detail comes from Claude's `toolUseResult` records, so it's
+fullest for Claude sessions; Codex/Antigravity show the `⏺ Label(arg)` line
+without the diff. Tip: cycle to `full` with `t` and press `r` to re-render the
+whole transcript as diffs. (Tool calls batched into one assistant turn render as
+a group of `⏺` lines followed by their `⎿` results, rather than strictly
+interleaved.)
 
 Override the default via `ENTIRE_TAIL_TOOL_STYLE=full|dots|hidden`.
 
