@@ -1,0 +1,9 @@
+{"type":"session_meta","timestamp":"2026-01-02T15:04:05Z","payload":{"cwd":"/proj","type":"session_meta"}}
+{"type":"turn_context","timestamp":"2026-01-02T15:04:05Z","payload":{}}
+{"type":"response_item","timestamp":"2026-01-02T15:04:06Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Run the tests please."}]}}
+{"type":"response_item","timestamp":"2026-01-02T15:04:07Z","payload":{"type":"message","role":"developer","content":[{"type":"text","text":"system prefill that must be dropped"}]}}
+{"type":"response_item","timestamp":"2026-01-02T15:04:08Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Running them now."}]}}
+{"type":"response_item","timestamp":"2026-01-02T15:04:09Z","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"go test ./...\"}"}}
+{"type":"event_msg","timestamp":"2026-01-02T15:04:09Z","payload":{"type":"task_started"}}
+{"type":"response_item","timestamp":"2026-01-02T15:04:10Z","payload":{"type":"function_call_output","output":"PASS"}}
+{"type":"response_item","timestamp":"2026-01-02T15:04:11Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"All tests pass."}]}}

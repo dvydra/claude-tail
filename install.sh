@@ -1,21 +1,28 @@
 #!/usr/bin/env bash
 # Install entire-tail.
 #
-# Strategy:
-#   1. If the `entire` CLI is on $PATH, register entire-tail as a plugin via
+# Builds the Go binary in place, then:
+#   1. If the `entire` CLI is on $PATH, registers the binary as a plugin via
 #      `entire plugin install` — this makes it invokable as `entire tail`.
-#   2. Always also drop a symlink in ~/.local/bin so the standalone command
+#   2. Always also drops a symlink in ~/.local/bin so the standalone command
 #      `entire-tail` works regardless of whether the user has the entire CLI.
 #
-# The symlink resolves back to this directory, so editing files here picks
-# up immediately for both invocation paths.
+# The binary embeds its themes (go:embed), so it is self-contained — the
+# symlink works from anywhere and editing themes/ requires a rebuild.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/entire-tail"
 
-chmod +x "$BIN"
+# ── build ─────────────────────────────────────────────────────────────────────
+if ! command -v go >/dev/null 2>&1; then
+  echo "error: Go toolchain not found. Install Go (https://go.dev/dl/) and re-run." >&2
+  exit 1
+fi
+echo "Building entire-tail..."
+( cd "$HERE" && go build -o "$BIN" . )
+echo "Built: $BIN"
 
 # ── standalone install: symlink into ~/.local/bin ────────────────────────────
 LOCAL_BIN="$HOME/.local/bin"

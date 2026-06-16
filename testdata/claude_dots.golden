@@ -1,0 +1,29 @@
+─── ▶ USER ─────────────────────────────── 2026-01-02 15:04:05
+Can you check the build?
+─── ◀ AGENT ────────────────────────────── 2026-01-02 15:04:06
+Sure. Let me look at the project.
+..
+  ⋯ 2026-01-02 15:04:08
+Here is what I found:
+
+• item one
+• item two
+
+func main() {}
+
+Done.
+  ⋯ 2026-01-02 15:04:09
+❓ Which approach?
+
+• Fast — quick but rough
+• Careful
+─── ▶ USER ─────────────────────────────── 2026-01-02 15:04:10
+chose Careful
+  ⋯ 2026-01-02 15:04:11
+here is a long paste:
+line1
+line2
+line3
+line4
+
+… 3 more lines — re-run with --no-collapse to expand

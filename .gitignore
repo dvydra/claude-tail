@@ -2,3 +2,5 @@
 *.swp
 *~
 .antigravitycli/
+/entire-tail
+/claude-tail

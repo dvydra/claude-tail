@@ -7,7 +7,9 @@
   },
   "block_quote": {
     "indent": 1,
-    "indent_token": "│ "
+    "indent_token": "│ ",
+    "color": "240",
+    "italic": true
   },
   "paragraph": {},
   "list": {
@@ -23,15 +25,15 @@
     "color": "228",
     "bold": true
   },
-  "h2": { "prefix": "## " },
-  "h3": { "prefix": "### " },
-  "h4": { "prefix": "#### " },
-  "h5": { "prefix": "##### " },
-  "h6": { "prefix": "###### " },
+  "h2": { "prefix": "## ", "color": "44", "bold": true },
+  "h3": { "prefix": "### ", "color": "212", "bold": true },
+  "h4": { "prefix": "#### ", "color": "78", "bold": true },
+  "h5": { "prefix": "##### ", "color": "222", "bold": true },
+  "h6": { "prefix": "###### ", "color": "240", "bold": true },
   "text": {},
   "strikethrough": { "crossed_out": true },
-  "emph": { "italic": true },
-  "strong": { "bold": true },
+  "emph": { "color": "44", "italic": true },
+  "strong": { "color": "215", "bold": true },
   "hr": {
     "color": "240",
     "format": "────────────────────────────"
