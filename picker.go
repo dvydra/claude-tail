@@ -154,13 +154,12 @@ func sessionsForCwdAgent(agent Agent, home, cwd string, n int, scanner *codexSca
 	case AgentCodex:
 		return scanner.sessionsForCwd(cwd, n)
 	case AgentAgy:
-		root := filepath.Join(home, ".gemini", "antigravity-cli")
+		root := agyRoot(home)
 		id := agyConversationID(root, cwd)
 		if id == "" {
 			return nil
 		}
-		t := filepath.Join(root, "brain", id, ".system_generated", "logs", "transcript.jsonl")
-		if isFile(t) {
+		if t := agyTranscriptPath(root, id); isFile(t) {
 			return []string{t}
 		}
 	}

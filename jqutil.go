@@ -138,11 +138,12 @@ func unqString(s string) string {
 }
 
 func isJSONNull(raw json.RawMessage) bool {
-	return string(trimSpace(raw)) == "null"
+	return trimmed(raw) == "null"
 }
 
-func trimSpace(raw json.RawMessage) json.RawMessage {
-	return json.RawMessage(strings.TrimSpace(string(raw)))
+// trimmed returns the raw JSON token with surrounding whitespace removed.
+func trimmed(raw json.RawMessage) string {
+	return strings.TrimSpace(string(raw))
 }
 
 // firstRaw returns the raw JSON of the first key present and not JSON null,

@@ -28,17 +28,24 @@ func findSessionClaude(home, pwd string) string {
 // findSessionAgy resolves the agy transcript for pwd via the cwd→id cache,
 // falling back to the global newest transcript.
 func findSessionAgy(home, pwd string) string {
-	root := filepath.Join(home, ".gemini", "antigravity-cli")
+	root := agyRoot(home)
 	if !isDir(filepath.Join(root, "brain")) {
 		return ""
 	}
 	if id := agyConversationID(root, pwd); id != "" {
-		t := filepath.Join(root, "brain", id, ".system_generated", "logs", "transcript.jsonl")
-		if isFile(t) {
+		if t := agyTranscriptPath(root, id); isFile(t) {
 			return t
 		}
 	}
-	return newestGlob(filepath.Join(root, "brain", "*", ".system_generated", "logs", "transcript.jsonl"))
+	return newestGlob(agyTranscriptPath(root, "*"))
+}
+
+func agyRoot(home string) string { return filepath.Join(home, ".gemini", "antigravity-cli") }
+
+// agyTranscriptPath is the transcript location for a conversation id under root
+// (id may be "*" to form a glob).
+func agyTranscriptPath(root, id string) string {
+	return filepath.Join(root, "brain", id, ".system_generated", "logs", "transcript.jsonl")
 }
 
 // agyConversationID looks up the conversation id mapped to cwd in the agy cache.
@@ -156,7 +163,7 @@ func sniffAgent(first []byte) Agent {
 			}
 		}
 	}
-	if string(trimSpace(top["type"])) == `"session_meta"` {
+	if trimmed(top["type"]) == `"session_meta"` {
 		return AgentCodex
 	}
 	if upperEnumRe.MatchString(jqToStringRaw(top["type"])) {
@@ -167,7 +174,7 @@ func sniffAgent(first []byte) Agent {
 
 // isTruthy mirrors jq truthiness: everything except null and false is truthy.
 func isTruthy(raw json.RawMessage) bool {
-	s := string(trimSpace(raw))
+	s := trimmed(raw)
 	return s != "" && s != "null" && s != "false"
 }
 
@@ -188,10 +195,12 @@ func cwdMismatchNote(agent Agent, session, home, pwd string, scanner *codexScann
 			return "no Codex session for " + pwd + " — using global latest (cwd=" + sessCwd + ")."
 		}
 	case AgentAgy:
-		// Conversation id is the dir two levels above .system_generated.
+		// Conversation id is the brain/<id> dir, three levels above the
+		// transcript file. The note fires unless the cwd's expected id matches
+		// (an empty expected never equals a real id, so this one test covers
+		// both "no mapping" and "mismatched mapping").
 		sessID := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(session))))
-		expected := agyConversationID(filepath.Join(home, ".gemini", "antigravity-cli"), pwd)
-		if (expected != "" && expected != sessID) || expected == "" {
+		if agyConversationID(agyRoot(home), pwd) != sessID {
 			return "no Antigravity session for " + pwd + " — using global latest."
 		}
 	}
