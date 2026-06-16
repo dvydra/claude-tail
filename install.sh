@@ -32,7 +32,9 @@ echo "Linked: $LOCAL_BIN/entire-tail -> $BIN"
 
 # ── entire plugin install (best-effort) ──────────────────────────────────────
 if command -v entire >/dev/null 2>&1; then
-  if entire plugin install "$BIN" 2>&1; then
+  # --force so a re-install replaces the existing 'tail' plugin entry instead of
+  # erroring out ("plugin already installed").
+  if entire plugin install "$BIN" --force 2>&1; then
     echo "Registered as entire plugin: invoke with 'entire tail'."
   else
     echo "warn: 'entire plugin install' failed — falling back to the ~/.local/bin symlink." >&2
