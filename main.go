@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const version = "0.7.0"
+const version = "0.7.1"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -251,16 +251,17 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 	fmt.Fprintln(w, "  session:  "+session)
 	fmt.Fprintln(w, "  theme:    "+cfg.Theme)
 	fmt.Fprintf(w, "  backfill: %s (%d..%d of %d)\n", cfg.Backfill, from, total, total)
-	fmt.Fprintln(w, "  tools:    "+cfg.ToolStyle)
+	toolStyle := parseToolStyle(cfg.ToolStyle)
+	fmt.Fprintln(w, "  tools:    "+toolStyle.label())
 	if collapse > 0 {
 		fmt.Fprintf(w, "  collapse: user pastes > %d lines\n", collapse)
 	} else {
 		fmt.Fprintln(w, "  collapse: off")
 	}
 	if isCharDevice(os.Stdin) {
-		fmt.Fprintln(w, "  keys:     t=toggle tools  c=toggle collapse  q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     t=cycle tools (full/dots/hidden)  c=toggle collapse  q/Ctrl-D=quit")
 	}
-	if cfg.ToolStyle == "dots" {
+	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
 	}
 	fmt.Fprintln(w, "---")
@@ -354,11 +355,11 @@ OPTIONS:
                                      Tool results are dropped (1:1 with
                                      tool_use, so a dot would just
                                      double-count).
-                              none   drop tool events entirely; show only
-                                     user + assistant text.
-                              lines  verbose '⚙ Tool  input-preview' line
-                                     per call (the original style).
-      --no-compact-tools    Alias for --tool-style lines.
+                              hidden drop tool events entirely; show only
+                                     user + assistant text. (alias: none)
+                              full   verbose '⚙ Tool  input-preview' line
+                                     per call. (alias: lines)
+      --no-compact-tools    Alias for --tool-style full.
   -c, --collapse N          Collapse user pastes longer than N lines down to
                             the first N lines plus a "… M more lines" marker,
                             so a big pasted blob (command output, logs) doesn't
@@ -382,8 +383,8 @@ OPTIONS:
   -V, --version             Show version and exit.
 
 LIVE KEYS (while following, on an interactive terminal):
-  t                         Toggle tool-call rendering (hide / show) for new
-                            events as they stream.
+  t                         Cycle tool-call rendering for new events:
+                            full → dots → hidden → full.
   c                         Toggle collapsing of long user pastes for new
                             events.
   q, Ctrl-D, Ctrl-C         Quit.

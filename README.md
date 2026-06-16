@@ -94,7 +94,7 @@ events show as they stream:
 
 | key            | effect                                                        |
 |----------------|---------------------------------------------------------------|
-| `t`            | toggle tool-call rendering (hide ⇄ show)                      |
+| `t`            | cycle tool-call rendering: **full → dots → hidden**           |
 | `c`            | toggle collapsing of long user pastes                         |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 
@@ -181,15 +181,16 @@ Color mapping is agent-agnostic. Codex's `exec_command` and Antigravity's
 shell tools get the same yellow as Claude's `Bash`; `apply_patch` gets the
 same green as `Edit`/`Write`; etc.
 
-Two other modes:
+Tool rendering is a **tristate** — set it with `--tool-style` (default `dots`)
+or cycle it live with the `t` key (full → dots → hidden):
 
-- `--tool-style none` — drop tool events entirely. Just user + assistant
-  text. Useful when re-reading a long session as prose.
-- `--tool-style lines` (alias: `--no-compact-tools`) — the original
-  verbose `⚙ Tool  input-preview` / `↩ tool_result (×N)` output, one
-  line per event.
+- `dots` — the colored-dot streak described above.
+- `full` — the verbose `⚙ Tool  input-preview` / `↩ tool_result (×N)` output,
+  one line per event. (alias: `lines`; `--no-compact-tools` is shorthand.)
+- `hidden` — drop tool events entirely; just user + assistant text. Useful
+  when re-reading a long session as prose. (alias: `none`.)
 
-Override the default via `ENTIRE_TAIL_TOOL_STYLE=none|dots|lines`.
+Override the default via `ENTIRE_TAIL_TOOL_STYLE=full|dots|hidden`.
 
 ## Collapsing long pastes
 
