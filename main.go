@@ -4,13 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 )
 
-const version = "0.7.1"
+const version = "0.8.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -132,53 +133,86 @@ func run(cfg Config) {
 
 	// ── phase 2: live follow until Ctrl-C / Ctrl-D ──
 	//
-	// The quit watchers only report a code on a channel and close stop; every
-	// stdout write — including the final flush below — happens on this
-	// goroutine, so there is no concurrent access to the buffered writer and no
-	// torn or lost output on exit.
+	// One select loop on the render goroutine owns ALL stdout writes — polling
+	// for new lines, reloading, and the final flush. The signal/keyboard
+	// goroutines only report on channels (a quit code, or a reload request);
+	// they never touch the writer, so there's no data race and no torn output.
 	r.live = true
-	stop := make(chan struct{})
-	codeCh := make(chan int, 3) // signal + keyboard senders; never block a sender
-	installSignals(codeCh)      // SIGINT → 130, SIGTERM → 0
-	// Single-key live controls (t/c toggles, q/Ctrl-D quit). The keyboard
-	// goroutine only flips the renderer's atomic flags and reports quit on
-	// codeCh — it never writes stdout, so the render goroutine stays the sole
-	// writer. restoreTTY undoes cbreak mode; deferred for panic safety and
-	// called explicitly before the normal exit (os.Exit skips defers).
-	restoreTTY := startKeyboard(r, codeCh)
-	defer restoreTTY()
-
-	result := make(chan int, 1)
-	go func() {
-		result <- <-codeCh // first quit wins
-		close(stop)
-	}()
+	codeCh := make(chan int, 3)        // signal + keyboard quit; never block a sender
+	reloadCh := make(chan struct{}, 1) // keyboard 'r'; coalesced (buffered 1)
+	installSignals(codeCh)             // SIGINT → 130, SIGTERM → 0
+	restoreTTY := startKeyboard(r, codeCh, reloadCh)
+	defer restoreTTY() // panic safety; the normal path restores explicitly below
 
 	emit := func(line []byte) {
 		for _, rec := range normalize(agent, line, loc) {
 			r.emit(rec)
 		}
-		out.Flush()
 	}
-	if agent == AgentAgy {
-		keep := newAgyDedup(maxStepIndex(lines))
-		followRewrite(session, func(line []byte) {
-			if keep(line) {
-				emit(line)
+	offset := liveOffset(data)
+	agyKeep := newAgyDedup(maxStepIndex(lines))
+	var agyLastSize, agyLastMtime int64 = -1, -1
+	poll := func() {
+		if agent == AgentAgy {
+			// agy rewrites the whole file each step; only re-read (and re-scan
+			// for new step_index) when it actually changes.
+			fi, err := os.Stat(session)
+			if err != nil {
+				return
 			}
-		}, stop)
-	} else {
-		followAppend(session, liveOffset(data), emit, stop)
+			sz, mt := fi.Size(), fi.ModTime().UnixNano()
+			if sz == agyLastSize && mt == agyLastMtime {
+				return
+			}
+			agyLastSize, agyLastMtime = sz, mt
+			if d, err := os.ReadFile(session); err == nil {
+				for _, l := range splitLines(d) {
+					if agyKeep(l) {
+						emit(l)
+					}
+				}
+			}
+		} else {
+			offset = appendStep(session, offset, emit)
+		}
+	}
+	// reload re-renders the entire current transcript with the live settings
+	// (the `r` key) — the streaming-native way to apply t/c retrospectively.
+	reload := func() {
+		d, err := os.ReadFile(session)
+		if err != nil {
+			return
+		}
+		all := splitLines(d)
+		r.reset()
+		io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ reloaded"+reset+"\n\n")
+		for _, l := range all {
+			emit(l)
+		}
+		offset = liveOffset(d)
+		agyKeep = newAgyDedup(maxStepIndex(all))
+		agyLastSize, agyLastMtime = -1, -1 // force a re-stat next tick
 	}
 
-	// The follower returned because a quit was requested: restore the terminal,
-	// do the final flush on this goroutine, then exit with the requested code
-	// (130 for Ctrl-C / SIGINT, 0 for Ctrl-D / SIGTERM / q), matching the bash
-	// version's INT/TERM traps.
-	restoreTTY()
-	out.Flush()
-	fmt.Fprintln(os.Stderr)
-	os.Exit(<-result)
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case code := <-codeCh:
+			// Quit: restore the terminal and do the final flush here, on the
+			// sole writer goroutine (130 for Ctrl-C/SIGINT, 0 for q/Ctrl-D/SIGTERM).
+			restoreTTY()
+			out.Flush()
+			fmt.Fprintln(os.Stderr)
+			os.Exit(code)
+		case <-reloadCh:
+			reload()
+			out.Flush()
+		case <-ticker.C:
+			poll()
+			out.Flush()
+		}
+	}
 }
 
 // discoverSession resolves a session path + concrete agent via per-agent
@@ -259,7 +293,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		fmt.Fprintln(w, "  collapse: off")
 	}
 	if isCharDevice(os.Stdin) {
-		fmt.Fprintln(w, "  keys:     t=cycle tools (full/dots/hidden)  c=toggle collapse  q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     t=cycle tools (full/dots/hidden)  c=toggle collapse  r=reload  q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
@@ -387,11 +421,14 @@ LIVE KEYS (while following, on an interactive terminal):
                             full → dots → hidden → full.
   c                         Toggle collapsing of long user pastes for new
                             events.
+  r                         Reload: re-render the whole current transcript with
+                            the current settings — applies t/c retrospectively
+                            by appending a fresh copy to the scrollback.
   q, Ctrl-D, Ctrl-C         Quit.
 
-  These affect events rendered from now on; already-printed lines stay in the
-  terminal scrollback unchanged (this is a streaming view, not an alt-screen
-  TUI). Re-run with a different --tool-style/--collapse to re-render history.
+  t/c affect events rendered from now on; press r to re-render the history with
+  the new settings (this is a streaming view, not an alt-screen TUI, so it
+  appends rather than repainting in place).
 
 ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_AGENT         Same as --agent.

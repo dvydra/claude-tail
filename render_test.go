@@ -79,15 +79,42 @@ func TestToolStyleNoneDropsTools(t *testing.T) {
 	}
 }
 
-func TestToolStyleLines(t *testing.T) {
-	out := renderRecords("lines", 0, false,
-		Record{Kind: KindToolUse, Name: "Bash", Summary: "ls -la"},
-		Record{Kind: KindToolResult, N: 3},
+func TestFullToolUseLabel(t *testing.T) {
+	// full mode renders "⏺ Label(arg)"; Edit → Update, path → basename.
+	out := renderRecords("full", 0, false,
+		Record{Kind: KindToolUse, Name: "Edit", Summary: "/a/b/main.go"},
+		Record{Kind: KindToolUse, Name: "Bash", Summary: "go test ./..."},
 	)
-	want := "D:  ⚙ Bash  ls -la" + reset + "\n" +
-		"D:  ↩ tool_result (×3)" + reset + "\n"
-	if out != want {
-		t.Errorf("got:\n%q\nwant:\n%q", out, want)
+	if !strings.Contains(out, "⏺"+reset+" Update(main.go)\n") {
+		t.Errorf("expected ⏺ Update(main.go), got:\n%q", out)
+	}
+	if !strings.Contains(out, "⏺"+reset+" Bash(go test ./...)\n") {
+		t.Errorf("expected ⏺ Bash(go test ./...), got:\n%q", out)
+	}
+}
+
+func TestFullToolResultDiff(t *testing.T) {
+	res := &ToolResult{
+		Summary: "Added 1 line, removed 1 line",
+		Diff: []DiffLine{
+			{' ', 12, ""},
+			{'-', 13, `const version = "0.7.0"`},
+			{'+', 13, `const version = "0.7.1"`},
+		},
+	}
+	out := stripANSI(renderRecords("full", 0, false, Record{Kind: KindToolResult, N: 1, Result: res}))
+	for _, want := range []string{"⎿  Added 1 line, removed 1 line", "  13 - const version = \"0.7.0\"", "  13 + const version = \"0.7.1\""} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestFullToolResultNilOmitted(t *testing.T) {
+	// No rich detail (e.g. codex/agy) → no ⎿ line in full mode.
+	out := renderRecords("full", 0, false, Record{Kind: KindToolResult, N: 1, Result: nil})
+	if out != "" {
+		t.Errorf("expected no output for nil result, got %q", out)
 	}
 }
 
@@ -170,8 +197,8 @@ func TestCycleTools(t *testing.T) {
 	}
 	at = b.Len()
 	r.emit(Record{Kind: KindToolUse, Name: "Bash", Summary: "ls"})
-	if !strings.Contains(b.String()[at:], "⚙ Bash") {
-		t.Errorf("full mode should render a verbose tool line, got:\n%q", b.String()[at:])
+	if !strings.Contains(b.String()[at:], "⏺"+reset+" Bash(ls)") {
+		t.Errorf("full mode should render ⏺ Bash(ls), got:\n%q", b.String()[at:])
 	}
 
 	if got := r.cycleTools(); got != "tool calls dots" {

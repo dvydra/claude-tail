@@ -13,9 +13,10 @@ import (
 // system, file-history-snapshot, …) is ignored.
 
 type claudeEvent struct {
-	Type      string         `json:"type"`
-	Timestamp string         `json:"timestamp"`
-	Message   *claudeMessage `json:"message"`
+	Type          string          `json:"type"`
+	Timestamp     string          `json:"timestamp"`
+	Message       *claudeMessage  `json:"message"`
+	ToolUseResult json.RawMessage `json:"toolUseResult"` // rich result detail (full mode)
 }
 
 type claudeMessage struct {
@@ -71,7 +72,7 @@ func normalizeClaude(line []byte, loc *time.Location) []Record {
 			}
 		}
 		if len(results) > 0 {
-			return []Record{{Kind: KindToolResult, N: len(results)}}
+			return []Record{{Kind: KindToolResult, N: len(results), Result: parseClaudeToolResult(ev.ToolUseResult)}}
 		}
 		return nil
 

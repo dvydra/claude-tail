@@ -142,6 +142,13 @@ func (r *Renderer) cycleTools() string {
 	return "tool calls " + next.label()
 }
 
+// reset clears the cross-event layout state so a fresh full re-render (the `r`
+// reload) starts with a clean box header rather than a continuation marker.
+func (r *Renderer) reset() {
+	r.lastKind = ""
+	r.inDotStreak = false
+}
+
 // toggleCollapse flips long-user-paste collapsing on/off (future events only).
 func (r *Renderer) toggleCollapse() string {
 	if r.collapse.Load() > 0 {
@@ -169,7 +176,7 @@ func (r *Renderer) emit(rec Record) {
 	case KindToolUse:
 		r.toolUse(rec.Name, rec.Summary)
 	case KindToolResult:
-		r.toolResult(rec.N)
+		r.toolResult(rec.Result)
 	}
 }
 
@@ -235,20 +242,111 @@ func (r *Renderer) toolUse(name, summary string) {
 	case toolDots:
 		io.WriteString(r.w, dotColor(name)+"."+reset)
 		r.inDotStreak = true
-	default: // toolLines
+	default: // full → Claude-style "⏺ Label(arg)"
 		r.breakDotStreak()
-		io.WriteString(r.w, r.theme.DimANSI+"  ⚙ "+name+"  "+truncateRunes(summary, 140)+reset+"\n")
+		label, arg := toolLabelArg(name, summary)
+		io.WriteString(r.w, dotColor(name)+"⏺"+reset+" "+label+"("+truncateRunes(arg, 120)+")\n")
 	}
 }
 
-func (r *Renderer) toolResult(n int) {
-	// Only the verbose "lines" style shows results; in dots mode a result dot
-	// would just double-count the tool_use it pairs with.
-	if toolStyleKind(r.toolStyle.Load()) != toolLines {
+// Diff colors (fixed, readable on dark themes): green add, red remove.
+const (
+	diffAddANSI = "\x1b[38;2;126;211;134m"
+	diffDelANSI = "\x1b[38;2;224;108;117m"
+)
+
+func (r *Renderer) toolResult(res *ToolResult) {
+	// Only full mode shows results; in dots mode a result dot would just
+	// double-count the tool_use it pairs with. No rich detail (codex/agy, or an
+	// unrecognized result shape) → omit the ⎿ line entirely.
+	if toolStyleKind(r.toolStyle.Load()) != toolLines || res == nil {
 		return
 	}
+	dim := r.theme.DimANSI
+
+	// The ⎿ headline is the summary, or (for output-only results) the first
+	// output line. The whole result block is dim except diff +/- lines.
+	head, rest := res.Summary, res.Output
+	if head == "" && len(rest) > 0 {
+		head, rest = rest[0], rest[1:]
+	}
+	if head == "" && len(res.Diff) == 0 {
+		return // nothing to show
+	}
 	r.breakDotStreak()
-	io.WriteString(r.w, r.theme.DimANSI+"  ↩ tool_result (×"+strconv.Itoa(n)+")"+reset+"\n")
+	io.WriteString(r.w, dim+"  ⎿  "+head+reset+"\n")
+	for _, d := range res.Diff {
+		r.writeDiffLine(d)
+	}
+	for _, l := range rest {
+		io.WriteString(r.w, dim+"     "+l+reset+"\n")
+	}
+}
+
+// writeDiffLine renders one diff line: dim line number, then the content tinted
+// green (added) / red (removed) / dim (context).
+func (r *Renderer) writeDiffLine(d DiffLine) {
+	dim := r.theme.DimANSI
+	num := padNum(d.Num)
+	switch d.Sign {
+	case '+':
+		io.WriteString(r.w, dim+"     "+num+reset+" "+diffAddANSI+"+ "+d.Text+reset+"\n")
+	case '-':
+		io.WriteString(r.w, dim+"     "+num+reset+" "+diffDelANSI+"- "+d.Text+reset+"\n")
+	default:
+		io.WriteString(r.w, dim+"     "+num+"   "+d.Text+reset+"\n")
+	}
+}
+
+// padNum right-aligns a line number in a 4-wide column.
+func padNum(n int) string {
+	s := strconv.Itoa(n)
+	for len(s) < 4 {
+		s = " " + s
+	}
+	return s
+}
+
+// toolLabelArg maps a tool name + input-summary to Claude's display form,
+// e.g. ("Edit","/a/b/main.go") → ("Update","main.go").
+func toolLabelArg(name, summary string) (label, arg string) {
+	label = claudeToolLabel(name)
+	switch name {
+	case "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "NotebookRead":
+		arg = baseName(summary) // summary is the file path
+	default:
+		arg = summary
+	}
+	return label, arg
+}
+
+func claudeToolLabel(name string) string {
+	switch name {
+	case "Edit", "MultiEdit", "NotebookEdit":
+		return "Update"
+	case "Write":
+		return "Write"
+	case "Read", "NotebookRead":
+		return "Read"
+	case "Grep", "Glob":
+		return "Search"
+	case "LS":
+		return "List"
+	case "WebFetch":
+		return "Fetch"
+	case "WebSearch":
+		return "Web Search"
+	case "TodoWrite":
+		return "Update Todos"
+	}
+	return name // Bash/Task and codex/agy/mcp tools keep their own name
+}
+
+func baseName(p string) string {
+	if i := strings.LastIndexByte(p, '/'); i >= 0 && i < len(p)-1 {
+		return p[i+1:]
+	}
+	return p
 }
 
 func (r *Renderer) breakDotStreak() {
