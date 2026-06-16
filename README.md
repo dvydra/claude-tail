@@ -18,9 +18,11 @@ But the source of truth is on disk: every event in your session is appended
 line-by-line to a JSONL file under the agent's data directory.
 
 `entire-tail` discovers that file for the agent you're using, follows it,
-formats each event nicely, and renders the markdown bodies through
-[glow](https://github.com/charmbracelet/glow) using a custom flush-left
-style.
+formats each event nicely, and renders the markdown bodies **in-process**
+with [glamour](https://github.com/charmbracelet/glamour) (the same renderer
+[glow](https://github.com/charmbracelet/glow) is built on) using a custom
+flush-left style. It's a single self-contained Go binary — no `jq`, `glow`,
+`awk`, or other runtime dependencies.
 
 Open it in a separate Zellij pane next to the agent. New messages stream in.
 Scroll back through the pane buffer to read clean, full-width markdown of
@@ -43,21 +45,21 @@ session for `$PWD`. Force a specific agent with `--agent claude|codex|agy`.
 ./install.sh
 ```
 
-The script does both things in one shot:
+The script does three things in one shot:
 
-1. Symlinks `entire-tail` into `~/.local/bin/` so the standalone command
+1. Builds the Go binary in place (requires the [Go toolchain](https://go.dev/dl/)).
+2. Symlinks `entire-tail` into `~/.local/bin/` so the standalone command
    works.
-2. Registers it via `entire plugin install` if the [`entire`](https://docs.entire.io)
+3. Registers it via `entire plugin install` if the [`entire`](https://docs.entire.io)
    CLI is on `$PATH`, so you can also invoke it as `entire tail`.
 
-Editing files in this directory takes effect immediately for both invocation
-paths — both routes resolve through the symlink.
+The binary embeds its themes, so it's self-contained — the symlink works from
+anywhere. After editing source or themes, re-run `./install.sh` (or
+`go build -o entire-tail .`) to rebuild.
 
-Requires `jq`, `glow`, `tail`, `base64`, `awk` on `$PATH`. On macOS:
-
-```sh
-brew install glow jq
-```
+**No runtime dependencies** beyond the binary itself. The interactive session
+picker additionally uses `pgrep` + `lsof` when present (both ship with macOS
+and most Linux); without them the picker is silently disabled.
 
 ## Usage
 
@@ -211,24 +213,23 @@ descriptions):
 - `one-dark` — Atom's classic editor palette
 - `claude` — the original style (cyan/magenta box headers, gray dim)
 
-Each theme is a pair under `themes/`:
+Each theme is a pair under `themes/`, embedded into the binary at build time:
 
-- `themes/<name>.json` — glow style (text + chroma syntax highlighting)
-- `themes/<name>.sh` — sourced for the truecolor ANSI codes used outside glow
-  (turn headers, timestamps, tool-use one-liners). The first comment line is
+- `themes/<name>.json` — glamour style (text + chroma syntax highlighting)
+- `themes/<name>.sh` — the truecolor ANSI codes for the box headers,
+  timestamps, and tool-use one-liners. The binary parses the `THEME_*_ANSI`
+  values directly (it doesn't shell out to bash). The first comment line is
   the description shown by `--list-themes`.
 
-To add your own: copy a pair, rename, swap colors. Anything that lands in
-`themes/<name>.json` + `themes/<name>.sh` is picked up automatically.
+To add your own: copy a pair, rename, swap colors, and rebuild — anything
+that lands in `themes/<name>.json` + `themes/<name>.sh` is picked up
+automatically.
 
-**Color depth caveat.** Glow's stdout in this pipeline (`glow | awk`) is
-never a TTY, so glow downsamples each theme's hex colors to their closest
-ANSI 16 match. Themes still look visibly different from each other (Tokyo
-Night → bright blues, Dracula → pink/red, Nord → frost cyan, etc.), just not
-pixel-perfect to the real IDE. Box headers and timestamps go straight to
-your terminal via `printf`, so those render in full truecolor and pop in the
-exact theme palette. The downsample is the cost of the 12× backfill speedup
-that the awk pass enables.
+**Full truecolor.** Rendering happens in-process, so each theme's exact hex
+colors come through at full 24-bit depth — code-block syntax highlighting,
+box headers, and timestamps all in the precise theme palette. (The old bash
+version piped through `glow`, which downsampled bodies to 256 colors; that
+limitation is gone.)
 
 ### Theme Gallery
 
@@ -252,89 +253,95 @@ Original output inside the agent TUI.
 
 ## Files
 
-- `entire-tail` — the script
-- `themes/<name>.{json,sh}` — bundled themes (see Themes section above)
-- `install.sh` — installs `entire-tail` as an entire plugin and as
-  `~/.local/bin/entire-tail`
+- `*.go` — the source (single `package main`; see Architecture below)
+- `themes/<name>.{json,sh}` — bundled themes, embedded at build (see Themes)
+- `install.sh` — builds the binary, symlinks it into `~/.local/bin`, and
+  registers the entire plugin
+- `entire-tail.bash` — the original bash implementation, kept as a reference
+  oracle for the equivalence test (`RUN_ORACLE=1 go test`)
+- `testdata/` — synthetic session fixtures + golden render output
 
 ## Architecture
 
-A single bash script with per-agent **adapters**. Each adapter is two
-pieces:
+A single Go package with per-agent **adapters**. Each adapter is a `normalize`
+function (`adapter_claude.go`, `adapter_codex.go`, `adapter_agy.go`) that lowers
+each jsonl event to a canonical `Record`:
 
-1. A shell function that discovers the session file for `$PWD`
-   (`find_session_<agent>`).
-2. A jq filter (`JQ_CLAUDE`, `JQ_CODEX`, `JQ_AGY`) with a `normalize:`
-   function that lowers each jsonl event to a canonical record:
-   ```
-   {kind: "USER"|"CLAUDE"|"TOOLUSE"|"TOOLRESULT",
-    ts:   "YYYY-MM-DD HH:MM:SS",  (USER/CLAUDE only)
-    body: <markdown string>,       (USER/CLAUDE only)
-    name: <tool name>,             (TOOLUSE only)
-    summary: <one-line input>,     (TOOLUSE only)
-    n: <count>}                    (TOOLRESULT only)
-   ```
+```go
+type Record struct {
+    Kind    Kind   // USER | CLAUDE | TOOLUSE | TOOLRESULT
+    Ts      string // "YYYY-MM-DD HH:MM:SS"  (USER/CLAUDE)
+    Body    string // markdown               (USER/CLAUDE)
+    Name    string // tool name              (TOOLUSE)
+    Summary string // one-line input preview (TOOLUSE)
+    N       int    // count                  (TOOLRESULT)
+}
+```
 
-Everything downstream — turn headers, glow rendering, tool-dot coloring,
-the backfill/live split — is agent-agnostic and consumes only the
-normalized record. Adding a new agent is a matter of writing a new pair
-(`find_session_<agent>` + `JQ_<AGENT>`).
+Everything downstream — turn headers, glamour rendering, tool-dot coloring — is
+agent-agnostic and consumes only the `Record`. Discovery (`discovery.go`) and
+the live picker (`picker.go`) are likewise per-agent. Adding a new agent means
+writing a `normalize` + a discovery function.
+
+The rendering state machine (`render.go`) is one path shared by backfill and
+live: it tracks the previous participant (so consecutive same-participant turns
+collapse to a dim `⋯ ts` marker) and the dot-streak state, and renders each body
+through an in-process glamour renderer.
 
 ## Notes
 
-- **Two-phase rendering.** The backfill (the whole session by default) is
-  concatenated into one big markdown document and piped through a **single**
-  glow invocation, so the Go binary startup + chroma syntax-highlighting cost
-  is paid once instead of per-message. On a 1500-event / 3.5MB session this
-  drops backfill render time from ~1.5s to ~0.13s — fast enough that there's
-  no reason to truncate the history, hence the `all` default. Once we're
-  caught up, live events render per-message (one glow call each) at the
-  natural pace of the conversation.
+- **One in-process render path.** Both backfill (the whole session by default)
+  and live events render each markdown body through the same in-process glamour
+  renderer. The bash version needed two separate paths — a batched
+  `glow`-subprocess + `awk` pipeline for backfill and a per-event loop for live
+  — purely because spawning `glow` per event was slow. In-process rendering is
+  fast enough that backfill stays `all` by default with no batching tricks.
 - Each turn header gets a dimmed local-time timestamp from the jsonl event
-  (`─── ▶ USER ──── 2026-05-18 14:02:33`). Timestamps go through jq's
-  `strflocaltime`, after stripping the millisecond fraction so
-  `fromdateiso8601` will accept them.
-- Backfill uses on-line sentinels (`[[CTAIL_U]]…`, `[[CTAIL_C]]…`, etc.)
-  inside the markdown stream so glow can render the whole session in one
-  pass; an `awk` post-processor rewrites those sentinels into the same ANSI
-  box headers live mode emits directly. End result: identical look for
-  backfilled and live turns.
+  (`─── ▶ USER ──── 2026-05-18 14:02:33`), stripping the millisecond fraction
+  before parsing the ISO-8601 instant.
 - Tool uses are dimmed and truncated to ~140 chars (just a marker that a tool
   ran; the args aren't usually what you want to re-read).
 - Reasoning / "thinking" blocks are skipped entirely (Claude `thinking`,
   Codex `reasoning`, Antigravity `thinking` field on `PLANNER_RESPONSE`).
 - `tool_result` blocks are summarized as `↩ tool_result (×N)` in `lines`
   mode and dropped in `dots` mode (1:1 with the preceding tool_use).
-- `glow -w 0` disables glow's own word wrap. Each markdown paragraph is one
-  logical line in glow's output; your terminal soft-wraps it to whatever pane
-  width you have, which means resizing the pane re-flows the text naturally
-  on the next render.
+- Word wrap is disabled (glamour `WithWordWrap(0)`). Each markdown paragraph is
+  one logical line; your terminal soft-wraps it to whatever pane width you have,
+  so resizing re-flows the text naturally on the next render.
 
-## Format pipeline
+## Live following
 
-```
-backfill: sed -n M,Np session.jsonl | jq (per-agent normalize) → concatenated
-            markdown | glow (one call) | awk (rewrites sentinels → headers, dots)
-live:     tail -F -n +N+1 session.jsonl | jq (per-agent normalize) → one
-            base64 line per event | bash loop → ANSI header + glow render
-            per message
-```
+- **Claude / Codex** append to their jsonl, so the follower resumes from the
+  byte offset where backfill ended and emits each new line.
+- **Antigravity** rewrites the whole transcript on every step (atomic rename or
+  truncate-in-place), so the follower re-reads the file on each change and
+  dedups by `step_index` (seeded from the backfill snapshot).
 
-Base64 in the live-mode middle stage keeps multi-line markdown bodies intact
-across the shell pipeline without escaping/quoting headaches.
+## Tested against the bash original
+
+The port is validated **byte-identical** (ANSI-stripped) to the original bash
+implementation across Claude, Codex, and Antigravity in `dots` and `none`
+modes. `go test` runs a golden-file suite over synthetic fixtures; `RUN_ORACLE=1
+go test` additionally diffs the live Go output against the bash oracle
+(`entire-tail.bash`) when `bash`/`jq`/`glow` are present.
+
+Two deliberate improvements over the bash version:
+
+- **Full truecolor** bodies (the bash `glow` pipe capped them at 256 colors).
+- **`--tool-style lines`** shows tool-input previews literally; the bash version
+  piped them through markdown, which silently ate `*`, `\`, and trailing spaces.
 
 ## Caveats / known weirdness
 
-- Chroma (glow's code-block syntax highlighter) is strict about hex colors —
+- Chroma (glamour's code-block syntax highlighter) is strict about hex colors —
   all 6-char hex values in each theme JSON are prefixed with `#`. If you fork
-  a theme, keep that prefix or glow will panic on the first code block.
-- The script reads the session file from disk — there's a tiny delay between
+  a theme, keep that prefix.
+- The binary reads the session file from disk — there's a tiny delay between
   the agent emitting an event and the line appearing here (usually <100ms,
   whatever the OS flushes the append at).
 - If the agent is mid-stream on a long assistant message, the partial text
   won't show up until the message completes and gets written as a final
-  event. This is a session-log limitation, not something the script can work
-  around.
+  event. This is a session-log limitation.
 - Antigravity tool calls live inside `PLANNER_RESPONSE.tool_calls[]` rather
   than as separate step records — the adapter emits one TOOLUSE per item
   in that array. The matching tool *outputs* arrive as separate events

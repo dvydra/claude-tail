@@ -1,0 +1,8 @@
+{"type":"summary","summary":"ignored event"}
+{"type":"user","timestamp":"2026-01-02T15:04:05Z","message":{"content":"Can you check the build?"}}
+{"type":"assistant","timestamp":"2026-01-02T15:04:06Z","message":{"content":[{"type":"text","text":"Sure. Let me look at the project."},{"type":"tool_use","name":"Read","input":{"file_path":"/proj/main.go"}},{"type":"tool_use","name":"Bash","input":{"command":"go build ./..."}}]}}
+{"type":"user","timestamp":"2026-01-02T15:04:07Z","message":{"content":[{"type":"tool_result","content":"ok"},{"type":"tool_result","content":"ok"}]}}
+{"type":"assistant","timestamp":"2026-01-02T15:04:08Z","message":{"content":[{"type":"text","text":"Here is what I found:\n\n- item one\n- item two\n\n```go\nfunc main() {}\n```\n\nDone."}]}}
+{"type":"assistant","timestamp":"2026-01-02T15:04:09Z","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Which approach?","options":[{"label":"Fast","description":"quick but rough"},{"label":"Careful"}]}]}}]}}
+{"type":"user","timestamp":"2026-01-02T15:04:10Z","message":{"content":[{"type":"tool_result","content":"User has answered your questions: chose Careful. You can now continue with the user's answers in mind."}]}}
+{"type":"user","timestamp":"2026-01-02T15:04:11Z","message":{"content":"here is a long paste:\nline1\nline2\nline3\nline4\nline5\nline6\nline7"}}
