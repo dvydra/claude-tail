@@ -85,6 +85,40 @@ func TestListThemeInfos(t *testing.T) {
 	}
 }
 
+// TestAllThemesRenderValidly loads every bundled theme and renders a document
+// exercising headings, bold/emph, a blockquote, a list, and a code block — so a
+// malformed theme JSON or a bad/missing hex color (which makes chroma panic on
+// the first code block) fails the build.
+func TestAllThemesRenderValidly(t *testing.T) {
+	sample := "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6\n\n" +
+		"**bold** and *emph* text\n\n> a quoted line\n\n- one\n- two\n\n```go\nfunc main() {}\n```\n"
+	infos := listThemeInfos()
+	if len(infos) == 0 {
+		t.Fatal("no bundled themes found")
+	}
+	for _, info := range infos {
+		t.Run(info.Name, func(t *testing.T) {
+			th, err := loadTheme(info.Name, "")
+			if err != nil {
+				t.Fatalf("loadTheme(%s): %v", info.Name, err)
+			}
+			if th.UserANSI == "" || th.ClaudeANSI == "" || th.DimANSI == "" {
+				t.Errorf("theme %s is missing header ANSI colors (USER=%q CLAUDE=%q DIM=%q)",
+					info.Name, th.UserANSI, th.ClaudeANSI, th.DimANSI)
+			}
+			var b strings.Builder
+			r, err := newRenderer(&b, th, "dots", 0)
+			if err != nil {
+				t.Fatalf("newRenderer(%s): %v", info.Name, err)
+			}
+			r.emit(Record{Kind: KindAssistant, Ts: "2026-01-02 15:04:05", Body: sample})
+			if b.Len() == 0 {
+				t.Errorf("theme %s rendered empty output", info.Name)
+			}
+		})
+	}
+}
+
 func TestLoadThemeStyleOverride(t *testing.T) {
 	// Override supplies style bytes but keeps the named theme's ANSI colors.
 	dir := t.TempDir()

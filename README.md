@@ -212,6 +212,13 @@ descriptions):
 - `catppuccin-mocha` — mauve and pastels on dark slate
 - `one-dark` — Atom's classic editor palette
 - `claude` — the original style (cyan/magenta box headers, gray dim)
+- `synthwave` — garish-but-legible neon: hot magenta / electric cyan / lime /
+  electric-yellow on deep purple-black
+
+Every theme color-codes structure: each heading level (`#`…`######`) renders in
+a distinct palette color, with bold, emphasis, and block quotes tinted too — so
+a transcript's shape reads at a glance. Full truecolor depth (the in-process
+renderer no longer downsamples to 256 colors).
 
 Each theme is a pair under `themes/`, embedded into the binary at build time:
 
