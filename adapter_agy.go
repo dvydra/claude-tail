@@ -17,7 +17,8 @@ type agyEvent struct {
 	CreatedAt string          `json:"created_at"`
 	Content   json.RawMessage `json:"content"`
 	ToolCalls []agyToolCall   `json:"tool_calls"`
-	StepIndex int             `json:"step_index"`
+	// step_index drives the live dedup, but it's read off the raw line bytes in
+	// tail.go (agyStepIndex), not via this struct, so it isn't a field here.
 }
 
 type agyToolCall struct {

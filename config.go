@@ -223,12 +223,8 @@ func resolveBackfill(s string, total int) (int, error) {
 		return 0, nil
 	}
 	n, err := strconv.Atoi(s)
-	if err != nil {
+	if err != nil || n < 0 {
 		return 0, fmt.Errorf("invalid --backfill value: %s (want integer, 'all', or '0')", s)
 	}
-	from := total - n + 1
-	if from < 1 {
-		from = 1
-	}
-	return from, nil
+	return max(total-n+1, 1), nil
 }

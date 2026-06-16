@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -137,12 +138,7 @@ func TestFollowAppendTruncation(t *testing.T) {
 	waitFor(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		for _, g := range got {
-			if g == "new" {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(got, "new")
 	})
 	close(stop)
 }

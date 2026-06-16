@@ -130,29 +130,38 @@ func run(cfg Config) {
 	}
 	out.Flush()
 
-	// ── quit handling ──
-	installSignalHandlers(out)
-
-	// ── phase 2: live follow ──
+	// ── phase 2: live follow until Ctrl-C / Ctrl-D ──
+	//
+	// The quit watchers only report a code on a channel and close stop; every
+	// stdout write — including the final flush below — happens on this
+	// goroutine, so there is no concurrent access to the buffered writer and no
+	// torn or lost output on exit.
 	r.live = true
+	stop := make(chan struct{})
+	exitCode := watchForQuit(stop)
 	emit := func(line []byte) {
 		for _, rec := range normalize(agent, line, loc) {
 			r.emit(rec)
 		}
 		out.Flush()
 	}
-	stop := make(chan struct{})
 	if agent == AgentAgy {
 		keep := newAgyDedup(maxStepIndex(lines))
-		dedup := func(line []byte) {
+		followRewrite(session, func(line []byte) {
 			if keep(line) {
 				emit(line)
 			}
-		}
-		followRewrite(session, dedup, stop)
+		}, stop)
 	} else {
 		followAppend(session, liveOffset(data), emit, stop)
 	}
+
+	// The follower returned because a quit was requested: do the final flush on
+	// this goroutine, then exit with the requested code (130 for Ctrl-C / SIGINT,
+	// 0 for Ctrl-D / SIGTERM), matching the bash version's INT/TERM traps.
+	out.Flush()
+	fmt.Fprintln(os.Stderr)
+	os.Exit(<-exitCode)
 }
 
 // discoverSession resolves a session path + concrete agent via per-agent
@@ -198,21 +207,28 @@ func fileMtimeNano(path string) int64 {
 	return fi.ModTime().UnixNano()
 }
 
-// installSignalHandlers wires Ctrl-C (exit 130) and Ctrl-D (exit 0) to match the
-// bash traps, flushing buffered output first.
-func installSignalHandlers(out *bufio.Writer) {
+// watchForQuit installs the Ctrl-C (SIGINT → 130), SIGTERM (→ 0), and Ctrl-D
+// (EOF on the tty → 0) watchers. Each only reports its exit code on a channel
+// and closes stop — it never touches stdout — so the main goroutine remains the
+// sole writer of the buffered output (no data race, no lost final flush). The
+// returned channel yields the exit code once a quit is requested.
+func watchForQuit(stop chan struct{}) <-chan int {
+	codeCh := make(chan int, 2) // sig + ctrl-D may both fire; never block a sender
+
 	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGINT)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigc
-		out.Flush()
-		fmt.Fprintln(os.Stderr)
-		os.Exit(130)
+		if <-sigc == syscall.SIGINT {
+			codeCh <- 130
+		} else {
+			codeCh <- 0
+		}
 	}()
 
-	// Ctrl-D on an empty line closes stdin; nothing else reads the tty once the
-	// picker is done, so a reader goroutine can own it and quit on EOF.
-	if fi, err := os.Stdin.Stat(); err == nil && (fi.Mode()&os.ModeCharDevice) != 0 {
+	// Ctrl-D on an empty line closes the tty; nothing else reads it once the
+	// picker is done, so a reader goroutine can own it and quit on EOF (or any
+	// read error — the bash watcher's `while read` loop exits the same way).
+	if isCharDevice(os.Stdin) {
 		go func() {
 			tty, err := os.Open("/dev/tty")
 			if err != nil {
@@ -222,13 +238,25 @@ func installSignalHandlers(out *bufio.Writer) {
 			buf := make([]byte, 256)
 			for {
 				if _, err := tty.Read(buf); err != nil {
-					out.Flush()
-					fmt.Fprintln(os.Stderr)
-					os.Exit(0)
+					codeCh <- 0
+					return
 				}
 			}
 		}()
 	}
+
+	// First quit wins: record its code, then unblock the follow loop.
+	result := make(chan int, 1)
+	go func() {
+		result <- <-codeCh
+		close(stop)
+	}()
+	return result
+}
+
+func isCharDevice(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 func printBanner(cfg Config, agent Agent, session string, from, total, collapse int) {

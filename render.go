@@ -224,8 +224,6 @@ func dotColor(name string) string {
 		return "\x1b[38;2;205;155;255m"
 	case "TodoWrite", "update_plan":
 		return "\x1b[38;2;150;160;180m"
-	case "result":
-		return "\x1b[2;38;2;110;110;120m"
 	}
 	if strings.HasPrefix(name, "mcp__") {
 		return "\x1b[38;2;255;180;130m"

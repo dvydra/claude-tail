@@ -347,7 +347,7 @@ func runPicker(agents []Agent, home, pwd string, pick string, scanner *codexScan
 }
 
 func ttyUsable() bool {
-	if fi, err := os.Stdout.Stat(); err != nil || (fi.Mode()&os.ModeCharDevice) == 0 {
+	if !isCharDevice(os.Stdout) {
 		return false
 	}
 	if f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {

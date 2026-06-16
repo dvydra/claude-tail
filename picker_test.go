@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -99,7 +100,7 @@ func TestCollapsePreview(t *testing.T) {
 		}
 	}
 	// Truncation to 60 runes (57 + ellipsis).
-	long := collapsePreview(string(make([]byte, 0)) + repeat("x", 80))
+	long := collapsePreview(strings.Repeat("x", 80))
 	if r := []rune(long); len(r) != 58 || string(r[57]) != "…" {
 		t.Errorf("expected 57 chars + ellipsis, got %d runes: %q", len(r), long)
 	}
@@ -188,12 +189,4 @@ func TestPreviewCandidate(t *testing.T) {
 	if got := previewCandidate(AgentAgy, []byte(`{"type":"USER_INPUT","content":"x <USER_REQUEST>the ask</USER_REQUEST> y"}`)); got != "the ask" {
 		t.Errorf("agy: %q", got)
 	}
-}
-
-func repeat(s string, n int) string {
-	out := ""
-	for range n {
-		out += s
-	}
-	return out
 }
