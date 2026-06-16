@@ -25,28 +25,34 @@ const (
 type toolStyleKind int32
 
 const (
-	toolNone  toolStyleKind = iota // drop tool events
-	toolDots                       // one colored dot per call
-	toolLines                      // verbose "⚙ name  input" line
+	toolNone  toolStyleKind = iota // "hidden": drop tool events
+	toolDots                       // "dots":   one colored dot per call
+	toolLines                      // "full":   verbose "⚙ name  input" line
 )
 
+// toolCycle is the order the `t` key steps through: full → dots → hidden → …
+var toolCycle = []toolStyleKind{toolLines, toolDots, toolNone}
+
+// parseToolStyle maps a --tool-style value to a kind. full/dots/hidden are the
+// canonical names; none (=hidden) and lines (=full) are accepted as aliases.
 func parseToolStyle(s string) toolStyleKind {
 	switch s {
-	case "none":
+	case "none", "hidden":
 		return toolNone
-	case "lines":
+	case "lines", "full":
 		return toolLines
 	default:
 		return toolDots
 	}
 }
 
-func (k toolStyleKind) String() string {
+// label is the user-facing name (full / dots / hidden).
+func (k toolStyleKind) label() string {
 	switch k {
 	case toolNone:
-		return "none"
+		return "hidden"
 	case toolLines:
-		return "lines"
+		return "full"
 	default:
 		return "dots"
 	}
@@ -69,9 +75,8 @@ type Renderer struct {
 	// while the render goroutine reads them in emit).
 	toolStyle atomic.Int32 // current toolStyleKind
 	collapse  atomic.Int32 // current paste-collapse threshold (0 = off)
-	// Immutable "restore" targets for the toggles.
-	shownStyle      int32 // style to restore when un-hiding tools
-	collapseDefault int32 // threshold to restore when re-enabling collapse
+	// Immutable threshold to restore when re-enabling collapse.
+	collapseDefault int32
 
 	userHdr   string // full USER box header line (color + body + reset)
 	claudeHdr string // full AGENT box header line
@@ -104,11 +109,6 @@ func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse int) (*Ren
 // function, so the layout state machine can be tested without glamour's
 // color-dependent output.
 func newRendererWith(w io.Writer, theme Theme, toolStyle string, collapse int, render func(string) (string, error)) *Renderer {
-	style := parseToolStyle(toolStyle)
-	shown := style
-	if shown == toolNone { // started hidden → "show" reveals dots
-		shown = toolDots
-	}
 	collapseDefault := int32(collapse)
 	if collapseDefault == 0 { // started off → "enable" uses the standard threshold
 		collapseDefault = 5
@@ -117,25 +117,29 @@ func newRendererWith(w io.Writer, theme Theme, toolStyle string, collapse int, r
 		w:               w,
 		render:          render,
 		theme:           theme,
-		shownStyle:      int32(shown),
 		collapseDefault: collapseDefault,
 		userHdr:         theme.UserANSI + userHdrBody + reset,
 		claudeHdr:       theme.ClaudeANSI + claudeHdrBody + reset,
 	}
-	r.toolStyle.Store(int32(style))
+	r.toolStyle.Store(int32(parseToolStyle(toolStyle)))
 	r.collapse.Store(int32(collapse))
 	return r
 }
 
-// toggleTools flips tool-call rendering between hidden and shown (future events
-// only). Returns a short status string for the user.
-func (r *Renderer) toggleTools() string {
-	if toolStyleKind(r.toolStyle.Load()) == toolNone {
-		r.toolStyle.Store(r.shownStyle)
-		return "tools shown (" + toolStyleKind(r.shownStyle).String() + ")"
+// cycleTools advances tool-call rendering to the next state (full → dots →
+// hidden → full), for future events only. Returns a short status for the user.
+func (r *Renderer) cycleTools() string {
+	cur := toolStyleKind(r.toolStyle.Load())
+	i := 0
+	for j, k := range toolCycle {
+		if k == cur {
+			i = j
+			break
+		}
 	}
-	r.toolStyle.Store(int32(toolNone))
-	return "tools hidden"
+	next := toolCycle[(i+1)%len(toolCycle)]
+	r.toolStyle.Store(int32(next))
+	return "tool calls " + next.label()
 }
 
 // toggleCollapse flips long-user-paste collapsing on/off (future events only).

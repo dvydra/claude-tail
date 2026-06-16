@@ -4,8 +4,8 @@ import "testing"
 
 func TestKeyActionFor(t *testing.T) {
 	cases := map[byte]keyAction{
-		't':  keyToggleTools,
-		'T':  keyToggleTools,
+		't':  keyCycleTools,
+		'T':  keyCycleTools,
 		'c':  keyToggleCollapse,
 		'C':  keyToggleCollapse,
 		'q':  keyQuit,

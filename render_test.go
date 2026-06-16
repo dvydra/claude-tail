@@ -151,17 +151,13 @@ func TestBodySqueezesConsecutiveBlankLines(t *testing.T) {
 	}
 }
 
-func TestToggleTools(t *testing.T) {
+func TestCycleTools(t *testing.T) {
 	var b strings.Builder
-	r := newRendererWith(&b, testTheme(), "dots", 5, identityRender)
+	r := newRendererWith(&b, testTheme(), "dots", 5, identityRender) // start: dots
 
-	r.emit(Record{Kind: KindToolUse, Name: "Read"})
-	if b.Len() == 0 {
-		t.Fatal("dots mode should render a tool dot")
-	}
-
-	if got := r.toggleTools(); got != "tools hidden" {
-		t.Errorf("toggleTools status = %q", got)
+	// dots → hidden → full → dots (cycle order full → dots → hidden).
+	if got := r.cycleTools(); got != "tool calls hidden" {
+		t.Errorf("from dots, cycle status = %q, want hidden", got)
 	}
 	at := b.Len()
 	r.emit(Record{Kind: KindToolUse, Name: "Read"})
@@ -169,21 +165,30 @@ func TestToggleTools(t *testing.T) {
 		t.Error("tool use should produce no output while hidden")
 	}
 
-	if got := r.toggleTools(); got != "tools shown (dots)" {
-		t.Errorf("toggleTools status = %q", got)
+	if got := r.cycleTools(); got != "tool calls full" {
+		t.Errorf("from hidden, cycle status = %q, want full", got)
+	}
+	at = b.Len()
+	r.emit(Record{Kind: KindToolUse, Name: "Bash", Summary: "ls"})
+	if !strings.Contains(b.String()[at:], "⚙ Bash") {
+		t.Errorf("full mode should render a verbose tool line, got:\n%q", b.String()[at:])
+	}
+
+	if got := r.cycleTools(); got != "tool calls dots" {
+		t.Errorf("from full, cycle status = %q, want dots", got)
 	}
 	at = b.Len()
 	r.emit(Record{Kind: KindToolUse, Name: "Read"})
 	if b.Len() == at {
-		t.Error("tool use should render again after un-hiding")
+		t.Error("dots mode should render a dot again")
 	}
 }
 
-func TestToggleToolsFromNoneRevealsDots(t *testing.T) {
+func TestCycleToolsFromHidden(t *testing.T) {
 	var b strings.Builder
-	r := newRendererWith(&b, testTheme(), "none", 0, identityRender)
-	if got := r.toggleTools(); got != "tools shown (dots)" {
-		t.Errorf("starting from none, toggle should reveal dots; got %q", got)
+	r := newRendererWith(&b, testTheme(), "hidden", 0, identityRender) // alias for none
+	if got := r.cycleTools(); got != "tool calls full" {
+		t.Errorf("from hidden, first cycle should go to full; got %q", got)
 	}
 }
 

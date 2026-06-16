@@ -195,13 +195,14 @@ func validateAgent(s string) (string, error) {
 	return "", fmt.Errorf("invalid --agent value: %s (want 'auto', 'claude', 'codex', or 'agy')", s)
 }
 
-// validateToolStyle checks the --tool-style value.
+// validateToolStyle checks the --tool-style value. full/dots/hidden are the
+// canonical names; lines (=full) and none (=hidden) are accepted as aliases.
 func validateToolStyle(s string) error {
 	switch s {
-	case "none", "dots", "lines":
+	case "full", "dots", "hidden", "lines", "none":
 		return nil
 	}
-	return fmt.Errorf("invalid --tool-style value: %s (want 'none', 'dots', or 'lines')", s)
+	return fmt.Errorf("invalid --tool-style value: %s (want 'full', 'dots', or 'hidden')", s)
 }
 
 // resolveCollapse parses the collapse setting into a non-negative integer.

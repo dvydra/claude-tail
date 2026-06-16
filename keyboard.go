@@ -14,7 +14,7 @@ type keyAction int
 
 const (
 	keyNone keyAction = iota
-	keyToggleTools
+	keyCycleTools
 	keyToggleCollapse
 	keyQuit
 )
@@ -25,7 +25,7 @@ const (
 func keyActionFor(b byte) keyAction {
 	switch b {
 	case 't', 'T':
-		return keyToggleTools
+		return keyCycleTools
 	case 'c', 'C':
 		return keyToggleCollapse
 	case 'q', 'Q', 0x04:
@@ -78,8 +78,8 @@ func startKeyboard(r *Renderer, codeCh chan<- int) func() {
 			case keyQuit:
 				codeCh <- 0
 				return
-			case keyToggleTools:
-				fmt.Fprintln(os.Stderr, "entire-tail: "+r.toggleTools())
+			case keyCycleTools:
+				fmt.Fprintln(os.Stderr, "entire-tail: "+r.cycleTools())
 			case keyToggleCollapse:
 				fmt.Fprintln(os.Stderr, "entire-tail: "+r.toggleCollapse())
 			}
