@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -132,6 +133,97 @@ func TestFindSessionClaude(t *testing.T) {
 	}
 }
 
+func TestClaudeSlug(t *testing.T) {
+	cases := map[string]string{
+		"/Users/dvydra/src/entirehq/entire.io": "-Users-dvydra-src-entirehq-entire-io",
+		"/Users/me/proj":                       "-Users-me-proj",
+		"/Users/me/claude-tail":                "-Users-me-claude-tail", // existing '-' preserved
+		"/a/b_c/d e":                           "-a-b-c-d-e",            // '_' and space → '-'
+	}
+	for in, want := range cases {
+		if got := claudeSlug(in); got != want {
+			t.Errorf("claudeSlug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// mkClaudeSession writes a session file under home's projects/<slug> dir and
+// stamps its mtime to base+age. Returns the file path.
+func mkClaudeSession(t *testing.T, home, cwd string, base time.Time, age time.Duration) string {
+	t.Helper()
+	dir := filepath.Join(home, ".claude", "projects", claudeSlug(cwd))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "s.jsonl")
+	os.WriteFile(p, []byte("{}"), 0o644)
+	mt := base.Add(age)
+	os.Chtimes(p, mt, mt)
+	return p
+}
+
+// TestFindSessionClaudeDottedCwd is the original bug: a cwd containing '.' must
+// resolve into the dashed folder Claude actually created, not fall through to
+// the global newest.
+func TestFindSessionClaudeDottedCwd(t *testing.T) {
+	home := t.TempDir()
+	base := time.Now()
+	want := mkClaudeSession(t, home, "/Users/dvydra/src/entirehq/entire.io", base, 0)
+	// A decoy that IS the global newest — the old '/'-only slug would land here.
+	mkClaudeSession(t, home, "/Users/dvydra/src/other", base, time.Minute)
+	if got := findSessionClaude(home, "/Users/dvydra/src/entirehq/entire.io"); got != want {
+		t.Errorf("dotted cwd resolved to %q, want %q", got, want)
+	}
+}
+
+func TestFindSessionClaudeTree(t *testing.T) {
+	base := time.Now()
+
+	t.Run("exact beats a newer ancestor", func(t *testing.T) {
+		home := t.TempDir()
+		pwd := filepath.Join(home, "src/repo/sub")
+		exact := mkClaudeSession(t, home, pwd, base, 0)
+		mkClaudeSession(t, home, filepath.Join(home, "src/repo"), base, time.Minute) // newer ancestor
+		if got := findSessionClaude(home, pwd); got != exact {
+			t.Errorf("exact-cwd should win; got %q want %q", got, exact)
+		}
+	})
+
+	t.Run("no exact → nearest ancestor", func(t *testing.T) {
+		home := t.TempDir()
+		pwd := filepath.Join(home, "src/repo/a/b")
+		far := mkClaudeSession(t, home, filepath.Join(home, "src/repo"), base, time.Minute) // newer but farther
+		near := mkClaudeSession(t, home, filepath.Join(home, "src/repo/a"), base, 0)        // older but nearer
+		_ = far
+		if got := findSessionClaude(home, pwd); got != near {
+			t.Errorf("nearest ancestor should win; got %q want %q", got, near)
+		}
+	})
+
+	t.Run("no exact, no ancestor → descendant", func(t *testing.T) {
+		home := t.TempDir()
+		pwd := filepath.Join(home, "src/repo")
+		child := mkClaudeSession(t, home, filepath.Join(home, "src/repo/aws/cluster"), base, 0)
+		if got := findSessionClaude(home, pwd); got != child {
+			t.Errorf("descendant should be found; got %q want %q", got, child)
+		}
+	})
+
+	t.Run("sibling is out of tree → global", func(t *testing.T) {
+		home := t.TempDir()
+		pwd := filepath.Join(home, "src/repo/aws")
+		sibling := mkClaudeSession(t, home, filepath.Join(home, "src/repo/gcp"), base, 0)
+		// Not an ancestor or descendant of pwd, so it's reached only as the
+		// global newest (it's the sole session) — not as a tree match.
+		if got := findSessionClaude(home, pwd); got != sibling {
+			t.Errorf("expected global fallback to sibling; got %q want %q", got, sibling)
+		}
+		if note := cwdMismatchNote(AgentClaude, sibling, home, pwd, nil); note == "" || !strings.Contains(note, "global latest") {
+			t.Errorf("sibling should be reported as global latest, got %q", note)
+		}
+	})
+}
+
 func TestAgyConversationIDAndDiscovery(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".gemini", "antigravity-cli")
@@ -163,5 +255,20 @@ func TestCwdMismatchNote(t *testing.T) {
 	// Claude: non-matching → note.
 	if note := cwdMismatchNote(AgentClaude, sess, home, "/Users/me/other", nil); note == "" {
 		t.Error("expected mismatch note")
+	}
+
+	// Same-tree ancestor → note names the enclosing dir, not "global latest".
+	ancCwd := filepath.Join(home, "src/repo")
+	ancSess := filepath.Join(home, ".claude", "projects", claudeSlug(ancCwd), "s.jsonl")
+	note := cwdMismatchNote(AgentClaude, ancSess, home, filepath.Join(home, "src/repo/sub"), nil)
+	if !strings.Contains(note, "same-tree dir") || !strings.Contains(note, ancCwd) {
+		t.Errorf("ancestor note = %q, want it to name %q", note, ancCwd)
+	}
+
+	// Same-tree descendant → subdirectory note.
+	descCwd := filepath.Join(home, "src/repo/aws")
+	descSess := filepath.Join(home, ".claude", "projects", claudeSlug(descCwd), "s.jsonl")
+	if note := cwdMismatchNote(AgentClaude, descSess, home, filepath.Join(home, "src/repo"), nil); !strings.Contains(note, "subdirectory") {
+		t.Errorf("descendant note = %q, want a subdirectory note", note)
 	}
 }
