@@ -14,15 +14,106 @@ import (
 // are content-scanned to recover their cwd.
 const codexScanCap = 200
 
-// findSessionClaude resolves the newest Claude session for pwd, falling back to
-// the global newest. Claude encodes the cwd as the project folder name with '/'
-// replaced by '-'.
+// claudeSlugRe matches every rune Claude Code rewrites to '-' when it names a
+// project folder: anything outside [A-Za-z0-9].
+var claudeSlugRe = regexp.MustCompile(`[^A-Za-z0-9]`)
+
+// claudeSlug encodes an absolute cwd the way Claude Code names its project
+// folder under ~/.claude/projects: every non-alphanumeric rune (slash, dot,
+// underscore, space, …) becomes '-'. The bash original — and the first Go
+// port — replaced only '/', so any cwd containing a '.' (e.g. "…/entire.io")
+// resolved to a folder name that never existed and silently fell back to the
+// global-newest session.
+func claudeSlug(path string) string {
+	return claudeSlugRe.ReplaceAllString(path, "-")
+}
+
+func claudeProjectsDir(home string) string {
+	return filepath.Join(home, ".claude", "projects")
+}
+
+// findSessionClaude resolves the newest Claude session for pwd. It prefers an
+// exact-cwd match (lossless), then the nearest session in the same directory
+// tree (a parent or child of pwd — see claudeTreeDir), and finally the global
+// newest across all projects.
 func findSessionClaude(home, pwd string) string {
-	slug := strings.ReplaceAll(pwd, "/", "-")
-	if f := newestGlob(filepath.Join(home, ".claude", "projects", slug, "*.jsonl")); f != "" {
+	root := claudeProjectsDir(home)
+	if f := newestGlob(filepath.Join(root, claudeSlug(pwd), "*.jsonl")); f != "" {
 		return f
 	}
-	return newestGlob(filepath.Join(home, ".claude", "projects", "*", "*.jsonl"))
+	if d := claudeTreeDir(root, home, pwd); d != "" {
+		if f := newestGlob(filepath.Join(d, "*.jsonl")); f != "" {
+			return f
+		}
+	}
+	return newestGlob(filepath.Join(root, "*", "*.jsonl"))
+}
+
+// claudeAncestors yields pwd's ancestor directories from nearest (its parent)
+// up to — but excluding — home. The home bound keeps a stray session in ~ or
+// /Users from being treated as part of pwd's project tree; broad ancestors like
+// ~/src remain eligible only as a last resort because nearer ones are tried
+// first.
+func claudeAncestors(home, pwd string) []string {
+	bound := filepath.Clean(home) + string(os.PathSeparator)
+	var out []string
+	for dir := filepath.Dir(pwd); strings.HasPrefix(dir, bound); dir = filepath.Dir(dir) {
+		out = append(out, dir)
+	}
+	return out
+}
+
+// claudeTreeDir returns the project folder of the nearest cwd in pwd's tree
+// that has sessions: the deepest ancestor of pwd with a folder, else the
+// shallowest descendant. Ancestors win over descendants because they're matched
+// losslessly from pwd's real path, whereas descendants are only inferred from a
+// slug prefix. Returns "" when nothing in the tree has a session.
+func claudeTreeDir(root, home, pwd string) string {
+	for _, anc := range claudeAncestors(home, pwd) {
+		if d := filepath.Join(root, claudeSlug(anc)); dirHasSessions(d) {
+			return d
+		}
+	}
+	// Descendants: a deeper cwd's folder is slug(pwd) extended by a path
+	// segment, i.e. its base name starts with slug(pwd)+"-". Nearest ≈ shortest
+	// base name; the newest jsonl breaks ties.
+	prefix := claudeSlug(pwd) + "-"
+	best, bestMtime := "", int64(-1)
+	matches, _ := filepath.Glob(filepath.Join(root, "*"))
+	for _, d := range matches {
+		base := filepath.Base(d)
+		if !strings.HasPrefix(base, prefix) {
+			continue
+		}
+		f := newestGlob(filepath.Join(d, "*.jsonl"))
+		if f == "" {
+			continue
+		}
+		mt := fileMtimeNano(f)
+		switch {
+		case best == "", len(base) < len(filepath.Base(best)):
+			best, bestMtime = d, mt
+		case len(base) == len(filepath.Base(best)) && mt > bestMtime:
+			best, bestMtime = d, mt
+		}
+	}
+	return best
+}
+
+// claudeAncestorDir returns the real ancestor directory of pwd whose project
+// folder is base, or "" if base isn't an ancestor's folder. Used to explain a
+// same-tree fallback in the cwd-mismatch note.
+func claudeAncestorDir(home, pwd, base string) string {
+	for _, anc := range claudeAncestors(home, pwd) {
+		if claudeSlug(anc) == base {
+			return anc
+		}
+	}
+	return ""
+}
+
+func dirHasSessions(dir string) bool {
+	return newestGlob(filepath.Join(dir, "*.jsonl")) != ""
 }
 
 // findSessionAgy resolves the agy transcript for pwd via the cwd→id cache,
@@ -184,9 +275,15 @@ func isTruthy(raw json.RawMessage) bool {
 func cwdMismatchNote(agent Agent, session, home, pwd string, scanner *codexScanner) string {
 	switch agent {
 	case AgentClaude:
-		slug := strings.ReplaceAll(pwd, "/", "-")
-		prefix := filepath.Join(home, ".claude", "projects", slug) + string(os.PathSeparator)
-		if !strings.HasPrefix(session, prefix) {
+		base := filepath.Base(filepath.Dir(session))
+		switch {
+		case base == claudeSlug(pwd):
+			return "" // exact match — the common case.
+		case claudeAncestorDir(home, pwd, base) != "":
+			return "no Claude session for " + pwd + " — following same-tree dir " + claudeAncestorDir(home, pwd, base) + "."
+		case strings.HasPrefix(base, claudeSlug(pwd)+"-"):
+			return "no Claude session for " + pwd + " — following same-tree subdirectory session."
+		default:
 			return "no Claude session for " + pwd + " — using global latest."
 		}
 	case AgentCodex:

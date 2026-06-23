@@ -145,8 +145,7 @@ func activeCwdCounts(procname string) []cwdCount {
 func sessionsForCwdAgent(agent Agent, home, cwd string, n int, scanner *codexScanner) []string {
 	switch agent {
 	case AgentClaude:
-		slug := strings.ReplaceAll(cwd, "/", "-")
-		all := newestGlobAll(filepath.Join(home, ".claude", "projects", slug, "*.jsonl"))
+		all := newestGlobAll(filepath.Join(home, ".claude", "projects", claudeSlug(cwd), "*.jsonl"))
 		if len(all) > n {
 			all = all[:n]
 		}
