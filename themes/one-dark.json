@@ -38,7 +38,7 @@
     "margin": 0,
     "chroma": {
       "text": { "color": "#abb2bf" },
-      "error": { "color": "#abb2bf", "background_color": "#e06c75" },
+      "error": { "color": "#abb2bf" },
       "comment": { "color": "#5c6370", "italic": true },
       "comment_preproc": { "color": "#c678dd" },
       "keyword": { "color": "#c678dd" },

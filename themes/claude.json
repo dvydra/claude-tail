@@ -59,7 +59,7 @@
     "margin": 0,
     "chroma": {
       "text": { "color": "#C4C4C4" },
-      "error": { "color": "#F1F1F1", "background_color": "#F05B5B" },
+      "error": { "color": "#C4C4C4" },
       "comment": { "color": "#676767" },
       "comment_preproc": { "color": "#FF875F" },
       "keyword": { "color": "#00AAFF" },
