@@ -52,12 +52,15 @@ agent-agnostic and consumes only `Record`s.
   also the static `--list` dump. Pure build/reduce/render split from a thin tty
   driver (alt-screen + `setRaw`), so navigation/render are unit-tested without a tty
 - `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) that
-  feeds the tree's live markers and the `auto` "one live session here → tail it"
-  shortcut; routes `--pick` to `tree.go`
-- `iterm.go` — macOS/iTerm2 automation via `osascript`: `--workspace` (3-pane
-  claude+tail+shell dev window) and the tree's `o` key (2-pane resume split).
-  Pure script builders (`workspaceScript`/`resumePairScript`) split from the
-  `osaRun` executor so quoting/layout are unit-tested without launching iTerm
+  feeds the tree's live markers, plus `runPicker`/`resolveTreeChoice`. The tree
+  is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` / piped
+  runs / explicit SESSION_FILE skip it and tail directly
+- `iterm.go` — macOS/iTerm2 automation via `osascript`: the tree's `Enter`
+  opens the 3-pane workspace (`claude --resume` + live tail + shell) in the
+  CURRENT window, cd'd to the picked session's folder. Pure `workspaceScript`
+  builder split from the `osaRun` executor so quoting/layout are unit-tested
+  without launching iTerm. The queued-claude trick: the command is written to
+  the current pane's tty and runs once entire-tail exits
 - `render.go` — the **rendering state machine** (one path shared by backfill +
   live): tracks previous participant (consecutive same-participant turns collapse
   to a dim `⋯ ts` marker) and dot-streak state; tool tristate lives here

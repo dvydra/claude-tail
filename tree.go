@@ -358,7 +358,7 @@ type treeUI struct {
 	Chosen    string // selected session path; non-empty ends the loop
 	ChosenCwd string // folder cwd of the selection (for the iTerm launcher)
 	ChosenID  string // session id of the selection (for claude --resume)
-	Resume    bool   // selection should open an iTerm resume split, not tail
+	Workspace bool   // selection should open the iTerm workspace, not tail
 }
 
 type treeKey int
@@ -434,8 +434,8 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 			ui.Cursor = 0
 		case 'G':
 			ui.Cursor = len(ui.Rows) - 1
-		case 'o', 'O':
-			ui.selectSession(true) // resume in an iTerm split
+		case 't', 'T':
+			ui.selectSession(false) // tail in-place, no windowing
 		case 'q', 'Q':
 			ui.Quit = true
 		case '/':
@@ -480,13 +480,14 @@ func (ui *treeUI) activate() {
 		ui.Rows = flattenRows(ui.Tree, ui.Filter)
 		return
 	}
-	ui.selectSession(false)
+	ui.selectSession(true) // Enter on a session → open the iTerm workspace
 }
 
 // selectSession records the session under the cursor as the choice, ending the
-// loop. resume=true means open an iTerm resume split; false means tail in-place.
-// On a folder header it's a no-op (folders expand via activate, not select).
-func (ui *treeUI) selectSession(resume bool) {
+// loop. workspace=true opens the 3-pane iTerm workspace (resume + tail + shell);
+// false tails in-place. On a folder header it's a no-op (folders expand via
+// activate, not select).
+func (ui *treeUI) selectSession(workspace bool) {
 	row, ok := ui.current()
 	if !ok || row.Session == -1 {
 		return
@@ -496,7 +497,7 @@ func (ui *treeUI) selectSession(resume bool) {
 	ui.Chosen = s.Path
 	ui.ChosenCwd = folder.Cwd
 	ui.ChosenID = s.ID
-	ui.Resume = resume
+	ui.Workspace = workspace
 }
 
 func (ui *treeUI) folderHeaderIndex(folder int) int {
@@ -618,7 +619,7 @@ func renderRow(ui treeUI, i int) string {
 }
 
 func composeHeader() string {
-	return "  CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ tail · o resume↗ · / filter · q quit"
+	return "  CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · t tail · / filter · q quit"
 }
 
 func composeFooter(ui treeUI) string {
@@ -699,20 +700,21 @@ func claudeLiveCwds() map[string]int {
 	return m
 }
 
-// treeResult distinguishes how the tree exited: a session was chosen to tail, a
-// session was chosen to resume in an iTerm split, the user quit (abort the
-// program), or it never ran (empty tree / no tty → fall back).
+// treeResult distinguishes how the tree exited: a session was chosen to open as
+// an iTerm workspace (resume + tail + shell), a session was chosen to tail
+// in-place, the user quit (abort the program), or it never ran (empty tree / no
+// tty → fall back).
 type treeResult int
 
 const (
-	treeChosen treeResult = iota // tail the session in-place
-	treeResume                   // resume it in a new iTerm window
+	treeWorkspace treeResult = iota // open the 3-pane iTerm workspace (Enter)
+	treeChosen                      // tail the session in-place (t)
 	treeQuit
 	treeNone
 )
 
-// treeChoice is what the tree hands back: the picked session (for treeChosen /
-// treeResume) plus the folder cwd and session id the iTerm launcher needs.
+// treeChoice is what the tree hands back: the picked session plus the folder cwd
+// and session id the iTerm workspace launcher needs.
 type treeChoice struct {
 	Result treeResult
 	Path   string
@@ -777,8 +779,8 @@ func runTreeTUI(tree sessionTree, theme Theme) treeChoice {
 		}
 		if ui.Chosen != "" {
 			res := treeChosen
-			if ui.Resume {
-				res = treeResume
+			if ui.Workspace {
+				res = treeWorkspace
 			}
 			return treeChoice{Result: res, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID}
 		}

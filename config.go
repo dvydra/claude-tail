@@ -19,7 +19,6 @@ type Config struct {
 	Pick      string // auto|always|never
 	Days      string // window for the session tree (empty = per-mode default)
 	List      bool   // --list: static ls-style dump instead of the TUI
-	Workspace bool   // --workspace: launch the 3-pane iTerm dev window
 }
 
 // Action is what the parsed CLI asks for beyond a normal run.
@@ -30,8 +29,7 @@ const (
 	ActionHelp
 	ActionVersion
 	ActionListThemes
-	ActionList      // static session-tree dump (--list)
-	ActionWorkspace // launch the 3-pane iTerm dev window (--workspace)
+	ActionList // static session-tree dump (--list)
 )
 
 // firstNonEmpty returns the first non-empty value (matching bash ${A:-${B:-c}},
@@ -173,7 +171,9 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 		case a == "-L" || a == "--list":
 			c.List = true
 		case a == "-w" || a == "--workspace":
-			c.Workspace = true
+			// Workspace is the default; -w just forces the picker even when the
+			// env default is 'never'.
+			c.Pick = "always"
 		case a == "-l" || a == "--list-themes":
 			return c, ActionListThemes, nil
 		case a == "-h" || a == "--help":
@@ -200,9 +200,6 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 	// Re-apply the off-synonym normalization for collapse provided via flag.
 	c.Collapse = normalizeCollapseWord(c.Collapse)
 	c.Pick = normalizePickWord(c.Pick)
-	if c.Workspace {
-		return c, ActionWorkspace, nil
-	}
 	if c.List {
 		return c, ActionList, nil
 	}

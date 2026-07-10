@@ -249,40 +249,47 @@ func TestUpdateTreeNavigation(t *testing.T) {
 	}
 }
 
-func TestUpdateTreeEnterTails(t *testing.T) {
-	tr := sampleTree()
-	tr.Folders[0].Sessions[0].Path = "/sessions/aaaa1111.jsonl"
-	ui := treeUI{Tree: tr, Height: 20}
-	ui.Rows = flattenRows(ui.Tree, "")
-	ui.Cursor = 1 // first session
-	ui = updateTree(ui, kEnter, 0)
-	if ui.Chosen != "/sessions/aaaa1111.jsonl" {
-		t.Errorf("Enter on session → Chosen %q", ui.Chosen)
-	}
-}
-
-func TestUpdateTreeResume(t *testing.T) {
+func TestUpdateTreeEnterWorkspace(t *testing.T) {
 	tr := sampleTree()
 	tr.Folders[0].Sessions[0].Path = "/sessions/aaaa1111.jsonl"
 	ui := treeUI{Tree: tr, Height: 20}
 	ui.Rows = flattenRows(ui.Tree, "")
 	ui.Cursor = 1 // first session of folder A
 
-	ui = updateTree(ui, kRune, 'o')
-	if ui.Chosen != "/sessions/aaaa1111.jsonl" || !ui.Resume {
-		t.Errorf("'o' should select+resume: chosen=%q resume=%v", ui.Chosen, ui.Resume)
+	// Enter → open the iTerm workspace: carries path + cwd + id, Workspace set.
+	ui = updateTree(ui, kEnter, 0)
+	if ui.Chosen != "/sessions/aaaa1111.jsonl" || !ui.Workspace {
+		t.Errorf("Enter should select+workspace: chosen=%q workspace=%v", ui.Chosen, ui.Workspace)
 	}
 	if ui.ChosenCwd != "/home/me/a" || ui.ChosenID != "aaaa1111" {
-		t.Errorf("resume needs cwd+id: cwd=%q id=%q", ui.ChosenCwd, ui.ChosenID)
+		t.Errorf("workspace needs cwd+id: cwd=%q id=%q", ui.ChosenCwd, ui.ChosenID)
+	}
+}
+
+func TestUpdateTreeTailInPlace(t *testing.T) {
+	tr := sampleTree()
+	tr.Folders[0].Sessions[0].Path = "/sessions/aaaa1111.jsonl"
+	ui := treeUI{Tree: tr, Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+	ui.Cursor = 1 // first session
+
+	// 't' → tail in-place: chosen set, but Workspace stays false.
+	ui = updateTree(ui, kRune, 't')
+	if ui.Chosen != "/sessions/aaaa1111.jsonl" || ui.Workspace {
+		t.Errorf("'t' should tail in-place: chosen=%q workspace=%v", ui.Chosen, ui.Workspace)
 	}
 
-	// 'o' on a folder header is a no-op (nothing to resume).
+	// Enter on a folder header expands it, doesn't select.
 	ui2 := treeUI{Tree: sampleTree(), Height: 20}
+	ui2.Tree.Folders[0].Expanded = false
 	ui2.Rows = flattenRows(ui2.Tree, "")
 	ui2.Cursor = 0 // folder header
-	ui2 = updateTree(ui2, kRune, 'o')
-	if ui2.Chosen != "" || ui2.Resume {
-		t.Errorf("'o' on folder should do nothing, got chosen=%q resume=%v", ui2.Chosen, ui2.Resume)
+	ui2 = updateTree(ui2, kEnter, 0)
+	if ui2.Chosen != "" || ui2.Workspace {
+		t.Errorf("Enter on folder should expand, not select: chosen=%q", ui2.Chosen)
+	}
+	if !ui2.Tree.Folders[0].Expanded {
+		t.Error("Enter on collapsed folder should expand it")
 	}
 }
 
