@@ -51,13 +51,16 @@ agent-agnostic and consumes only `Record`s.
   grouped by repo/folder, arrow-key navigable, recency-colored, type-to-filter;
   also the static `--list` dump. Pure build/reduce/render split from a thin tty
   driver (alt-screen + `setRaw`), so navigation/render are unit-tested without a tty
-- `entire.go` — merges the DEFAULT tree: `buildSessionTree` takes the complete
-  local `~/.claude` crawl as the base and (unless `--local`) folds in the
-  `entire` CLI's cloud metadata via `mergeEntire` — regroup by repo (from
-  `entire api /me/sessions` for tracked sessions, else the cwd's git `origin`
-  remote, else the folder path), overlay entire's generated titles, and append
-  cloud-only sessions from other machines (listed, not tailable). `--local` or
-  entire being absent/offline/empty → the pure folder-grouped crawl
+- `entire.go` — builds the DEFAULT tree, tuned to stay instant + local:
+  `buildSessionTree` takes the complete local `~/.claude` crawl as the base and
+  `mergeEntire` regroups it by repo via each cwd's git `origin` remote (for
+  entire repos the remote is `entire://…/owner/repo` → same `owner/repo` the
+  cloud uses). Cloud metadata (`entire api /me/sessions`: generated titles +
+  cross-machine sessions) is **opt-in via `--cloud`** and disk-cached (~10 min,
+  `cachedEntireSessions`), so the default never blocks on the network — it only
+  reads a warm cache. `--local` skips git+cloud (pure folder-grouped crawl).
+  `loadClaudeMeta` reads only each session's head (early-out) to keep the crawl
+  cheap regardless of transcript size
 - `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) for
   the `--local` view's live markers, plus `runPicker`/`resolveTreeChoice`. The
   tree is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` /

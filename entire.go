@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,69 @@ func entireAvailable() bool {
 	return err == nil
 }
 
+const entireCacheTTL = 10 * time.Minute
+
+// cachedEntireSessions returns the entire session inventory, preferring a fresh
+// on-disk cache so repeat picker opens are instant (the live /me/sessions call
+// can take several seconds). On a cold or stale cache it does the live fetch,
+// prints a one-line note, and refreshes the cache; a stale cache is reused if the
+// live fetch fails.
+func cachedEntireSessions() ([]entireSession, error) {
+	cp := entireCachePath()
+	fi, statErr := os.Stat(cp)
+	if statErr == nil && time.Since(fi.ModTime()) < entireCacheTTL {
+		if s, err := readEntireCache(cp); err == nil && len(s) > 0 {
+			return s, nil
+		}
+	}
+	if !entireAvailable() { // no CLI to fetch with — use a stale cache if present
+		return readEntireCache(cp)
+	}
+	fmt.Fprintln(os.Stderr, "entire-tail: fetching sessions from entire… (cached for a few minutes; --local skips it)")
+	sessions, err := fetchEntireSessions()
+	if err != nil || len(sessions) == 0 {
+		if statErr == nil { // live fetch failed — fall back to a stale cache
+			if s, cerr := readEntireCache(cp); cerr == nil && len(s) > 0 {
+				return s, nil
+			}
+		}
+		return sessions, err
+	}
+	writeEntireCache(cp, sessions)
+	return sessions, nil
+}
+
+func entireCachePath() string {
+	dir, err := os.UserCacheDir()
+	if err != nil || dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "entire-tail", "sessions.json")
+}
+
+type entireCacheBody struct {
+	Sessions []entireSession `json:"sessions"`
+}
+
+func readEntireCache(path string) ([]entireSession, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var body entireCacheBody
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, err
+	}
+	return body.Sessions, nil
+}
+
+func writeEntireCache(path string, sessions []entireSession) {
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	if data, err := json.Marshal(entireCacheBody{Sessions: sessions}); err == nil {
+		_ = os.WriteFile(path, data, 0o600)
+	}
+}
+
 // localTimezone returns the IANA zone name (e.g. "Australia/Melbourne") from
 // /etc/localtime, falling back to $TZ then UTC. The sessions API requires it.
 func localTimezone() string {
@@ -74,20 +138,28 @@ func fetchEntireSessions() ([]entireSession, error) {
 	return body.Sessions, nil
 }
 
-// buildSessionTree builds the picker tree. The local ~/.claude crawl is the
-// complete base (every session on this machine); when the entire CLI is
-// available it's merged in — regrouping by repo and overlaying entire's titles,
-// and appending cloud-only sessions from other machines. --local (forceLocal),
-// or entire being absent/offline/empty, yields the pure folder-grouped crawl.
-func buildSessionTree(home, pwd string, days int, now int64, forceLocal bool) sessionTree {
+// buildSessionTree builds the picker tree. The complete local ~/.claude crawl is
+// the base (every session on this machine). Unless forceLocal, it's regrouped by
+// repo and enriched with entire's cloud metadata — titles + cross-machine
+// sessions. To stay instant, the default only uses a warm on-disk cache of that
+// metadata (never a blocking fetch); pass cloud=true (--cloud) to refresh it.
+//
+//	--local   → pure folder-grouped crawl (no git, no cloud). Fastest / offline.
+//	default   → repo-grouped local + entire titles from cache if warm.
+//	--cloud   → refresh entire's metadata (slow once), then enrich.
+func buildSessionTree(home, pwd string, days int, now int64, forceLocal, cloud bool) sessionTree {
 	local := buildClaudeTree(home, pwd, days, now, claudeLiveCwds())
-	if forceLocal || !entireAvailable() {
+	if forceLocal {
 		return local
 	}
-	sessions, err := fetchEntireSessions()
-	if err != nil || len(sessions) == 0 {
-		return local // offline / logged out / nothing tracked → pure local
+	var sessions []entireSession
+	if cloud {
+		sessions, _ = cachedEntireSessions() // may fetch (slow), warms the cache
+	} else {
+		sessions, _ = readEntireCache(entireCachePath()) // warm cache only — no network
 	}
+	// mergeEntire with no cloud data still regroups the complete local set by repo
+	// (via each cwd's git remote), so the default is repo-grouped and fast.
 	return mergeEntire(local, sessions, home, days, now)
 }
 
@@ -166,14 +238,24 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 		})
 	}
 
-	tree := sessionTree{Now: now, Home: home, Pwd: local.Pwd}
+	curRepo := repoForCwd(local.Pwd, home, repoCache)
+	tree := sessionTree{Now: now, Home: home, Pwd: local.Pwd, CurrentGroup: curRepo}
 	for _, repo := range order {
 		g := groups[repo]
 		sort.SliceStable(g.Sessions, func(i, j int) bool { return g.Sessions[i].Mtime > g.Sessions[j].Mtime })
 		tree.Folders = append(tree.Folders, *g)
 	}
 	sortFolders(tree.Folders)
-	if len(tree.Folders) > 0 {
+	// Open on the current repo's group when it's present, else the most recent.
+	expanded := false
+	for i := range tree.Folders {
+		if tree.Folders[i].Cwd == curRepo {
+			tree.Folders[i].Expanded = true
+			expanded = true
+			break
+		}
+	}
+	if !expanded && len(tree.Folders) > 0 {
 		tree.Folders[0].Expanded = true
 	}
 	return tree

@@ -130,21 +130,21 @@ to tail, it opens an interactive tree of your sessions, grouped by **repo**:
 
 ### Where the sessions come from
 
-By default the tree **unions** your complete local `~/.claude` history with the
-**[`entire`](https://docs.entire.io) CLI**'s cloud metadata:
+Three layers, tuned so the default is **instant and fully local**:
 
-- **Every local session is shown** (nothing is omitted), grouped by **repo** —
-  from `entire` for sessions it tracks, otherwise from the folder's git
-  `origin` remote (falling back to the folder path when it isn't a git repo).
-- `entire`'s **generated title** is used where it has one, else the session's
-  own summary / first prompt.
-- **Cloud-only sessions** — tracked by `entire` on another machine but not
-  present here — are appended too; they list but can't be tailed on this
-  machine (selecting one says so).
+1. **Base — every local session** from a `~/.claude` crawl (nothing omitted),
+   **grouped by repo** via each session's `cwd` git `origin` remote (for
+   [`entire`](https://docs.entire.io)-enabled repos that's `entire://…/owner/repo`,
+   so it lands on the same `owner/repo` the cloud uses; non-git dirs fall back to
+   the folder path). No network — a few hundred milliseconds.
+2. **Titles** — each row's label is the session's own summary / first prompt.
+3. **Cloud (opt-in) — `--cloud`** enriches with `entire`'s generated titles and
+   appends sessions tracked on **other machines** (listed, not tailable here).
+   The fetch takes a few seconds and is **cached ~10 min**, so ordinary runs
+   afterward stay instant *and* keep the nicer titles.
 
-`--local` skips `entire` entirely — a pure `~/.claude` crawl, grouped by folder
-path with `● live` markers (also the automatic fallback when `entire` is absent,
-logged out, or offline):
+`--local` is the pure `~/.claude` crawl grouped by **folder** (no git remote
+lookups, no cloud) — fastest / fully offline — with `● live` markers:
 
 ```
 ▾ ~/src/entirehq/entiredb  (3)  3m ago  ● live

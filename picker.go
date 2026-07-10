@@ -113,11 +113,11 @@ func cwShort(cwd string) string {
 // tail that session in the current pane; it returns ok=false when there's no tty
 // or no Claude agent in scope, so the caller falls back to auto-discovery. A
 // workspace selection launches the iTerm layout and exits; quitting exits.
-func runPicker(agents []Agent, home, pwd string, days int, local bool, theme Theme) (string, Agent, bool) {
+func runPicker(agents []Agent, home, pwd string, days int, local, cloud bool, theme Theme) (string, Agent, bool) {
 	if !ttyUsable() || !slices.Contains(agents, AgentClaude) {
 		return "", "", false
 	}
-	if p, ok := resolveTreeChoice(runClaudeTree(home, pwd, days, local, theme)); ok {
+	if p, ok := resolveTreeChoice(runClaudeTree(home, pwd, days, local, cloud, theme)); ok {
 		return p, AgentClaude, true
 	}
 	return "", "", false
