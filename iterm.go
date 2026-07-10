@@ -72,22 +72,23 @@ func launchWorkspace(cwd string) error {
 	return osaRun(workspaceScript(cwd, selfPath()))
 }
 
-// workspaceScript builds the AppleScript for the 3-pane dev window.
+// workspaceScript builds the AppleScript for the 3-pane dev layout. It reuses the
+// CURRENT window/session: the pane running this command becomes A (the claude
+// command is queued and runs once entire-tail exits), split into B (full-height
+// right) and C (bottom-left).
 func workspaceScript(cwd, self string) string {
 	cd := "cd " + shQuote(cwd)
 	a := cd + " && claude"
 	b := cd + " && sleep 1 && " + shQuote(self) + " --no-pick"
 	c := cd
 	return fmt.Sprintf(`tell application "iTerm2"
-	activate
-	create window with default profile
 	tell current window
 		set a to current session
 		tell a
-			write text "%s"
 			set b to (split vertically with default profile)
 			set c to (split horizontally with default profile)
 		end tell
+		tell a to write text "%s"
 		tell b to write text "%s"
 		tell c to write text "%s"
 		select a

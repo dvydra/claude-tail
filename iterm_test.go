@@ -35,7 +35,8 @@ func TestWorkspaceScript(t *testing.T) {
 	s := workspaceScript("/work/proj", "/usr/local/bin/entire-tail")
 	checks := []string{
 		`tell application "iTerm2"`,
-		"create window with default profile",
+		"tell current window",                     // reuse current window, don't create one
+		"set a to current session",                // current pane becomes A
 		"split vertically with default profile",   // → B (right, full height)
 		"split horizontally with default profile", // → C (below A)
 		"cd '/work/proj' && claude",
@@ -46,6 +47,10 @@ func TestWorkspaceScript(t *testing.T) {
 		if !strings.Contains(s, c) {
 			t.Errorf("workspace script missing %q:\n%s", c, s)
 		}
+	}
+	// It must reuse the current window, not open a new one.
+	if strings.Contains(s, "create window") {
+		t.Error("workspace should reuse the current window, not create one")
 	}
 	// The workspace must not run --resume (that's the resume-pair layout).
 	if strings.Contains(s, "--resume") {

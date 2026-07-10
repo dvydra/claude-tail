@@ -470,11 +470,12 @@ OPTIONS:
   -L, --list                Print the session tree as a static, greppable
                             ls-style dump instead of the TUI, then exit.
                             Uncapped by default; narrow with --days.
-  -w, --workspace           macOS + iTerm2 only: open a new iTerm window with a
-                            three-pane dev layout — Claude (top-left),
-                            entire-tail (full-height right), and a plain shell
-                            (bottom-left) — all in $PWD, then exit. One command
-                            to spin up a coding workspace with a live view.
+  -w, --workspace           macOS + iTerm2 only: split the CURRENT iTerm window
+                            into a three-pane dev layout — Claude (the pane you
+                            ran it in, top-left), entire-tail (full-height
+                            right), and a plain shell (bottom-left) — all in
+                            $PWD, then exit. One command to spin up a coding
+                            workspace with a live view beside it.
   -l, --list-themes         List available themes (with descriptions) and exit.
   -h, --help                Show this help and exit.
   -V, --version             Show version and exit.

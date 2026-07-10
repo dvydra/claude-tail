@@ -181,12 +181,13 @@ tree still works, minus the live coloring.
 On macOS + iTerm2, entire-tail can lay out panes for you via AppleScript (no
 extra deps — `osascript` ships with the OS).
 
-**`--workspace` / `-w`** opens a fresh dev window in one command: three panes,
-all `cd`'d to `$PWD`.
+**`--workspace` / `-w`** turns the **current** iTerm window into a 3-pane dev
+layout in one command: the pane you run it in becomes Claude, and it splits off
+entire-tail and a shell beside it — all `cd`'d to `$PWD`.
 
 ```
 ┌──────────┬──────────┐
-│ claude   │          │   A = claude (fresh session)
+│ claude   │          │   A = claude (the pane you ran -w in)
 ├──────────┤ entire-  │   B = entire-tail, following A's new session
 │ shell    │ tail     │   C = a plain shell
 └──────────┴──────────┘
@@ -196,6 +197,9 @@ all `cd`'d to `$PWD`.
 cd ~/src/my-project
 entire tail --workspace     # or -w
 ```
+
+(The `claude` command is queued into the current pane and runs the moment
+`entire-tail` exits, so that pane becomes A.)
 
 **`o` in the session tree** resumes the highlighted session in a two-pane
 window: `claude --resume <id>` on the left, `entire-tail` following that exact
