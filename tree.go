@@ -34,6 +34,7 @@ type treeSession struct {
 	Mtime   int64
 	Branch  string
 	Snippet string
+	Repo    string // owner/repo (search hits) — used to reconstruct cloud-only transcripts
 	Msgs    int    // rough count: user+assistant events
 	Live    bool   // a running claude process holds this session's folder
 	cwd     string // recovered .cwd (build-only; folder carries the display copy)
@@ -361,20 +362,21 @@ func sessionMatches(s treeSession, f string) bool {
 // ── UI state + reducer (pure) ────────────────────────────────────────────────
 
 type treeUI struct {
-	Tree      sessionTree
-	Theme     Theme
-	Rows      []treeRow
-	Cursor    int
-	Top       int // first visible row (scroll offset)
-	Width     int
-	Height    int // body rows available (excludes header + footer)
-	Filter    string
-	Filtering bool
-	Quit      bool
-	Chosen    string // selected session path; non-empty ends the loop
-	ChosenCwd string // folder cwd of the selection (for the iTerm launcher)
-	ChosenID  string // session id of the selection (for claude --resume)
-	Workspace bool   // selection should open the iTerm workspace, not tail
+	Tree       sessionTree
+	Theme      Theme
+	Rows       []treeRow
+	Cursor     int
+	Top        int // first visible row (scroll offset)
+	Width      int
+	Height     int // body rows available (excludes header + footer)
+	Filter     string
+	Filtering  bool
+	Quit       bool
+	Chosen     string // selected session path; non-empty ends the loop
+	ChosenCwd  string // folder cwd of the selection (for the iTerm launcher)
+	ChosenID   string // session id of the selection (for claude --resume)
+	ChosenRepo string // repo of the selection (to reconstruct a cloud-only transcript)
+	Workspace  bool   // selection should open the iTerm workspace, not tail
 }
 
 type treeKey int
@@ -525,6 +527,7 @@ func (ui *treeUI) selectSession(workspace bool) {
 	ui.Chosen = s.Path
 	ui.ChosenCwd = folder.Cwd
 	ui.ChosenID = s.ID
+	ui.ChosenRepo = s.Repo
 	ui.Workspace = workspace
 }
 
@@ -758,13 +761,14 @@ const (
 	treeNone
 )
 
-// treeChoice is what the tree hands back: the picked session plus the folder cwd
-// and session id the iTerm workspace launcher needs.
+// treeChoice is what the tree hands back: the picked session plus the folder cwd,
+// session id, and repo the iTerm launcher / transcript reconstruction need.
 type treeChoice struct {
 	Result treeResult
 	Path   string
 	Cwd    string
 	ID     string
+	Repo   string
 }
 
 // runClaudeTree builds and runs the interactive tree. A treeNone result means the
@@ -827,7 +831,7 @@ func runTreeTUI(tree sessionTree, theme Theme) treeChoice {
 			if ui.Workspace {
 				res = treeWorkspace
 			}
-			return treeChoice{Result: res, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID}
+			return treeChoice{Result: res, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID, Repo: ui.ChosenRepo}
 		}
 	}
 }

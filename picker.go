@@ -117,7 +117,7 @@ func runPicker(agents []Agent, home, pwd string, days int, local, cloud bool, th
 	if !ttyUsable() || !slices.Contains(agents, AgentClaude) {
 		return "", "", false
 	}
-	if p, ok := resolveTreeChoice(runClaudeTree(home, pwd, days, local, cloud, theme)); ok {
+	if p, ok := resolveTreeChoice(home, runClaudeTree(home, pwd, days, local, cloud, theme)); ok {
 		return p, AgentClaude, true
 	}
 	return "", "", false
@@ -129,15 +129,19 @@ func runPicker(agents []Agent, home, pwd string, days int, local, cloud bool, th
 // iTerm) just tail in-place, leaving any existing layout alone. treeQuit → exit.
 // treeNone (empty tree / no tty) → ok=false so the caller auto-discovers.
 //
-// A cloud session with no local jsonl (Path=="") can't be tailed on this
-// machine, so it exits with a note rather than tailing something unrelated.
-func resolveTreeChoice(c treeChoice) (string, bool) {
+// A cloud-only session (no local jsonl) is reconstructed from its repo's git
+// checkpoint refs when that repo is checked out locally; otherwise it exits with
+// a note rather than tailing something unrelated.
+func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 	switch c.Result {
 	case treeChosen, treeWorkspace:
 		if c.Path == "" {
-			// A valid pick, just not local — exit cleanly (not an error) rather
-			// than falling back to tailing an unrelated $PWD session.
-			fmt.Fprintln(os.Stderr, "entire-tail: session "+shortID(c.ID)+" isn't on this machine — nothing to tail.")
+			if tmp, ok := reconstructTranscript(home, c.ID, c.Repo); ok {
+				return tmp, true // reconstructed from git; tail it in place
+			}
+			// Not local and not reconstructable — exit cleanly (not an error)
+			// rather than falling back to tailing an unrelated $PWD session.
+			fmt.Fprintln(os.Stderr, "entire-tail: session "+shortID(c.ID)+" isn't on this machine and its repo isn't checked out here — nothing to tail.")
 			os.Exit(0)
 		}
 		if c.Result == treeWorkspace && itermAvailable() && itermSinglePane() {

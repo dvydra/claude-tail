@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const version = "0.14.0"
+const version = "0.15.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -78,7 +78,7 @@ func run(cfg Config) {
 			out.Flush()
 			return
 		}
-		p, ok := resolveTreeChoice(runTreeTUI(tree, theme))
+		p, ok := resolveTreeChoice(home, runTreeTUI(tree, theme))
 		if !ok {
 			return
 		}

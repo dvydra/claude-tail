@@ -113,6 +113,7 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 			Path:    h.path,
 			Snippet: collapsePreview(firstNonEmpty(h.snippet, h.displayName)),
 			Branch:  h.repo, // reuse the branch column to show the repo
+			Repo:    h.repo, // for reconstructing a cloud-only transcript on select
 			Mtime:   h.mtime,
 		})
 		if h.mtime > folder.Mtime {

@@ -191,11 +191,14 @@ entire tail --list | grep -i erasure     # find that session about account erasu
 entire tail --list --days 1              # what did I work on today?
 ```
 
-**Tailing** only works for sessions whose Claude jsonl is on **this** machine
-(the uuid is resolved against `~/.claude`). Cloud-only sessions from another
-machine still show in the `entire`-sourced tree, but selecting one reports that
-it isn't local. Codex/Antigravity aren't tailable through the tree yet — use
-`--agent codex`/`agy` or an explicit `SESSION_FILE`.
+**Tailing** prefers the session's local `~/.claude` jsonl. If it's not there — a
+**cloud-only** session pruned locally or created on another machine — entire-tail
+**reconstructs the transcript from the repo's local git checkpoint refs**
+(`refs/entire/checkpoints/**`, where entire stores each session's transcript) as
+long as that repo is checked out here, and tails that. Only if the repo isn't
+cloned locally does it report the session can't be opened. Codex/Antigravity
+aren't tailable through the tree yet — use `--agent codex`/`agy` or an explicit
+`SESSION_FILE`.
 
 ## The iTerm2 workspace (macOS)
 

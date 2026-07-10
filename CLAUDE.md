@@ -44,7 +44,13 @@ Per-agent **adapters** lower each JSONL event to a canonical `Record`
 (`Kind` = USER | ASSISTANT | TOOLUSE | TOOLRESULT). Everything downstream is
 agent-agnostic and consumes only `Record`s.
 
-- `adapter_claude.go` / `adapter_codex.go` / `adapter_agy.go` — `normalize(line) []Record`
+- `adapter_claude.go` / `adapter_codex.go` / `adapter_agy.go` / `adapter_entire.go` — `normalize(line) []Record`
+  (`adapter_entire.go` handles entire's own transcript format — top-level
+  `content`/`ts` — used for reconstructed cloud-only sessions)
+- `reconstruct.go` — recovers a cloud-only session's transcript (not under
+  `~/.claude`) from its repo's local `refs/entire/checkpoints/**` git objects
+  (`git grep` the session id → largest `transcript.jsonl` → temp file), so search
+  hits from pruned/other-machine sessions stay tailable when the repo is local
 - `adapter.go` — the `Record`/`Kind` types and the adapter interface
 - `discovery.go` — find the session file for `$PWD` per agent
 - `tree.go` — the interactive session **tree** picker (the DEFAULT): sessions
