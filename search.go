@@ -60,10 +60,9 @@ func (h *searchHit) score() float64 {
 	return s
 }
 
-const localSearchCap = 400 // candidates parsed for a match; newest first
-
 // buildSearchTree runs both searches, merges + ranks, and returns a single-group
 // tree ordered by relevance (not recency). localOnly skips the entire query.
+// Search covers full history — no time window, no candidate/result caps.
 func buildSearchTree(home, pwd, query string, localOnly bool, now int64) sessionTree {
 	hits := localSearchClaude(home, query)
 
@@ -105,12 +104,8 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 		return list[i].mtime > list[j].mtime
 	})
 
-	const cap = 50 // keep the ranked view useful
+	// No result cap — full history, every match, ranked best-first.
 	label := fmt.Sprintf("🔎 %q — %d result(s), best match first", query, len(list))
-	if len(list) > cap {
-		label = fmt.Sprintf("🔎 %q — top %d of %d, best match first", query, cap, len(list))
-		list = list[:cap]
-	}
 	folder := treeFolder{Cwd: label, Slug: "search", Expanded: true}
 	for _, h := range list {
 		folder.Sessions = append(folder.Sessions, treeSession{
@@ -132,14 +127,11 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 }
 
 // localSearchClaude returns a hit per local session whose USER/ASSISTANT text
-// contains query. ripgrep narrows candidate files fast; each (newest first,
-// capped) is parsed concurrently so injected boilerplate doesn't false-match.
+// contains query. ripgrep narrows candidate files fast; every one is parsed
+// concurrently (full history, no cap) so injected boilerplate doesn't
+// false-match.
 func localSearchClaude(home, query string) map[string]*searchHit {
-	cands := localCandidates(home, query)
-	sort.Slice(cands, func(i, j int) bool { return statMtime(cands[i]) > statMtime(cands[j]) })
-	if len(cands) > localSearchCap {
-		cands = cands[:localSearchCap]
-	}
+	cands := localCandidates(home, query) // every matching file — full history
 
 	out := map[string]*searchHit{}
 	var mu sync.Mutex
@@ -334,7 +326,7 @@ func entireSearchSessions(query string) []entireSearchHit {
 	defer cancel()
 	fmt.Fprintln(os.Stderr, "entire-tail: searching entire…")
 	out, err := exec.CommandContext(ctx, "entire", "checkpoint", "search", query,
-		"--all-repos", "--json", "--limit", "40").Output()
+		"--all-repos", "--json", "--limit", "100").Output()
 	if err != nil {
 		return nil
 	}
