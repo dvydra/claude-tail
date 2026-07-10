@@ -121,6 +121,30 @@ func setCbreak(tty *os.File) (saved string, ok bool) {
 	return saved, true
 }
 
+// setRaw is like setCbreak but also disables signal keys (-isig), so Ctrl-C
+// arrives as a byte (0x03) instead of a signal. The alt-screen tree uses this so
+// a Ctrl-C is caught by the loop and the terminal is restored cleanly (alt-screen
+// off, cursor back) rather than the process dying with the screen left raw.
+// Restored with restoreCbreak.
+func setRaw(tty *os.File) (saved string, ok bool) {
+	var buf bytes.Buffer
+	get := exec.Command("stty", "-g")
+	get.Stdin = tty
+	get.Stdout = &buf
+	if get.Run() != nil {
+		return "", false
+	}
+	saved = strings.TrimSpace(buf.String())
+
+	set := exec.Command("stty", "-icanon", "-echo", "-isig", "min", "1", "time", "0")
+	set.Stdin = tty
+	if set.Run() != nil {
+		restoreCbreak(tty, saved)
+		return "", false
+	}
+	return saved, true
+}
+
 func restoreCbreak(tty *os.File, saved string) {
 	if saved == "" {
 		return

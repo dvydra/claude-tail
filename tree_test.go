@@ -1,0 +1,387 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// writeSession writes a Claude session jsonl with the given lines and mtime,
+// returning its path.
+func writeSession(t *testing.T, dir, id string, lines []string, mtime int64) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, id+".jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Unix(mtime, 0)
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestClassifyTier(t *testing.T) {
+	now := int64(1_000_000)
+	cases := []struct {
+		name string
+		mt   int64
+		live bool
+		want recencyTier
+	}{
+		{"live wins regardless of age", 0, true, tierLive},
+		{"5 min ago", now - 300, false, tierRecentLive},
+		{"1 hour ago", now - 3600, false, tierRecent},
+		{"3 days ago", now - 3*86400, false, tierStale},
+		{"exactly 15m boundary → recent", now - recentLiveWindow, false, tierRecent},
+	}
+	for _, c := range cases {
+		if got := classifyTier(c.mt, now, c.live); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestLoadClaudeMeta(t *testing.T) {
+	dir := t.TempDir()
+	user := `{"type":"user","cwd":"/tmp/proj","gitBranch":"feat/x","message":{"content":"first prompt here"}}`
+	asst := `{"type":"assistant","cwd":"/tmp/proj","gitBranch":"feat/x","message":{"content":[{"type":"text","text":"reply"}]}}`
+
+	// summary wins over ai-title and first prompt.
+	p := writeSession(t, dir, "a", []string{
+		`{"type":"summary","summary":"THE SUMMARY"}`,
+		`{"type":"ai-title","aiTitle":"the title"}`,
+		user, asst,
+	}, 100)
+	snip, branch, msgs, cwd := loadClaudeMeta(p)
+	if snip != "THE SUMMARY" {
+		t.Errorf("snippet = %q, want summary", snip)
+	}
+	if branch != "feat/x" {
+		t.Errorf("branch = %q", branch)
+	}
+	if msgs != 2 {
+		t.Errorf("msgs = %d, want 2", msgs)
+	}
+	if cwd != "/tmp/proj" {
+		t.Errorf("cwd = %q", cwd)
+	}
+
+	// no summary → ai-title.
+	p = writeSession(t, dir, "b", []string{`{"type":"ai-title","aiTitle":"just a title"}`, user}, 100)
+	if snip, _, _, _ := loadClaudeMeta(p); snip != "just a title" {
+		t.Errorf("snippet = %q, want ai-title", snip)
+	}
+
+	// no summary/title → first user prompt.
+	p = writeSession(t, dir, "c", []string{user, asst}, 100)
+	if snip, _, _, _ := loadClaudeMeta(p); snip != "first prompt here" {
+		t.Errorf("snippet = %q, want first prompt", snip)
+	}
+}
+
+func TestBuildClaudeTree(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".claude", "projects")
+	now := int64(10_000_000)
+
+	// A recent folder with two sessions.
+	cwdA := "/work/alpha"
+	dirA := filepath.Join(root, claudeSlug(cwdA))
+	writeSession(t, dirA, "a1", []string{
+		`{"type":"summary","summary":"alpha newest"}`,
+		`{"type":"user","cwd":"/work/alpha","gitBranch":"main","message":{"content":"hi"}}`,
+	}, now-100)
+	writeSession(t, dirA, "a2", []string{
+		`{"type":"user","cwd":"/work/alpha","gitBranch":"main","message":{"content":"older one"}}`,
+	}, now-5000)
+
+	// A cold folder well outside the 7-day window (both dir + file backdated).
+	cwdC := "/work/cold"
+	dirC := filepath.Join(root, claudeSlug(cwdC))
+	writeSession(t, dirC, "c1", []string{
+		`{"type":"user","cwd":"/work/cold","gitBranch":"main","message":{"content":"ancient"}}`,
+	}, now-100*86400)
+	old := time.Unix(now-100*86400, 0)
+	os.Chtimes(dirC, old, old)
+
+	tree := buildClaudeTree(home, cwdA, 7, now, nil)
+
+	if len(tree.Folders) != 1 {
+		t.Fatalf("want 1 folder (cold dropped by window), got %d", len(tree.Folders))
+	}
+	f := tree.Folders[0]
+	if f.Cwd != cwdA {
+		t.Errorf("cwd = %q, want %q", f.Cwd, cwdA)
+	}
+	if !f.Expanded {
+		t.Error("pwd folder should start expanded")
+	}
+	if len(f.Sessions) != 2 {
+		t.Fatalf("want 2 sessions, got %d", len(f.Sessions))
+	}
+	if f.Sessions[0].Snippet != "alpha newest" {
+		t.Errorf("newest snippet = %q", f.Sessions[0].Snippet)
+	}
+	if f.Sessions[0].Mtime < f.Sessions[1].Mtime {
+		t.Error("sessions should be newest-first")
+	}
+
+	// Live union: mark the cold folder's cwd live → it's force-kept despite age.
+	tree = buildClaudeTree(home, cwdA, 7, now, map[string]int{cwdC: 1})
+	var sawCold bool
+	for _, folder := range tree.Folders {
+		if folder.Cwd == cwdC {
+			sawCold = true
+			if folder.Live != 1 {
+				t.Errorf("cold folder Live = %d, want 1", folder.Live)
+			}
+		}
+	}
+	if !sawCold {
+		t.Error("live cwd should be force-kept even when stale")
+	}
+	// Live folders sort ahead of non-live.
+	if tree.Folders[0].Cwd != cwdC {
+		t.Errorf("live folder should sort first, got %q", tree.Folders[0].Cwd)
+	}
+}
+
+func TestBuildClaudeTreeUncapped(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".claude", "projects")
+	now := int64(10_000_000)
+	cwd := "/work/ancient"
+	dir := filepath.Join(root, claudeSlug(cwd))
+	writeSession(t, dir, "x", []string{
+		`{"type":"user","cwd":"/work/ancient","gitBranch":"main","message":{"content":"old"}}`,
+	}, now-100*86400)
+	old := time.Unix(now-100*86400, 0)
+	os.Chtimes(dir, old, old)
+
+	if got := buildClaudeTree(home, "/elsewhere", 0, now, nil); len(got.Folders) != 1 {
+		t.Fatalf("days=0 (uncapped) should keep the ancient folder, got %d folders", len(got.Folders))
+	}
+}
+
+func sampleTree() sessionTree {
+	return sessionTree{
+		Now:  1000,
+		Home: "/home/me",
+		Pwd:  "/home/me/a",
+		Folders: []treeFolder{
+			{Cwd: "/home/me/a", Slug: claudeSlug("/home/me/a"), Mtime: 900, Expanded: true, Sessions: []treeSession{
+				{ID: "aaaa1111", Mtime: 900, Snippet: "add login form", Branch: "main"},
+				{ID: "bbbb2222", Mtime: 800, Snippet: "fix logout bug", Branch: "hotfix"},
+			}},
+			{Cwd: "/home/me/b", Slug: claudeSlug("/home/me/b"), Mtime: 700, Expanded: false, Sessions: []treeSession{
+				{ID: "cccc3333", Mtime: 700, Snippet: "refactor parser", Branch: "main"},
+			}},
+		},
+	}
+}
+
+func TestFlattenRows(t *testing.T) {
+	tr := sampleTree()
+
+	// No filter: folder A expanded (header + 2 sessions), folder B collapsed (header only).
+	rows := flattenRows(tr, "")
+	if len(rows) != 4 {
+		t.Fatalf("want 4 rows, got %d", len(rows))
+	}
+	if rows[0].Session != -1 || rows[1].Session != 0 || rows[2].Session != 1 || rows[3].Session != -1 {
+		t.Errorf("unexpected row shape: %+v", rows)
+	}
+
+	// Filter matching a session snippet in the collapsed folder → folder force-expands.
+	rows = flattenRows(tr, "parser")
+	if len(rows) != 2 || rows[0].Folder != 1 || rows[1].Session != 0 {
+		t.Errorf("filter 'parser': %+v", rows)
+	}
+
+	// Filter matching a folder path keeps its whole subtree.
+	rows = flattenRows(tr, "me/b")
+	if len(rows) != 2 {
+		t.Errorf("filter 'me/b' should show folder b + its session, got %d rows", len(rows))
+	}
+
+	// Filter matching nothing → empty.
+	if rows = flattenRows(tr, "zzzzz"); len(rows) != 0 {
+		t.Errorf("no-match filter should be empty, got %d", len(rows))
+	}
+}
+
+func TestUpdateTreeNavigation(t *testing.T) {
+	ui := treeUI{Tree: sampleTree(), Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+
+	ui = updateTree(ui, kDown, 0)
+	if ui.Cursor != 1 {
+		t.Errorf("down → cursor %d, want 1", ui.Cursor)
+	}
+	ui = updateTree(ui, kUp, 0)
+	ui = updateTree(ui, kUp, 0) // clamp at 0
+	if ui.Cursor != 0 {
+		t.Errorf("up clamps to 0, got %d", ui.Cursor)
+	}
+
+	// Collapse folder A from a session row → folder collapses, cursor returns to header.
+	ui = treeUI{Tree: sampleTree(), Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+	ui.Cursor = 2 // second session of folder A
+	ui = updateTree(ui, kLeft, 0)
+	if ui.Tree.Folders[0].Expanded {
+		t.Error("left should collapse folder A")
+	}
+	if r, _ := ui.current(); r.Session != -1 {
+		t.Error("cursor should land on the folder header after collapse")
+	}
+
+	// 'q' quits.
+	ui = updateTree(ui, kRune, 'q')
+	if !ui.Quit {
+		t.Error("q should quit")
+	}
+}
+
+func TestUpdateTreeEnterTails(t *testing.T) {
+	tr := sampleTree()
+	tr.Folders[0].Sessions[0].Path = "/sessions/aaaa1111.jsonl"
+	ui := treeUI{Tree: tr, Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+	ui.Cursor = 1 // first session
+	ui = updateTree(ui, kEnter, 0)
+	if ui.Chosen != "/sessions/aaaa1111.jsonl" {
+		t.Errorf("Enter on session → Chosen %q", ui.Chosen)
+	}
+}
+
+func TestUpdateTreeFilterTyping(t *testing.T) {
+	ui := treeUI{Tree: sampleTree(), Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+
+	ui = updateTree(ui, kRune, '/') // enter filter mode
+	if !ui.Filtering {
+		t.Fatal("'/' should start filtering")
+	}
+	for _, r := range "parser" {
+		ui = updateTree(ui, kRune, r)
+	}
+	if ui.Filter != "parser" {
+		t.Errorf("filter = %q", ui.Filter)
+	}
+	// 'q' while filtering is literal text, not quit.
+	ui = updateTree(ui, kRune, 'q')
+	if ui.Quit || ui.Filter != "parserq" {
+		t.Errorf("q in filter should type, got filter=%q quit=%v", ui.Filter, ui.Quit)
+	}
+	ui = updateTree(ui, kBackspace, 0)
+	if ui.Filter != "parser" {
+		t.Errorf("backspace → %q", ui.Filter)
+	}
+	ui = updateTree(ui, kEsc, 0)
+	if ui.Filtering {
+		t.Error("Esc should leave filter mode")
+	}
+}
+
+func TestDecodeKey(t *testing.T) {
+	cases := []struct {
+		in   []byte
+		want treeKey
+		r    rune
+	}{
+		{[]byte{0x1b, '[', 'A'}, kUp, 0},
+		{[]byte{0x1b, '[', 'B'}, kDown, 0},
+		{[]byte{0x1b, '[', 'C'}, kRight, 0},
+		{[]byte{0x1b, '[', 'D'}, kLeft, 0},
+		{[]byte{'\r'}, kEnter, 0},
+		{[]byte{'\n'}, kEnter, 0},
+		{[]byte{0x7f}, kBackspace, 0},
+		{[]byte{0x03}, kCtrlC, 0},
+		{[]byte{0x1b}, kEsc, 0},
+		{[]byte{'j'}, kRune, 'j'},
+		{[]byte("é"), kRune, 'é'},
+	}
+	for _, c := range cases {
+		k, r := decodeKey(c.in)
+		if k != c.want || r != c.r {
+			t.Errorf("decodeKey(%v) = (%v,%q), want (%v,%q)", c.in, k, r, c.want, c.r)
+		}
+	}
+}
+
+func TestTildify(t *testing.T) {
+	cases := map[string]string{
+		"/home/me/src/x": "~/src/x",
+		"/home/me":       "~",
+		"/other/place":   "/other/place",
+		"/home/menu":     "/home/menu", // prefix but not a path boundary
+	}
+	for in, want := range cases {
+		if got := tildify(in, "/home/me"); got != want {
+			t.Errorf("tildify(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestShortID(t *testing.T) {
+	if got := shortID("b7dd3e4a-103e-4737"); got != "b7dd3e4a" {
+		t.Errorf("got %q", got)
+	}
+	if got := shortID("abc"); got != "abc" {
+		t.Errorf("short id unchanged: %q", got)
+	}
+}
+
+func TestRenderListFormat(t *testing.T) {
+	tr := sampleTree()
+	tr.Folders[0].Live = 1
+	var b strings.Builder
+	renderList(&b, tr, false)
+	out := b.String()
+	for _, want := range []string{"~/a", "● live", "aaaa1111", "add login form", "[hotfix]", "~/b", "refactor parser"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("list output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderTreeFrame(t *testing.T) {
+	ui := treeUI{Tree: sampleTree(), Width: 100, Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+	frame := stripANSI(renderTree(ui))
+	for _, want := range []string{"CLAUDE SESSIONS", "~/a", "add login form", "2 folders", "3 sessions"} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("frame missing %q:\n%s", want, frame)
+		}
+	}
+}
+
+func TestResolveDays(t *testing.T) {
+	cases := []struct {
+		in   string
+		def  int
+		want int
+		err  bool
+	}{
+		{"", 7, 7, false},
+		{"", 0, 0, false},
+		{"14", 7, 14, false},
+		{"all", 7, 0, false},
+		{"0", 7, 0, false},
+		{"-3", 7, 0, true},
+		{"nope", 7, 0, true},
+	}
+	for _, c := range cases {
+		got, err := resolveDays(c.in, c.def)
+		if (err != nil) != c.err || got != c.want {
+			t.Errorf("resolveDays(%q,%d) = (%d,%v), want (%d,err=%v)", c.in, c.def, got, err, c.want, c.err)
+		}
+	}
+}

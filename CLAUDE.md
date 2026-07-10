@@ -47,7 +47,13 @@ agent-agnostic and consumes only `Record`s.
 - `adapter_claude.go` / `adapter_codex.go` / `adapter_agy.go` — `normalize(line) []Record`
 - `adapter.go` — the `Record`/`Kind` types and the adapter interface
 - `discovery.go` — find the session file for `$PWD` per agent
-- `picker.go` — interactive "which live session?" menu (needs `pgrep`+`lsof`)
+- `tree.go` — the interactive session **tree** picker (`--pick`): all Claude
+  sessions grouped by folder, arrow-key navigable, recency-colored, type-to-filter;
+  also the static `--list` dump. Pure build/reduce/render split from a thin tty
+  driver (alt-screen + `setRaw`), so navigation/render are unit-tested without a tty
+- `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) that
+  feeds the tree's live markers and the `auto` "one live session here → tail it"
+  shortcut; routes `--pick` to `tree.go`
 - `render.go` — the **rendering state machine** (one path shared by backfill +
   live): tracks previous participant (consecutive same-participant turns collapse
   to a dim `⋯ ts` marker) and dot-streak state; tool tristate lives here

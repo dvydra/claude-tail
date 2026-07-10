@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.8.1"
+const version = "0.9.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -29,6 +29,9 @@ func main() {
 	case ActionListThemes:
 		fmt.Print(listThemesText(cfg.Theme))
 		return
+	case ActionList:
+		runList(cfg)
+		return
 	}
 
 	run(cfg)
@@ -42,6 +45,10 @@ func run(cfg Config) {
 	if err != nil {
 		die(err.Error())
 	}
+
+	// Theme is loaded up front because the interactive picker (session tree) needs
+	// it to color rows, and the picker runs before the session is resolved.
+	theme := mustLoadTheme(cfg)
 
 	scanner := newCodexScanner(home)
 	session := cfg.Session
@@ -63,7 +70,11 @@ func run(cfg Config) {
 		} else {
 			agents = []Agent{Agent(agentStr)}
 		}
-		if path, ag, ok := runPicker(agents, home, pwd, cfg.Pick, scanner, os.Stderr); ok {
+		days, derr := resolveDays(cfg.Days, 7)
+		if derr != nil {
+			die(derr.Error())
+		}
+		if path, ag, ok := runPicker(agents, home, pwd, cfg.Pick, days, theme, scanner, os.Stderr); ok {
 			session, agentStr, resolved = path, string(ag), true
 		}
 	}
@@ -79,17 +90,6 @@ func run(cfg Config) {
 
 	if note := cwdMismatchNote(agent, session, home, pwd, scanner); note != "" {
 		fmt.Fprintln(os.Stderr, "entire-tail: "+note)
-	}
-
-	// ── theme ──
-	if !themeExists(cfg.Theme) {
-		fmt.Fprintf(os.Stderr, "entire-tail: unknown theme %q.\n\n", cfg.Theme)
-		fmt.Fprint(os.Stderr, listThemesText(cfg.Theme))
-		os.Exit(2)
-	}
-	theme, err := loadTheme(cfg.Theme, cfg.GlowStyle)
-	if err != nil {
-		die(err.Error())
 	}
 
 	// ── snapshot + ranges ──
@@ -332,6 +332,41 @@ func mustGetwd() string {
 	return d
 }
 
+// mustLoadTheme resolves the configured theme, printing the theme list and
+// exiting on an unknown name (matching the prior inline handling).
+func mustLoadTheme(cfg Config) Theme {
+	if !themeExists(cfg.Theme) {
+		fmt.Fprintf(os.Stderr, "entire-tail: unknown theme %q.\n\n", cfg.Theme)
+		fmt.Fprint(os.Stderr, listThemesText(cfg.Theme))
+		os.Exit(2)
+	}
+	theme, err := loadTheme(cfg.Theme, cfg.GlowStyle)
+	if err != nil {
+		die(err.Error())
+	}
+	return theme
+}
+
+// runList prints the static ls-style dump of Claude sessions (--list). It's
+// uncapped by default (the full inventory); --days narrows the window. Color is
+// used only when stdout is a terminal.
+func runList(cfg Config) {
+	home := firstNonEmpty(os.Getenv("HOME"), mustHome())
+	pwd := firstNonEmpty(os.Getenv("PWD"), mustGetwd())
+	days, err := resolveDays(cfg.Days, 0)
+	if err != nil {
+		die(err.Error())
+	}
+	tree := buildClaudeTree(home, pwd, days, time.Now().Unix(), claudeLiveCwds())
+	if len(tree.Folders) == 0 {
+		fmt.Fprintln(os.Stderr, "entire-tail: no Claude sessions found.")
+		return
+	}
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+	renderList(out, tree, isCharDevice(os.Stdout))
+}
+
 // listThemesText renders the --list-themes output, marking the default.
 func listThemesText(defaultTheme string) string {
 	var b bytes.Buffer
@@ -400,18 +435,25 @@ OPTIONS:
                             overwhelm the view. Integer >= 1 (default: 5).
                             Re-run with --no-collapse to see the full text.
       --no-collapse         Never collapse — show every user message in full.
-  -p, --pick                Pick which live session to tail from a menu.
-                            Finds every cwd with a running agent process
-                            (Claude or Codex), lists each one's most recent
-                            sessions — one row per running pane, with a preview
-                            of its last message — and tails your choice. By
-                            default (auto) the one live session in $PWD is
-                            tailed without asking; the menu only appears when
-                            $PWD is ambiguous (2+ live here) or has none but 2+
-                            are live elsewhere. --pick forces it even for one.
-                            Scoped to --agent ('auto' scans claude/codex/agy).
-                            claude and codex split per pane; agy is one per cwd.
+  -p, --pick                Open the interactive session tree: every Claude
+                            session on disk, grouped by the folder it ran in,
+                            so you can find "which folder was I in?" without
+                            remembering. Arrow keys / hjkl move, →/Enter expand
+                            a folder, Enter tails a session, / filters by path
+                            or snippet, q/Esc quits. Folders and sessions are
+                            colored by recency: bright green = live now, muted
+                            green = active in the last 15m, white = today, grey
+                            = older. Scoped to the last --days days (default 7).
+                            By default (auto) the one live session in $PWD is
+                            tailed without asking; the tree opens when $PWD is
+                            ambiguous. Claude only (codex/agy tail directly via
+                            --agent).
       --no-pick             Never show the picker — always auto-discover.
+      --days N              Window for the session tree, in days (default 7).
+                            'all' or 0 = every session, no cap.
+  -L, --list                Print the session tree as a static, greppable
+                            ls-style dump instead of the TUI, then exit.
+                            Uncapped by default; narrow with --days.
   -l, --list-themes         List available themes (with descriptions) and exit.
   -h, --help                Show this help and exit.
   -V, --version             Show version and exit.
@@ -437,6 +479,7 @@ ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_TOOL_STYLE    Same as --tool-style.
   ENTIRE_TAIL_COLLAPSE      Same as --collapse (or 'off' to disable).
   ENTIRE_TAIL_PICK          'always'/'never'/'auto' — same as --pick/--no-pick.
+  ENTIRE_TAIL_DAYS          Same as --days (session-tree window).
   GLOW_STYLE                Same as --style.
 
   CLAUDE_TAIL_* variants of the above are honored for back-compat.
@@ -448,7 +491,9 @@ EXAMPLES:
   entire-tail --theme dracula
   entire-tail -t nord -b 50
   entire-tail --no-backfill
-  entire-tail --pick                          # choose among live Claude sessions
+  entire-tail --pick                          # browse the Claude session tree
+  entire-tail --list                          # static ls-style dump of all sessions
+  entire-tail --list --days 3                 # ...only the last 3 days
   entire-tail --list-themes
   entire-tail ~/.codex/sessions/2026/05/.../rollout-...jsonl
 `, version)

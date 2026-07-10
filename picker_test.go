@@ -64,31 +64,6 @@ func TestCwShort(t *testing.T) {
 	}
 }
 
-func TestParseChoice(t *testing.T) {
-	cases := []struct {
-		in     string
-		n      int
-		choice int
-		quit   bool
-		retry  bool
-	}{
-		{"", 5, 1, false, false},   // Enter → 1
-		{"3", 5, 3, false, false},  // valid
-		{"q", 5, 0, true, false},   // quit
-		{"Q", 5, 0, true, false},   // quit
-		{"abc", 5, 0, false, true}, // not a number
-		{"9", 5, 0, false, true},   // out of range
-		{"0", 5, 0, false, true},   // out of range (1-based)
-		{"2x", 5, 0, false, true},  // contains non-digit
-	}
-	for _, c := range cases {
-		choice, quit, retry := parseChoice(c.in, c.n)
-		if choice != c.choice || quit != c.quit || (retry != "") != c.retry {
-			t.Errorf("parseChoice(%q,%d) = (%d,%v,%q)", c.in, c.n, choice, quit, retry)
-		}
-	}
-}
-
 func TestCollapsePreview(t *testing.T) {
 	cases := map[string]string{
 		"hello\tworld\n  multiple   spaces ": "hello world multiple spaces",
