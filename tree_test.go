@@ -249,6 +249,38 @@ func TestUpdateTreeNavigation(t *testing.T) {
 	}
 }
 
+func TestUpdateTreePaging(t *testing.T) {
+	ui := treeUI{Height: 10}
+	ui.Rows = make([]treeRow, 30) // step = Height-1 = 9
+
+	ui = updateTree(ui, kPageDown, 0)
+	if ui.Cursor != 9 {
+		t.Errorf("page down → %d, want 9", ui.Cursor)
+	}
+	ui = updateTree(ui, kPageDown, 0)
+	if ui.Cursor != 18 {
+		t.Errorf("page down again → %d, want 18", ui.Cursor)
+	}
+	ui = updateTree(ui, kPageUp, 0)
+	if ui.Cursor != 9 {
+		t.Errorf("page up → %d, want 9", ui.Cursor)
+	}
+	// Clamp at both ends.
+	ui.Cursor = 2
+	if ui = updateTree(ui, kPageUp, 0); ui.Cursor != 0 {
+		t.Errorf("page up near top → %d, want 0", ui.Cursor)
+	}
+	ui.Cursor = 28
+	if ui = updateTree(ui, kPageDown, 0); ui.Cursor != 29 {
+		t.Errorf("page down near bottom → %d, want 29", ui.Cursor)
+	}
+	// Space pages down too.
+	ui.Cursor = 0
+	if ui = updateTree(ui, kRune, ' '); ui.Cursor != 9 {
+		t.Errorf("space → %d, want 9", ui.Cursor)
+	}
+}
+
 func TestUpdateTreeEnterWorkspace(t *testing.T) {
 	tr := sampleTree()
 	tr.Folders[0].Sessions[0].Path = "/sessions/aaaa1111.jsonl"
@@ -332,6 +364,10 @@ func TestDecodeKey(t *testing.T) {
 		{[]byte{0x1b, '[', 'B'}, kDown, 0},
 		{[]byte{0x1b, '[', 'C'}, kRight, 0},
 		{[]byte{0x1b, '[', 'D'}, kLeft, 0},
+		{[]byte{0x1b, '[', '5', '~'}, kPageUp, 0},
+		{[]byte{0x1b, '[', '6', '~'}, kPageDown, 0},
+		{[]byte{0x06}, kPageDown, 0}, // Ctrl-F
+		{[]byte{0x02}, kPageUp, 0},   // Ctrl-B
 		{[]byte{'\r'}, kEnter, 0},
 		{[]byte{'\n'}, kEnter, 0},
 		{[]byte{0x7f}, kBackspace, 0},
