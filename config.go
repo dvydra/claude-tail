@@ -21,6 +21,7 @@ type Config struct {
 	List      bool   // --list: static ls-style dump instead of the TUI
 	Local     bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
 	Cloud     bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
+	Search    string // --search: content-search sessions, ranked by relevance
 }
 
 // Action is what the parsed CLI asks for beyond a normal run.
@@ -176,6 +177,15 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.Local = true
 		case a == "--cloud":
 			c.Cloud = true
+		case a == "-S" || a == "--search":
+			v, err := needValue(i, a)
+			if err != nil {
+				return c, ActionRun, err
+			}
+			c.Search = v
+			i++
+		case strings.HasPrefix(a, "--search="):
+			c.Search = strings.TrimPrefix(a, "--search=")
 		case a == "-w" || a == "--workspace":
 			// Workspace is the default; -w just forces the picker even when the
 			// env default is 'never'.

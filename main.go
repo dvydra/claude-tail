@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.13.0"
+const version = "0.14.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -53,6 +53,26 @@ func run(cfg Config) {
 	scanner := newCodexScanner(home)
 	session := cfg.Session
 	resolved := false
+
+	// --search: rank sessions by relevance to a content query, then let the user
+	// pick one to tail/resume (or dump the ranking when non-interactive).
+	if cfg.Search != "" {
+		tree := buildSearchTree(home, pwd, cfg.Search, cfg.Local, time.Now().Unix())
+		if len(tree.Folders) == 0 {
+			die(fmt.Sprintf("no sessions matched %q", cfg.Search))
+		}
+		if !ttyUsable() {
+			out := bufio.NewWriter(os.Stdout)
+			renderList(out, tree, isCharDevice(os.Stdout))
+			out.Flush()
+			return
+		}
+		p, ok := resolveTreeChoice(runTreeTUI(tree, theme))
+		if !ok {
+			return
+		}
+		session = p // fall through to tail it via the explicit-session path below
+	}
 
 	switch {
 	case session != "":
@@ -353,11 +373,17 @@ func mustLoadTheme(cfg Config) Theme {
 func runList(cfg Config) {
 	home := firstNonEmpty(os.Getenv("HOME"), mustHome())
 	pwd := firstNonEmpty(os.Getenv("PWD"), mustGetwd())
-	days, err := resolveDays(cfg.Days, 0)
-	if err != nil {
-		die(err.Error())
+	now := time.Now().Unix()
+	var tree sessionTree
+	if cfg.Search != "" {
+		tree = buildSearchTree(home, pwd, cfg.Search, cfg.Local, now)
+	} else {
+		days, err := resolveDays(cfg.Days, 0)
+		if err != nil {
+			die(err.Error())
+		}
+		tree = buildSessionTree(home, pwd, days, now, cfg.Local, cfg.Cloud)
 	}
-	tree := buildSessionTree(home, pwd, days, time.Now().Unix(), cfg.Local, cfg.Cloud)
 	if len(tree.Folders) == 0 {
 		fmt.Fprintln(os.Stderr, "entire-tail: no sessions found.")
 		return
@@ -463,6 +489,15 @@ OPTIONS:
   -L, --list                Print the session tree as a static, greppable
                             ls-style dump instead of the TUI, then exit.
                             Uncapped by default; narrow with --days.
+  -S, --search QUERY        Find sessions by what was *said* in them, not just
+                            titles. Searches local transcripts (ripgrep) and
+                            'entire' checkpoint search (semantic + keyword,
+                            all repos), merges by session, and shows the tree
+                            ranked by relevance — an exact local phrase match
+                            first, then entire's semantic hits — with the
+                            matching snippet on each row. Enter/t resume or tail
+                            the hit. Add --local to search only local
+                            transcripts (no network).
       --cloud               Enrich the tree from the 'entire' cloud: generated
                             titles and sessions tracked on other machines. The
                             fetch takes a few seconds; the result is cached for
@@ -510,6 +545,7 @@ EXAMPLES:
   entire-tail --theme dracula
   entire-tail -t nord -b 50
   entire-tail --no-backfill
+  entire-tail --search "fire socks"           # find the session where that was said
   entire-tail --list                          # static ls-style dump of all sessions
   entire-tail --list --days 3                 # ...only the last 3 days
   entire-tail ~/.codex/sessions/2026/05/.../rollout-...jsonl

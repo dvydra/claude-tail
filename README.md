@@ -225,6 +225,38 @@ Off iTerm (or non-macOS), `Enter` likewise falls back to tailing in place, same
 as `t`. `-w`/`--workspace` just forces the picker (it's already the default).
 tmux / other terminals are a possible follow-up.
 
+## Search
+
+Can't find the session where you said *"fire socks"*? `--search` (or `-S`) finds
+sessions by their **content**, not just titles, and ranks them by relevance:
+
+```sh
+entire tail --search "fire socks"        # interactive, ranked, best match first
+entire tail --list --search "fire socks" # static ranked dump
+entire tail -S "fire socks" --local      # local transcripts only, no network
+```
+
+```
+🔎 "fire socks" — 11 result(s), best match first
+  b7dd3e4a  just now  [dvydra/claude-tail]  …we mentioned "fire socks" but i can't fin…
+  8e6bd2c4  72d ago   [browser-extension]   This is a chrome extension for the entire.io…
+  edec5f4a  46d ago   [infra]               we have set up a new datadog account…
+```
+
+It searches two sources and merges them by session:
+
+- **Local transcripts** via [ripgrep](https://github.com/BurntSushi/ripgrep)
+  (a literal, case-insensitive scan of `~/.claude`) — the exact phrase you typed.
+- **`entire` checkpoint search** — hybrid semantic + keyword across all your
+  repos, so it also surfaces sessions that *mean* the same thing without the
+  exact words (skipped with `--local`, or when offline).
+
+**Ranking**: an exact local phrase match weighs heaviest (you typed those words),
+`entire`'s semantic score adds on top, and matching both sources ranks highest;
+recency breaks ties. Each row shows the **matching snippet** so you can see why
+it hit. `Enter`/`t` resume or tail the result like any tree row. Results are
+capped at the top 50 (a ubiquitous term otherwise matches everything).
+
 ## Tool calls
 
 By default, each tool call collapses to a **single colored dot** — a

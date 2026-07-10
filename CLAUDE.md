@@ -71,6 +71,11 @@ agent-agnostic and consumes only `Record`s.
   builder split from the `osaRun` executor so quoting/layout are unit-tested
   without launching iTerm. The queued-claude trick: the command is written to
   the current pane's tty and runs once entire-tail exits
+- `search.go` — `--search`: content search across local transcripts (ripgrep,
+  literal) + `entire checkpoint search` (semantic session results), merged by
+  session id and ranked (`searchHit.score`: exact local match dominates, entire
+  score adds, recency tiebreak). Builds a single-group ranked `sessionTree`
+  (reuses the same TUI/`renderList`); rows show the match snippet, capped at 50
 - `render.go` — the **rendering state machine** (one path shared by backfill +
   live): tracks previous participant (consecutive same-participant turns collapse
   to a dim `⋯ ts` marker) and dot-streak state; tool tristate lives here
