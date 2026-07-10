@@ -79,6 +79,8 @@ func fetchEntireSessions() ([]entireSession, error) {
 // to resolve which cloud sessions are tailable on this machine.
 func localClaudeSessionIDs(home string) map[string]string {
 	m := map[string]string{}
+	// Glob only errors on a bad pattern (ours is fixed) and ignores I/O errors,
+	// so a discarded error here is safe — a missing/unreadable dir yields nil.
 	matches, _ := filepath.Glob(filepath.Join(claudeProjectsDir(home), "*", "*.jsonl"))
 	for _, p := range matches {
 		id := strings.TrimSuffix(filepath.Base(p), ".jsonl")
@@ -112,8 +114,14 @@ func buildEntireTree(sessions []entireSession, localIDs map[string]string, days 
 	byRepo := map[string]*treeFolder{}
 	var order []string
 	for _, s := range sessions {
+		if s.SessionID == "" {
+			continue // guard against schema drift / junk rows
+		}
 		mt := parseEntireTime(s.LastActivityAt)
-		if cutoff > 0 && mt < cutoff {
+		// Apply the window only to sessions with a parseable timestamp — a missing
+		// or malformed lastActivityAt (mt==0) must not silently vanish; it sorts
+		// last instead.
+		if cutoff > 0 && mt > 0 && mt < cutoff {
 			continue
 		}
 		repo := s.Repo

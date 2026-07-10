@@ -63,6 +63,35 @@ func TestBuildEntireTree(t *testing.T) {
 	}
 }
 
+func TestBuildEntireTreeEdgeCases(t *testing.T) {
+	now := parseEntireTime("2026-07-10T00:00:00Z")
+	sessions := []entireSession{
+		{SessionID: "good", DisplayName: "Good", Repo: "r", LastActivityAt: "2026-07-09T00:00:00Z"},
+		{SessionID: "badts", DisplayName: "Bad timestamp", Repo: "r", LastActivityAt: "garbage"},
+		{SessionID: "", DisplayName: "No id", Repo: "r", LastActivityAt: "2026-07-09T00:00:00Z"},
+	}
+	tree := buildEntireTree(sessions, nil, 7, now)
+	if len(tree.Folders) != 1 {
+		t.Fatalf("want 1 folder, got %d", len(tree.Folders))
+	}
+	ids := map[string]bool{}
+	for _, s := range tree.Folders[0].Sessions {
+		ids[s.ID] = true
+	}
+	if !ids["good"] {
+		t.Error("in-window session dropped")
+	}
+	if !ids["badts"] {
+		t.Error("session with unparseable timestamp must not be silently dropped by the window")
+	}
+	if ids[""] {
+		t.Error("session with empty id should be skipped")
+	}
+	if n := len(tree.Folders[0].Sessions); n != 2 {
+		t.Errorf("want 2 sessions (good + badts), got %d", n)
+	}
+}
+
 func TestBuildEntireTreeUncapped(t *testing.T) {
 	now := parseEntireTime("2026-07-10T00:00:00Z")
 	sessions := []entireSession{

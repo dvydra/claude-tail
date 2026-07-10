@@ -135,8 +135,10 @@ func resolveTreeChoice(c treeChoice) (string, bool) {
 	switch c.Result {
 	case treeChosen, treeWorkspace:
 		if c.Path == "" {
+			// A valid pick, just not local — exit cleanly (not an error) rather
+			// than falling back to tailing an unrelated $PWD session.
 			fmt.Fprintln(os.Stderr, "entire-tail: session "+shortID(c.ID)+" isn't on this machine — nothing to tail.")
-			os.Exit(1)
+			os.Exit(0)
 		}
 		if c.Result == treeWorkspace && itermAvailable() && itermSinglePane() {
 			if err := launchWorkspace(sessionCwd(c.Path), c.ID, c.Path); err != nil {
