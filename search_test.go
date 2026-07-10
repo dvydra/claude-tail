@@ -1,9 +1,36 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestEventConversationText(t *testing.T) {
+	mk := func(typ, content string) claudeMetaEvent {
+		return claudeMetaEvent{Type: typ, Message: &claudeMessage{Content: json.RawMessage(content)}}
+	}
+	// A user turn: injected <system-reminder> content must be stripped so it
+	// can't false-match, but the real typed text stays.
+	u := eventConversationText(mk("user", `"real ask <system-reminder>Messages API for directly passing</system-reminder> here"`))
+	if strings.Contains(u, "Messages API") {
+		t.Errorf("system-reminder not stripped: %q", u)
+	}
+	if !strings.Contains(u, "real ask") {
+		t.Errorf("dropped the typed text: %q", u)
+	}
+	// Assistant text blocks are searchable.
+	if got := eventConversationText(mk("assistant", `[{"type":"text","text":"done directly"}]`)); !strings.Contains(got, "directly") {
+		t.Errorf("assistant text = %q", got)
+	}
+	// Tool results and non-conversation events contribute nothing.
+	if got := eventConversationText(mk("user", `[{"type":"tool_result","content":"noise"}]`)); got != "" {
+		t.Errorf("tool_result should be empty, got %q", got)
+	}
+	if got := eventConversationText(mk("summary", `"x"`)); got != "" {
+		t.Errorf("summary should be empty, got %q", got)
+	}
+}
 
 func TestSearchScoreRanking(t *testing.T) {
 	both := &searchHit{localCount: 2, entireHit: true, entireScore: 6}

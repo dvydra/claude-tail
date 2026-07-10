@@ -9,28 +9,34 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // search.go implements content search ("which session did we say 'fire socks'
-// in?") across both sources: a fast local ripgrep over ~/.claude transcripts and
-// entire's hybrid (semantic + keyword) checkpoint search. Hits are merged by
-// session id and ranked — an exact local phrase match weighs heaviest, entire's
-// semantic score adds to it, recency breaks ties — then presented as the usual
-// tree so Enter/t resume or tail the match.
+// in?") across both sources: a local scan of ~/.claude transcripts and entire's
+// hybrid (semantic + keyword) checkpoint search. Hits are merged by session id
+// and ranked — an exact local phrase match weighs heaviest, entire's semantic
+// score adds, recency breaks ties — then presented as the usual tree.
+//
+// The local scan matches only USER + ASSISTANT text with <system-reminder>
+// blocks stripped, so injected boilerplate (skill lists, tool schemas, hook
+// output that's identical across every session) doesn't produce false matches.
+// ripgrep narrows the candidate files first (fast); each candidate is then
+// parsed to confirm a real conversational match.
 
 type searchHit struct {
 	id          string
 	path        string // local jsonl, "" if not on this machine
 	snippet     string // match context (why it hit)
 	repo        string
-	branch      string
+	cwd         string
 	displayName string
 	mtime       int64
-	localCount  int     // literal matches in the local transcript (rg)
+	localCount  int     // conversational matches in the local transcript
 	entireScore float64 // entire's relevance score
 	entireHit   bool
 }
@@ -49,18 +55,16 @@ func (h *searchHit) score() float64 {
 	return s
 }
 
+const localSearchCap = 400 // candidates parsed for a match; newest first
+
 // buildSearchTree runs both searches, merges + ranks, and returns a single-group
 // tree ordered by relevance (not recency). localOnly skips the entire query.
 func buildSearchTree(home, pwd, query string, localOnly bool, now int64) sessionTree {
-	hits := map[string]*searchHit{}
+	hits := localSearchClaude(home, query)
 
-	for path, count := range localSearchClaude(home, query) {
-		id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-		snippet, repo, branch := localMatchSnippet(path, query)
-		hits[id] = &searchHit{
-			id: id, path: path, localCount: count, mtime: statMtime(path),
-			snippet: snippet, repo: repo, branch: branch,
-		}
+	repoCache := map[string]string{}
+	for _, h := range hits {
+		h.repo = repoForCwd(h.cwd, home, repoCache)
 	}
 
 	if !localOnly {
@@ -96,7 +100,7 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 		return list[i].mtime > list[j].mtime
 	})
 
-	const cap = 50 // keep the ranked view useful; ubiquitous terms match everything
+	const cap = 50 // keep the ranked view useful
 	label := fmt.Sprintf("🔎 %q — %d result(s), best match first", query, len(list))
 	if len(list) > cap {
 		label = fmt.Sprintf("🔎 %q — top %d of %d, best match first", query, cap, len(list))
@@ -110,7 +114,6 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 			Snippet: collapsePreview(firstNonEmpty(h.snippet, h.displayName)),
 			Branch:  h.repo, // reuse the branch column to show the repo
 			Mtime:   h.mtime,
-			Live:    false,
 		})
 		if h.mtime > folder.Mtime {
 			folder.Mtime = h.mtime
@@ -123,102 +126,144 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 	return tree
 }
 
+// localSearchClaude returns a hit per local session whose USER/ASSISTANT text
+// contains query. ripgrep narrows candidate files fast; each (newest first,
+// capped) is parsed concurrently so injected boilerplate doesn't false-match.
+func localSearchClaude(home, query string) map[string]*searchHit {
+	cands := localCandidates(home, query)
+	sort.Slice(cands, func(i, j int) bool { return statMtime(cands[i]) > statMtime(cands[j]) })
+	if len(cands) > localSearchCap {
+		cands = cands[:localSearchCap]
+	}
+
+	out := map[string]*searchHit{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for _, p := range cands {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(path string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			count, snippet, cwd := conversationHit(path, query)
+			if count == 0 {
+				return
+			}
+			id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+			mu.Lock()
+			out[id] = &searchHit{id: id, path: path, localCount: count, snippet: snippet, cwd: cwd, mtime: statMtime(path)}
+			mu.Unlock()
+		}(p)
+	}
+	wg.Wait()
+	return out
+}
+
+// localCandidates lists session files that contain query anywhere (fast, via
+// ripgrep -l), or — without rg — every session file (conversationHit filters).
+func localCandidates(home, query string) []string {
+	root := claudeProjectsDir(home)
+	if _, err := exec.LookPath("rg"); err == nil {
+		b, _ := exec.Command("rg", "-l", "-i", "-F", "-g", "*.jsonl", "--", query, root).Output()
+		var out []string
+		for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
+			if line != "" {
+				out = append(out, line)
+			}
+		}
+		return out
+	}
+	m, _ := filepath.Glob(filepath.Join(root, "*", "*.jsonl"))
+	return m
+}
+
+var sysReminderRe = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+
+// conversationHit scans one transcript, counting matches of query within the
+// USER/ASSISTANT text only (system-reminders stripped), and returns the first
+// match's snippet plus the session's cwd. Returns count 0 when the query appears
+// only in injected/system content.
+func conversationHit(path, query string) (count int, snippet, cwd string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, "", ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	q := strings.ToLower(query)
+	for sc.Scan() {
+		var ev claudeMetaEvent
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		if cwd == "" && ev.Cwd != "" {
+			cwd = ev.Cwd
+		}
+		text := eventConversationText(ev)
+		if text == "" {
+			continue
+		}
+		if idx := strings.Index(strings.ToLower(text), q); idx >= 0 {
+			count++
+			if snippet == "" {
+				snippet = collapsePreview(cleanMatch(window(text, idx, len(query))))
+			}
+		}
+	}
+	return count, snippet, cwd
+}
+
+// eventConversationText returns the human conversation text of an event — the
+// user's typed message or the assistant's text blocks — with <system-reminder>
+// blocks removed. Other event types (tool results, attachments, meta) yield "".
+func eventConversationText(ev claudeMetaEvent) string {
+	if ev.Message == nil {
+		return ""
+	}
+	switch ev.Type {
+	case "user":
+		var s string
+		if json.Unmarshal(ev.Message.Content, &s) == nil {
+			return stripSystemReminders(s)
+		}
+		return stripSystemReminders(joinClaudeText(ev.Message.Content))
+	case "assistant":
+		return stripSystemReminders(joinClaudeText(ev.Message.Content))
+	}
+	return ""
+}
+
+func stripSystemReminders(s string) string {
+	if !strings.Contains(s, "<system-reminder>") {
+		return s
+	}
+	return sysReminderRe.ReplaceAllString(s, " ")
+}
+
+// window extracts ~30 chars before and ~50 after a match offset, marking a
+// mid-string cut with an ellipsis.
+func window(s string, idx, qlen int) string {
+	start := max(idx-30, 0)
+	end := min(idx+qlen+50, len(s))
+	w := s[start:end]
+	if start > 0 {
+		w = "…" + w
+	}
+	return w
+}
+
+// cleanMatch turns a raw fragment into readable text.
+func cleanMatch(s string) string {
+	return strings.NewReplacer(`\n`, " ", `\t`, " ", `\"`, `"`, `\\`, `\`).Replace(s)
+}
+
 func statMtime(path string) int64 {
 	if fi, err := os.Stat(path); err == nil {
 		return fi.ModTime().Unix()
 	}
 	return 0
-}
-
-// localSearchClaude returns each local session jsonl containing query (literal,
-// case-insensitive) mapped to its match count, via ripgrep when available, else a
-// bounded Go scan.
-func localSearchClaude(home, query string) map[string]int {
-	root := claudeProjectsDir(home)
-	out := map[string]int{}
-	if _, err := exec.LookPath("rg"); err == nil {
-		// rg -c: "path:count" per matching file; exit 1 (no matches) → empty output.
-		b, _ := exec.Command("rg", "-c", "-i", "-F", "-g", "*.jsonl", "--", query, root).Output()
-		for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
-			if line == "" {
-				continue
-			}
-			if i := strings.LastIndex(line, ":"); i >= 0 {
-				if n, err := strconv.Atoi(line[i+1:]); err == nil {
-					out[line[:i]] = n
-				}
-			}
-		}
-		return out
-	}
-	// Fallback: scan each jsonl for the (lowercased) query.
-	q := strings.ToLower(query)
-	matches, _ := filepath.Glob(filepath.Join(root, "*", "*.jsonl"))
-	for _, p := range matches {
-		if n := countInFile(p, q); n > 0 {
-			out[p] = n
-		}
-	}
-	return out
-}
-
-func countInFile(path, lowerQuery string) int {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	n := 0
-	for sc.Scan() {
-		if strings.Contains(strings.ToLower(sc.Text()), lowerQuery) {
-			n++
-		}
-	}
-	return n
-}
-
-// localMatchSnippet returns a readable window around the first match in the
-// transcript, plus the session's repo (from its cwd's git remote) and branch.
-func localMatchSnippet(path, query string) (snippet, repo, branch string) {
-	_, branch, _, cwd := loadClaudeMeta(path)
-	repo = parseGitRemote(gitOriginURL(cwd))
-	if repo == "" {
-		repo = filepath.Base(cwd)
-	}
-	q := strings.ToLower(query)
-	f, err := os.Open(path)
-	if err != nil {
-		return "", repo, branch
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := sc.Text()
-		if idx := strings.Index(strings.ToLower(line), q); idx >= 0 {
-			return collapsePreview(cleanMatch(window(line, idx, len(query)))), repo, branch
-		}
-	}
-	return "", repo, branch
-}
-
-// window extracts ~30 chars before and ~50 after a match offset, marking a
-// mid-line cut with an ellipsis.
-func window(line string, idx, qlen int) string {
-	start := max(idx-30, 0)
-	end := min(idx+qlen+50, len(line))
-	s := line[start:end]
-	if start > 0 {
-		s = "…" + s
-	}
-	return s
-}
-
-// cleanMatch turns a raw JSONL match fragment into readable text.
-func cleanMatch(s string) string {
-	return strings.NewReplacer(`\n`, " ", `\t`, " ", `\"`, `"`, `\\`, `\`).Replace(s)
 }
 
 func localPathForID(home, id string) string {
