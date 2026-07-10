@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -51,15 +52,25 @@ func run(cfg Config) {
 	theme := mustLoadTheme(cfg)
 
 	scanner := newCodexScanner(home)
-	session := cfg.Session
 	resolved := false
 
-	// --search: rank sessions by relevance to a content query, then let the user
+	// Positional args are sugar: a single existing file is a session to tail;
+	// anything else is a search query (so `entire-tail fire socks` just searches).
+	// An explicit --search always wins.
+	session := ""
+	query := cfg.Search
+	if len(cfg.Positional) == 1 && isFile(cfg.Positional[0]) {
+		session = cfg.Positional[0]
+	} else if query == "" && len(cfg.Positional) > 0 {
+		query = strings.Join(cfg.Positional, " ")
+	}
+
+	// search: rank sessions by relevance to a content query, then let the user
 	// pick one to tail/resume (or dump the ranking when non-interactive).
-	if cfg.Search != "" {
-		tree := buildSearchTree(home, pwd, cfg.Search, cfg.Local, time.Now().Unix())
+	if query != "" {
+		tree := buildSearchTree(home, pwd, query, cfg.Local, time.Now().Unix())
 		if len(tree.Folders) == 0 {
-			die(fmt.Sprintf("no sessions matched %q", cfg.Search))
+			die(fmt.Sprintf("no sessions matched %q", query))
 		}
 		if !ttyUsable() {
 			out := bufio.NewWriter(os.Stdout)
@@ -374,9 +385,13 @@ func runList(cfg Config) {
 	home := firstNonEmpty(os.Getenv("HOME"), mustHome())
 	pwd := firstNonEmpty(os.Getenv("PWD"), mustGetwd())
 	now := time.Now().Unix()
+	query := cfg.Search
+	if query == "" && len(cfg.Positional) > 0 {
+		query = strings.Join(cfg.Positional, " ")
+	}
 	var tree sessionTree
-	if cfg.Search != "" {
-		tree = buildSearchTree(home, pwd, cfg.Search, cfg.Local, now)
+	if query != "" {
+		tree = buildSearchTree(home, pwd, query, cfg.Local, now)
 	} else {
 		days, err := resolveDays(cfg.Days, 0)
 		if err != nil {
@@ -416,16 +431,17 @@ for the current working directory and renders each turn in-process. Quit with
 Ctrl-D or Ctrl-C.
 
 USAGE:
-  entire-tail [OPTIONS] [SESSION_FILE]
-  entire tail [OPTIONS] [SESSION_FILE]    # when installed as an entire plugin
+  entire-tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]
+  entire tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]   # as an entire plugin
 
 ARGUMENTS:
-  SESSION_FILE              Path to a session jsonl. If omitted on an
-                            interactive terminal, opens the session tree picker
-                            (see --pick). Non-interactively (piped) or with
-                            --no-pick, auto-discovers the most recently modified
-                            session for $PWD across all agents (or the one
-                            forced via --agent).
+  [ARGS...]                 With no args on an interactive terminal, opens the
+                            session tree picker (see --pick); non-interactively
+                            or with --no-pick it auto-discovers + tails $PWD's
+                            newest session. A single arg that's an existing file
+                            tails that file. Otherwise the args are a search
+                            query (same as --search) — so 'entire-tail fire
+                            socks' finds the session where that was said.
 
 OPTIONS:
   -a, --agent NAME          Which agent's session to tail:
@@ -545,7 +561,8 @@ EXAMPLES:
   entire-tail --theme dracula
   entire-tail -t nord -b 50
   entire-tail --no-backfill
-  entire-tail --search "fire socks"           # find the session where that was said
+  entire-tail fire socks                      # bare words = search (no --search needed)
+  entire-tail --search "fire socks"           # explicit flag, same thing
   entire-tail --list                          # static ls-style dump of all sessions
   entire-tail --list --days 3                 # ...only the last 3 days
   entire-tail ~/.codex/sessions/2026/05/.../rollout-...jsonl

@@ -71,12 +71,15 @@ func TestParseCLINegationFlags(t *testing.T) {
 }
 
 func TestParseCLIPositional(t *testing.T) {
+	// A single positional (resolved to a file or a search query in run()).
 	c, _, err := parseCLI([]string{"-t", "nord", "/path/to/session.jsonl"}, envFunc(nil))
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(c.Positional) != 1 || c.Positional[0] != "/path/to/session.jsonl" {
+		t.Errorf("single positional: %v %q", err, c.Positional)
 	}
-	if c.Session != "/path/to/session.jsonl" {
-		t.Errorf("got %q", c.Session)
+	// Multiple bare words are collected (joined into a search query downstream).
+	c, _, err = parseCLI([]string{"fire", "socks"}, envFunc(nil))
+	if err != nil || len(c.Positional) != 2 {
+		t.Errorf("multi positional: %v %q", err, c.Positional)
 	}
 }
 
@@ -85,18 +88,16 @@ func TestParseCLIDashDash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Session != "--weird-filename" {
-		t.Errorf("got %q", c.Session)
+	if len(c.Positional) != 1 || c.Positional[0] != "--weird-filename" {
+		t.Errorf("got %q", c.Positional)
 	}
 }
 
 func TestParseCLIErrors(t *testing.T) {
 	cases := [][]string{
-		{"--agent"},            // missing value
-		{"--agent", ""},        // empty value
-		{"--frobnicate"},       // unknown option
-		{"a.jsonl", "b.jsonl"}, // too many positionals
-		{"--", "a", "b"},       // too many after --
+		{"--agent"},      // missing value
+		{"--agent", ""},  // empty value
+		{"--frobnicate"}, // unknown option
 	}
 	for _, args := range cases {
 		if _, _, err := parseCLI(args, envFunc(nil)); err == nil {

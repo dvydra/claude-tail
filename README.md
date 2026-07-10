@@ -231,10 +231,14 @@ Can't find the session where you said *"fire socks"*? `--search` (or `-S`) finds
 sessions by their **content**, not just titles, and ranks them by relevance:
 
 ```sh
-entire tail --search "fire socks"        # interactive, ranked, best match first
-entire tail --list --search "fire socks" # static ranked dump
-entire tail -S "fire socks" --local      # local transcripts only, no network
+entire tail fire socks                   # bare words = search — no flag needed
+entire tail --search "fire socks"        # explicit flag, identical
+entire tail --list fire socks            # static ranked dump
+entire tail fire socks --local           # local transcripts only, no network
 ```
+
+Any bare arguments are treated as a search query (a single argument that's an
+existing file still tails that file). So `entire tail fire socks` just works.
 
 ```
 🔎 "fire socks" — 11 result(s), best match first

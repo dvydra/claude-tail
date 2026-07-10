@@ -9,19 +9,19 @@ import (
 // Config holds the resolved (env + flags) settings as raw strings; typed
 // validation happens in main once the session is known.
 type Config struct {
-	Session   string
-	Agent     string // auto|claude|codex|agy
-	Theme     string
-	Backfill  string
-	GlowStyle string
-	ToolStyle string // none|dots|lines
-	Collapse  string
-	Pick      string // auto|always|never
-	Days      string // window for the session tree (empty = per-mode default)
-	List      bool   // --list: static ls-style dump instead of the TUI
-	Local     bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
-	Cloud     bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
-	Search    string // --search: content-search sessions, ranked by relevance
+	Positional []string // bare args: one session file to tail, else (joined) a search query
+	Agent      string   // auto|claude|codex|agy
+	Theme      string
+	Backfill   string
+	GlowStyle  string
+	ToolStyle  string // none|dots|lines
+	Collapse   string
+	Pick       string // auto|always|never
+	Days       string // window for the session tree (empty = per-mode default)
+	List       bool   // --list: static ls-style dump instead of the TUI
+	Local      bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
+	Cloud      bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
+	Search     string // --search: content-search sessions, ranked by relevance
 }
 
 // Action is what the parsed CLI asks for beyond a normal run.
@@ -197,19 +197,13 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 		case a == "-V" || a == "--version":
 			return c, ActionVersion, nil
 		case a == "--":
-			for i++; i < len(args); i++ {
-				if c.Session != "" {
-					return c, ActionRun, fmt.Errorf("too many positional arguments")
-				}
-				c.Session = args[i]
-			}
+			// Everything after -- is positional (a session file, or search words).
+			c.Positional = append(c.Positional, args[i+1:]...)
+			i = len(args)
 		case len(a) > 0 && a[0] == '-':
 			return c, ActionRun, fmt.Errorf("unknown option: %s (try --help)", a)
 		default:
-			if c.Session != "" {
-				return c, ActionRun, fmt.Errorf("too many positional arguments (got '%s' after '%s')", a, c.Session)
-			}
-			c.Session = a
+			c.Positional = append(c.Positional, a)
 		}
 	}
 
