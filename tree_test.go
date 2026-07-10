@@ -261,6 +261,31 @@ func TestUpdateTreeEnterTails(t *testing.T) {
 	}
 }
 
+func TestUpdateTreeResume(t *testing.T) {
+	tr := sampleTree()
+	tr.Folders[0].Sessions[0].Path = "/sessions/aaaa1111.jsonl"
+	ui := treeUI{Tree: tr, Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+	ui.Cursor = 1 // first session of folder A
+
+	ui = updateTree(ui, kRune, 'o')
+	if ui.Chosen != "/sessions/aaaa1111.jsonl" || !ui.Resume {
+		t.Errorf("'o' should select+resume: chosen=%q resume=%v", ui.Chosen, ui.Resume)
+	}
+	if ui.ChosenCwd != "/home/me/a" || ui.ChosenID != "aaaa1111" {
+		t.Errorf("resume needs cwd+id: cwd=%q id=%q", ui.ChosenCwd, ui.ChosenID)
+	}
+
+	// 'o' on a folder header is a no-op (nothing to resume).
+	ui2 := treeUI{Tree: sampleTree(), Height: 20}
+	ui2.Rows = flattenRows(ui2.Tree, "")
+	ui2.Cursor = 0 // folder header
+	ui2 = updateTree(ui2, kRune, 'o')
+	if ui2.Chosen != "" || ui2.Resume {
+		t.Errorf("'o' on folder should do nothing, got chosen=%q resume=%v", ui2.Chosen, ui2.Resume)
+	}
+}
+
 func TestUpdateTreeFilterTyping(t *testing.T) {
 	ui := treeUI{Tree: sampleTree(), Height: 20}
 	ui.Rows = flattenRows(ui.Tree, "")

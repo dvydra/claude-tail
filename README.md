@@ -176,6 +176,35 @@ directly with `--agent codex`/`agy`, or pass an explicit `SESSION_FILE`. Live
 markers need `pgrep` + `lsof` (present on macOS and most Linux); without them the
 tree still works, minus the live coloring.
 
+## iTerm2 windows (macOS)
+
+On macOS + iTerm2, entire-tail can lay out panes for you via AppleScript (no
+extra deps — `osascript` ships with the OS).
+
+**`--workspace` / `-w`** opens a fresh dev window in one command: three panes,
+all `cd`'d to `$PWD`.
+
+```
+┌──────────┬──────────┐
+│ claude   │          │   A = claude (fresh session)
+├──────────┤ entire-  │   B = entire-tail, following A's new session
+│ shell    │ tail     │   C = a plain shell
+└──────────┴──────────┘
+```
+
+```sh
+cd ~/src/my-project
+entire tail --workspace     # or -w
+```
+
+**`o` in the session tree** resumes the highlighted session in a two-pane
+window: `claude --resume <id>` on the left, `entire-tail` following that exact
+session on the right — both in the session's original folder. (`Enter` still
+tails in the current pane; `o` is the "reopen this over there" shortcut.)
+
+Both need iTerm2; off iTerm, `--workspace` errors and `o` falls back to tailing
+in place. Support for tmux / other terminals is a possible follow-up.
+
 ## Tool calls
 
 By default, each tool call collapses to a **single colored dot** — a

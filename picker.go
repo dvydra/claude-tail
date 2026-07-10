@@ -268,10 +268,8 @@ func runPicker(agents []Agent, home, pwd, pick string, days int, theme Theme, sc
 	treeCapable := ttyUsable() && slices.Contains(agents, AgentClaude)
 
 	if pick == "always" && treeCapable {
-		if p, res := runClaudeTree(home, pwd, days, theme); res == treeChosen {
+		if p, ok := resolveTreeChoice(runClaudeTree(home, pwd, days, theme)); ok {
 			return p, AgentClaude, true
-		} else if res == treeQuit {
-			os.Exit(0)
 		}
 		return "", "", false // empty tree → discovery
 	}
@@ -289,10 +287,8 @@ func runPicker(agents []Agent, home, pwd, pick string, days int, theme Theme, sc
 		return s.Path, s.Agent, true
 	case actMenu:
 		if treeCapable {
-			if p, res := runClaudeTree(home, pwd, days, theme); res == treeChosen {
+			if p, ok := resolveTreeChoice(runClaudeTree(home, pwd, days, theme)); ok {
 				return p, AgentClaude, true
-			} else if res == treeQuit {
-				os.Exit(0)
 			}
 		}
 		// Non-Claude ambiguity (codex/agy) or an empty tree → tail the newest live.
@@ -302,6 +298,29 @@ func runPicker(agents []Agent, home, pwd, pick string, days int, theme Theme, sc
 		return "", "", false
 	}
 	return "", "", false
+}
+
+// resolveTreeChoice acts on a tree selection. It returns (path, true) when the
+// caller should tail that session in-place. A resume selection launches the
+// iTerm split and exits; a quit exits; anything else returns ok=false so the
+// caller falls back to discovery. When iTerm isn't available a resume degrades
+// to tailing in-place.
+func resolveTreeChoice(c treeChoice) (string, bool) {
+	switch c.Result {
+	case treeChosen:
+		return c.Path, true
+	case treeResume:
+		if itermAvailable() {
+			if err := launchResumePair(c.Cwd, c.Path, c.ID); err != nil {
+				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+			}
+			os.Exit(0)
+		}
+		return c.Path, true // no iTerm → just tail it here
+	case treeQuit:
+		os.Exit(0)
+	}
+	return "", false
 }
 
 func ttyUsable() bool {

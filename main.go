@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.9.0"
+const version = "0.10.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -31,6 +31,9 @@ func main() {
 		return
 	case ActionList:
 		runList(cfg)
+		return
+	case ActionWorkspace:
+		runWorkspace()
 		return
 	}
 
@@ -347,6 +350,18 @@ func mustLoadTheme(cfg Config) Theme {
 	return theme
 }
 
+// runWorkspace launches the 3-pane iTerm dev window (claude | entire-tail |
+// shell) rooted in $PWD, then exits. macOS + iTerm2 only.
+func runWorkspace() {
+	if !itermAvailable() {
+		die("--workspace requires iTerm2 on macOS.")
+	}
+	pwd := firstNonEmpty(os.Getenv("PWD"), mustGetwd())
+	if err := launchWorkspace(pwd); err != nil {
+		die(err.Error())
+	}
+}
+
 // runList prints the static ls-style dump of Claude sessions (--list). It's
 // uncapped by default (the full inventory); --days narrows the window. Color is
 // used only when stdout is a terminal.
@@ -439,8 +454,9 @@ OPTIONS:
                             session on disk, grouped by the folder it ran in,
                             so you can find "which folder was I in?" without
                             remembering. Arrow keys / hjkl move, →/Enter expand
-                            a folder, Enter tails a session, / filters by path
-                            or snippet, q/Esc quits. Folders and sessions are
+                            a folder, Enter tails a session, o resumes it in a
+                            new iTerm split (macOS+iTerm2), / filters by path or
+                            snippet, q/Esc quits. Folders and sessions are
                             colored by recency: bright green = live now, muted
                             green = active in the last 15m, white = today, grey
                             = older. Scoped to the last --days days (default 7).
@@ -454,6 +470,11 @@ OPTIONS:
   -L, --list                Print the session tree as a static, greppable
                             ls-style dump instead of the TUI, then exit.
                             Uncapped by default; narrow with --days.
+  -w, --workspace           macOS + iTerm2 only: open a new iTerm window with a
+                            three-pane dev layout — Claude (top-left),
+                            entire-tail (full-height right), and a plain shell
+                            (bottom-left) — all in $PWD, then exit. One command
+                            to spin up a coding workspace with a live view.
   -l, --list-themes         List available themes (with descriptions) and exit.
   -h, --help                Show this help and exit.
   -V, --version             Show version and exit.
@@ -494,6 +515,7 @@ EXAMPLES:
   entire-tail --pick                          # browse the Claude session tree
   entire-tail --list                          # static ls-style dump of all sessions
   entire-tail --list --days 3                 # ...only the last 3 days
+  entire-tail --workspace                     # iTerm: claude + tail + shell, 3 panes
   entire-tail --list-themes
   entire-tail ~/.codex/sessions/2026/05/.../rollout-...jsonl
 `, version)

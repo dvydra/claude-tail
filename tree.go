@@ -264,8 +264,8 @@ const (
 )
 
 const (
-	recentLiveWindow = 15 * 60    // 15 minutes
-	recentWindow     = 24 * 3600  // 1 day
+	recentLiveWindow = 15 * 60   // 15 minutes
+	recentWindow     = 24 * 3600 // 1 day
 )
 
 func classifyTier(mtime, now int64, live bool) recencyTier {
@@ -356,6 +356,9 @@ type treeUI struct {
 	Filtering bool
 	Quit      bool
 	Chosen    string // selected session path; non-empty ends the loop
+	ChosenCwd string // folder cwd of the selection (for the iTerm launcher)
+	ChosenID  string // session id of the selection (for claude --resume)
+	Resume    bool   // selection should open an iTerm resume split, not tail
 }
 
 type treeKey int
@@ -431,6 +434,8 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 			ui.Cursor = 0
 		case 'G':
 			ui.Cursor = len(ui.Rows) - 1
+		case 'o', 'O':
+			ui.selectSession(true) // resume in an iTerm split
 		case 'q', 'Q':
 			ui.Quit = true
 		case '/':
@@ -475,7 +480,23 @@ func (ui *treeUI) activate() {
 		ui.Rows = flattenRows(ui.Tree, ui.Filter)
 		return
 	}
-	ui.Chosen = ui.Tree.Folders[row.Folder].Sessions[row.Session].Path
+	ui.selectSession(false)
+}
+
+// selectSession records the session under the cursor as the choice, ending the
+// loop. resume=true means open an iTerm resume split; false means tail in-place.
+// On a folder header it's a no-op (folders expand via activate, not select).
+func (ui *treeUI) selectSession(resume bool) {
+	row, ok := ui.current()
+	if !ok || row.Session == -1 {
+		return
+	}
+	folder := ui.Tree.Folders[row.Folder]
+	s := folder.Sessions[row.Session]
+	ui.Chosen = s.Path
+	ui.ChosenCwd = folder.Cwd
+	ui.ChosenID = s.ID
+	ui.Resume = resume
 }
 
 func (ui *treeUI) folderHeaderIndex(folder int) int {
@@ -597,7 +618,7 @@ func renderRow(ui treeUI, i int) string {
 }
 
 func composeHeader() string {
-	return "  CLAUDE SESSIONS      ↑↓ move · →/⏎ expand · ⏎ tail · / filter · q quit"
+	return "  CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ tail · o resume↗ · / filter · q quit"
 }
 
 func composeFooter(ui treeUI) string {
@@ -678,36 +699,48 @@ func claudeLiveCwds() map[string]int {
 	return m
 }
 
-// treeResult distinguishes how the tree exited: a session was chosen, the user
-// quit (abort the program), or it never ran (empty tree / no tty → fall back).
+// treeResult distinguishes how the tree exited: a session was chosen to tail, a
+// session was chosen to resume in an iTerm split, the user quit (abort the
+// program), or it never ran (empty tree / no tty → fall back).
 type treeResult int
 
 const (
-	treeChosen treeResult = iota
+	treeChosen treeResult = iota // tail the session in-place
+	treeResume                   // resume it in a new iTerm window
 	treeQuit
 	treeNone
 )
 
-// runClaudeTree builds and runs the interactive tree. treeNone means the tree was
-// empty or no tty was available (caller falls back to discovery); treeQuit means
-// the user aborted (caller should exit, matching the old menu's `q`).
-func runClaudeTree(home, pwd string, days int, theme Theme) (string, treeResult) {
+// treeChoice is what the tree hands back: the picked session (for treeChosen /
+// treeResume) plus the folder cwd and session id the iTerm launcher needs.
+type treeChoice struct {
+	Result treeResult
+	Path   string
+	Cwd    string
+	ID     string
+}
+
+// runClaudeTree builds and runs the interactive tree. A treeNone result means the
+// tree was empty or no tty was available (caller falls back to discovery);
+// treeQuit means the user aborted (caller should exit, matching the old menu's
+// `q`); treeChosen/treeResume carry the picked session.
+func runClaudeTree(home, pwd string, days int, theme Theme) treeChoice {
 	tree := buildClaudeTree(home, pwd, days, time.Now().Unix(), claudeLiveCwds())
 	if len(tree.Folders) == 0 {
-		return "", treeNone
+		return treeChoice{Result: treeNone}
 	}
 	return runTreeTUI(tree, theme)
 }
 
-func runTreeTUI(tree sessionTree, theme Theme) (string, treeResult) {
+func runTreeTUI(tree sessionTree, theme Theme) treeChoice {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		return "", treeNone
+		return treeChoice{Result: treeNone}
 	}
 	defer tty.Close()
 	saved, ok := setRaw(tty)
 	if !ok {
-		return "", treeNone
+		return treeChoice{Result: treeNone}
 	}
 	defer restoreCbreak(tty, saved)
 
@@ -715,7 +748,7 @@ func runTreeTUI(tree sessionTree, theme Theme) (string, treeResult) {
 	// switched, so bail before registering the restore defer (which would
 	// otherwise send exit-alt-screen codes to a terminal that never entered it).
 	if _, err := io.WriteString(tty, "\x1b[?1049h\x1b[?25l"); err != nil {
-		return "", treeNone
+		return treeChoice{Result: treeNone}
 	}
 	defer io.WriteString(tty, "\x1b[?25h\x1b[?1049l")
 
@@ -735,15 +768,19 @@ func runTreeTUI(tree sessionTree, theme Theme) (string, treeResult) {
 
 		n, err := tty.Read(buf)
 		if err != nil || n == 0 {
-			return "", treeQuit // read error / EOF (Ctrl-D) → abort
+			return treeChoice{Result: treeQuit} // read error / EOF (Ctrl-D) → abort
 		}
 		k, r := decodeKey(buf[:n])
 		ui = updateTree(ui, k, r)
 		if ui.Quit {
-			return "", treeQuit
+			return treeChoice{Result: treeQuit}
 		}
 		if ui.Chosen != "" {
-			return ui.Chosen, treeChosen
+			res := treeChosen
+			if ui.Resume {
+				res = treeResume
+			}
+			return treeChoice{Result: res, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID}
 		}
 	}
 }

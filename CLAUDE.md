@@ -54,6 +54,10 @@ agent-agnostic and consumes only `Record`s.
 - `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) that
   feeds the tree's live markers and the `auto` "one live session here → tail it"
   shortcut; routes `--pick` to `tree.go`
+- `iterm.go` — macOS/iTerm2 automation via `osascript`: `--workspace` (3-pane
+  claude+tail+shell dev window) and the tree's `o` key (2-pane resume split).
+  Pure script builders (`workspaceScript`/`resumePairScript`) split from the
+  `osaRun` executor so quoting/layout are unit-tested without launching iTerm
 - `render.go` — the **rendering state machine** (one path shared by backfill +
   live): tracks previous participant (consecutive same-participant turns collapse
   to a dim `⋯ ts` marker) and dot-streak state; tool tristate lives here
