@@ -42,14 +42,13 @@ func TestWorkspaceScript(t *testing.T) {
 		"cd '/work/proj' && claude --resume 'abc-123'",           // A resumes the picked session
 		"'/usr/local/bin/entire-tail' '/sessions/abc-123.jsonl'", // B tails that exact file
 		"select a",
+		// Only open a new window when the current one already has panes.
+		"if (count of sessions of current tab of current window) > 1 then",
+		"create window with default profile",
 	}
 	for _, c := range checks {
 		if !strings.Contains(s, c) {
 			t.Errorf("workspace script missing %q:\n%s", c, s)
 		}
-	}
-	// It must reuse the current window, not open a new one.
-	if strings.Contains(s, "create window") {
-		t.Error("workspace should reuse the current window, not create one")
 	}
 }
