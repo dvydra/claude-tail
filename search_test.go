@@ -33,17 +33,37 @@ func TestEventConversationText(t *testing.T) {
 }
 
 func TestSearchScoreRanking(t *testing.T) {
-	both := &searchHit{localCount: 2, entireHit: true, entireScore: 6}
-	localOnly := &searchHit{localCount: 2}
+	word := &searchHit{wordCount: 1, localCount: 1} // " ectl "
+	substr := &searchHit{localCount: 9}             // ectl inside kubectl ×9
 	entireOnly := &searchHit{entireHit: true, entireScore: 6}
+	both := &searchHit{wordCount: 1, localCount: 1, entireHit: true, entireScore: 6}
 
-	// Matching both sources ranks above an exact local-only match, which ranks
-	// above an entire-only (semantic) match.
-	if !(both.score() > localOnly.score() && localOnly.score() > entireOnly.score()) {
-		t.Errorf("ranking off: both=%v local=%v entire=%v", both.score(), localOnly.score(), entireOnly.score())
+	// A standalone-word match beats any amount of substring-only matches.
+	if word.score() <= substr.score() {
+		t.Errorf("word (%v) should outrank substring-only (%v)", word.score(), substr.score())
+	}
+	// Substring-only still beats an entire-only semantic hit, and both-sources wins.
+	if !(substr.score() > entireOnly.score() && both.score() > word.score()) {
+		t.Errorf("ranking off: both=%v word=%v substr=%v entire=%v",
+			both.score(), word.score(), substr.score(), entireOnly.score())
 	}
 	if (&searchHit{}).score() != 0 {
 		t.Error("a hit with no signal should score 0")
+	}
+}
+
+func TestStandaloneAt(t *testing.T) {
+	if !standaloneAt("run ectl now", 4, 4) {
+		t.Error("' ectl ' should be standalone")
+	}
+	if standaloneAt("kubectl", 3, 4) {
+		t.Error("'ectl' inside 'kubectl' is not standalone")
+	}
+	if !standaloneAt("ectl", 0, 4) {
+		t.Error("whole string is standalone")
+	}
+	if standaloneAt("directly", 4, 4) { // "ctly" mid-word — preceded by 'e'
+		t.Error("substring inside a word is not standalone")
 	}
 }
 

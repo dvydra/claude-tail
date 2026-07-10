@@ -36,21 +36,26 @@ type searchHit struct {
 	cwd         string
 	displayName string
 	mtime       int64
-	localCount  int     // conversational matches in the local transcript
+	localCount  int     // conversational matches in the local transcript (any)
+	wordCount   int     // matches that stand alone as a whole word (not a substring)
 	entireScore float64 // entire's relevance score
 	entireHit   bool
 }
 
-// score ranks a hit. A literal local match dominates (the user typed the exact
-// words), entire's semantic score adds on top, and matching both sources ranks
-// highest of all.
+// score ranks a hit. A standalone-word local match is strongest (searching
+// "ectl" should surface " ectl ", not "kubectl"/"directly"); a substring-only
+// local match ranks well below that; entire's semantic score adds on top, so
+// matching both sources still wins.
 func (h *searchHit) score() float64 {
 	s := 0.0
 	if h.entireHit {
 		s += h.entireScore // typically ~5–8
 	}
-	if h.localCount > 0 {
-		s += 10 + math.Min(float64(h.localCount), 5) // exact phrase present → strong
+	switch {
+	case h.wordCount > 0:
+		s += 20 + math.Min(float64(h.wordCount), 5) // whole-word hit → strongest
+	case h.localCount > 0:
+		s += 8 + math.Min(float64(h.localCount), 5) // substring-only → weaker
 	}
 	return s
 }
@@ -146,13 +151,13 @@ func localSearchClaude(home, query string) map[string]*searchHit {
 		go func(path string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			count, snippet, cwd := conversationHit(path, query)
+			count, words, snippet, cwd := conversationHit(path, query)
 			if count == 0 {
 				return
 			}
 			id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 			mu.Lock()
-			out[id] = &searchHit{id: id, path: path, localCount: count, snippet: snippet, cwd: cwd, mtime: statMtime(path)}
+			out[id] = &searchHit{id: id, path: path, localCount: count, wordCount: words, snippet: snippet, cwd: cwd, mtime: statMtime(path)}
 			mu.Unlock()
 		}(p)
 	}
@@ -181,18 +186,21 @@ func localCandidates(home, query string) []string {
 var sysReminderRe = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
 
 // conversationHit scans one transcript, counting matches of query within the
-// USER/ASSISTANT text only (system-reminders stripped), and returns the first
-// match's snippet plus the session's cwd. Returns count 0 when the query appears
-// only in injected/system content.
-func conversationHit(path, query string) (count int, snippet, cwd string) {
+// USER/ASSISTANT text only (system-reminders stripped). It reports the total
+// match count, how many of those stand alone as a whole word, a snippet
+// (preferring a whole-word match so it shows why it hit), and the session's cwd.
+// Returns count 0 when the query appears only in injected/system content.
+func conversationHit(path, query string) (count, words int, snippet, cwd string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, "", ""
+		return 0, 0, "", ""
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	q := strings.ToLower(query)
+	n := len(query)
+	var wordSnip, subSnip string
 	for sc.Scan() {
 		var ev claudeMetaEvent
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
@@ -205,14 +213,44 @@ func conversationHit(path, query string) (count int, snippet, cwd string) {
 		if text == "" {
 			continue
 		}
-		if idx := strings.Index(strings.ToLower(text), q); idx >= 0 {
-			count++
-			if snippet == "" {
-				snippet = collapsePreview(cleanMatch(window(text, idx, len(query))))
+		lt := strings.ToLower(text)
+		for from := 0; ; {
+			rel := strings.Index(lt[from:], q)
+			if rel < 0 {
+				break
 			}
+			idx := from + rel
+			count++
+			if standaloneAt(text, idx, n) {
+				words++
+				if wordSnip == "" {
+					wordSnip = collapsePreview(cleanMatch(window(text, idx, n)))
+				}
+			} else if subSnip == "" {
+				subSnip = collapsePreview(cleanMatch(window(text, idx, n)))
+			}
+			from = idx + n
 		}
 	}
-	return count, snippet, cwd
+	return count, words, firstNonEmpty(wordSnip, subSnip), cwd
+}
+
+// standaloneAt reports whether the match at s[idx:idx+n] is bounded by non-word
+// characters on both sides (so "ectl" matches " ectl " but not "kubectl").
+func standaloneAt(s string, idx, n int) bool {
+	before := byte(' ')
+	if idx > 0 {
+		before = s[idx-1]
+	}
+	after := byte(' ')
+	if idx+n < len(s) {
+		after = s[idx+n]
+	}
+	return !isWordByte(before) && !isWordByte(after)
+}
+
+func isWordByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
 }
 
 // eventConversationText returns the human conversation text of an event — the
