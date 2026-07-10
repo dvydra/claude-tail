@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -52,6 +53,9 @@ type sessionTree struct {
 	Now     int64
 	Pwd     string
 	Home    string
+	// CurrentGroup is the group (repo) the cursor should start on — the current
+	// working dir's repo in the merged tree. Empty falls back to $PWD's folder.
+	CurrentGroup string
 }
 
 // claudeMetaEvent is the subset of a Claude event we read to summarize a session.
@@ -152,16 +156,24 @@ func sessionFromMeta(m fileMeta) treeSession {
 	return s
 }
 
-// loadClaudeMeta reads one Claude session and extracts a display snippet, git
-// branch, rough message count, and cwd — in a single pass. Snippet precedence:
-// the session summary, then its ai-title, then its first user prompt.
+// loadClaudeMeta extracts a display snippet, git branch, and cwd from a Claude
+// session. Snippet precedence: the session summary, then its ai-title, then its
+// first user prompt — all of which live in the opening events, so this reads only
+// the file's head (bounded, with an early-out) rather than the whole transcript.
+// That keeps a full-tree build cheap no matter how large individual sessions are.
 func loadClaudeMeta(path string) (snippet, branch string, msgs int, cwd string) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", "", 0, ""
 	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+
 	var summary, aiTitle, firstUser string
-	for _, line := range splitLines(data) {
+	const maxLines = 128 // headers/first prompt are near the top; cap the scan
+	for i := 0; i < maxLines && sc.Scan(); i++ {
+		line := sc.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
@@ -189,6 +201,10 @@ func loadClaudeMeta(path string) (snippet, branch string, msgs int, cwd string) 
 			if ev.Type == "user" && firstUser == "" {
 				firstUser = claudeUserText(ev.Message)
 			}
+		}
+		// Early-out once we have everything the row needs.
+		if cwd != "" && branch != "" && firstNonEmpty(summary, aiTitle, firstUser) != "" {
+			break
 		}
 	}
 	return collapsePreview(firstNonEmpty(summary, aiTitle, firstUser)), branch, msgs, cwd
@@ -530,8 +546,16 @@ func (ui *treeUI) clamp() {
 	}
 }
 
-// initialCursor puts the cursor on the $PWD folder header if present, else row 0.
+// initialCursor puts the cursor on the current repo's group (merged tree), else
+// the $PWD folder (local crawl), else row 0.
 func initialCursor(ui treeUI) int {
+	if g := ui.Tree.CurrentGroup; g != "" {
+		for i, r := range ui.Rows {
+			if r.Session == -1 && ui.Tree.Folders[r.Folder].Cwd == g {
+				return i
+			}
+		}
+	}
 	pwdSlug := claudeSlug(ui.Tree.Pwd)
 	for i, r := range ui.Rows {
 		if r.Session == -1 && ui.Tree.Folders[r.Folder].Slug == pwdSlug {
@@ -726,8 +750,8 @@ type treeChoice struct {
 // tree was empty or no tty was available (caller falls back to discovery);
 // treeQuit means the user aborted (caller should exit, matching the old menu's
 // `q`); treeChosen/treeResume carry the picked session.
-func runClaudeTree(home, pwd string, days int, theme Theme) treeChoice {
-	tree := buildClaudeTree(home, pwd, days, time.Now().Unix(), claudeLiveCwds())
+func runClaudeTree(home, pwd string, days int, local, cloud bool, theme Theme) treeChoice {
+	tree := buildSessionTree(home, pwd, days, time.Now().Unix(), local, cloud)
 	if len(tree.Folders) == 0 {
 		return treeChoice{Result: treeNone}
 	}

@@ -65,8 +65,8 @@ func TestLoadClaudeMeta(t *testing.T) {
 	if branch != "feat/x" {
 		t.Errorf("branch = %q", branch)
 	}
-	if msgs != 2 {
-		t.Errorf("msgs = %d, want 2", msgs)
+	if msgs < 1 {
+		t.Errorf("msgs = %d, want >= 1 (head-bounded count)", msgs)
 	}
 	if cwd != "/tmp/proj" {
 		t.Errorf("cwd = %q", cwd)

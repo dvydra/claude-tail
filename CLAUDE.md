@@ -47,14 +47,24 @@ agent-agnostic and consumes only `Record`s.
 - `adapter_claude.go` / `adapter_codex.go` / `adapter_agy.go` — `normalize(line) []Record`
 - `adapter.go` — the `Record`/`Kind` types and the adapter interface
 - `discovery.go` — find the session file for `$PWD` per agent
-- `tree.go` — the interactive session **tree** picker (`--pick`): all Claude
-  sessions grouped by folder, arrow-key navigable, recency-colored, type-to-filter;
+- `tree.go` — the interactive session **tree** picker (the DEFAULT): sessions
+  grouped by repo/folder, arrow-key navigable, recency-colored, type-to-filter;
   also the static `--list` dump. Pure build/reduce/render split from a thin tty
   driver (alt-screen + `setRaw`), so navigation/render are unit-tested without a tty
-- `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) that
-  feeds the tree's live markers, plus `runPicker`/`resolveTreeChoice`. The tree
-  is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` / piped
-  runs / explicit SESSION_FILE skip it and tail directly
+- `entire.go` — builds the DEFAULT tree, tuned to stay instant + local:
+  `buildSessionTree` takes the complete local `~/.claude` crawl as the base and
+  `mergeEntire` regroups it by repo via each cwd's git `origin` remote (for
+  entire repos the remote is `entire://…/owner/repo` → same `owner/repo` the
+  cloud uses). Cloud metadata (`entire api /me/sessions`: generated titles +
+  cross-machine sessions) is **opt-in via `--cloud`** and disk-cached (~10 min,
+  `cachedEntireSessions`), so the default never blocks on the network — it only
+  reads a warm cache. `--local` skips git+cloud (pure folder-grouped crawl).
+  `loadClaudeMeta` reads only each session's head (early-out) to keep the crawl
+  cheap regardless of transcript size
+- `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) for
+  the `--local` view's live markers, plus `runPicker`/`resolveTreeChoice`. The
+  tree is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` /
+  piped runs / explicit SESSION_FILE skip it and tail directly
 - `iterm.go` — macOS/iTerm2 automation via `osascript`: the tree's `Enter`
   opens the 3-pane workspace (`claude --resume` + live tail + shell) in the
   CURRENT window, cd'd to the picked session's folder. Pure `workspaceScript`

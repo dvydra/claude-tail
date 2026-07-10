@@ -19,6 +19,8 @@ type Config struct {
 	Pick      string // auto|always|never
 	Days      string // window for the session tree (empty = per-mode default)
 	List      bool   // --list: static ls-style dump instead of the TUI
+	Local     bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
+	Cloud     bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
 }
 
 // Action is what the parsed CLI asks for beyond a normal run.
@@ -170,6 +172,10 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.Days = strings.TrimPrefix(a, "--days=")
 		case a == "-L" || a == "--list":
 			c.List = true
+		case a == "--local":
+			c.Local = true
+		case a == "--cloud":
+			c.Cloud = true
 		case a == "-w" || a == "--workspace":
 			// Workspace is the default; -w just forces the picker even when the
 			// env default is 'never'.
