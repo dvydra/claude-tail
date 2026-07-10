@@ -726,8 +726,8 @@ type treeChoice struct {
 // tree was empty or no tty was available (caller falls back to discovery);
 // treeQuit means the user aborted (caller should exit, matching the old menu's
 // `q`); treeChosen/treeResume carry the picked session.
-func runClaudeTree(home, pwd string, days int, theme Theme) treeChoice {
-	tree := buildClaudeTree(home, pwd, days, time.Now().Unix(), claudeLiveCwds())
+func runClaudeTree(home, pwd string, days int, local bool, theme Theme) treeChoice {
+	tree := buildSessionTree(home, pwd, days, time.Now().Unix(), local)
 	if len(tree.Folders) == 0 {
 		return treeChoice{Result: treeNone}
 	}

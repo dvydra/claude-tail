@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.11.0"
+const version = "0.12.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -74,7 +74,7 @@ func run(cfg Config) {
 		if derr != nil {
 			die(derr.Error())
 		}
-		if path, ag, ok := runPicker(agents, home, pwd, days, theme); ok {
+		if path, ag, ok := runPicker(agents, home, pwd, days, cfg.Local, theme); ok {
 			session, agentStr, resolved = path, string(ag), true
 		}
 	}
@@ -357,9 +357,9 @@ func runList(cfg Config) {
 	if err != nil {
 		die(err.Error())
 	}
-	tree := buildClaudeTree(home, pwd, days, time.Now().Unix(), claudeLiveCwds())
+	tree := buildSessionTree(home, pwd, days, time.Now().Unix(), cfg.Local)
 	if len(tree.Folders) == 0 {
-		fmt.Fprintln(os.Stderr, "entire-tail: no Claude sessions found.")
+		fmt.Fprintln(os.Stderr, "entire-tail: no sessions found.")
 		return
 	}
 	out := bufio.NewWriter(os.Stdout)
@@ -439,9 +439,11 @@ OPTIONS:
       --no-collapse         Never collapse — show every user message in full.
   -p, --pick                Force the session tree (it's the DEFAULT already;
                             use this to override ENTIRE_TAIL_PICK=never). The
-                            tree lists every Claude session on disk, grouped by
-                            the folder it ran in, so you can find "which folder
-                            was I in?" without remembering. Arrow keys / hjkl
+                            tree lists your sessions — sourced from the 'entire'
+                            CLI (grouped by repo, with generated titles), or
+                            from a ~/.claude crawl with --local (grouped by
+                            folder) — so you can find "which one was that?"
+                            without remembering. Arrow keys / hjkl
                             move, → expands a folder, / filters by path or
                             snippet, q/Esc quits. Rows are colored by recency:
                             bright green = live now, muted green = active in the
@@ -461,6 +463,11 @@ OPTIONS:
   -L, --list                Print the session tree as a static, greppable
                             ls-style dump instead of the TUI, then exit.
                             Uncapped by default; narrow with --days.
+      --local               Build the tree by crawling ~/.claude directly
+                            instead of the 'entire' CLI. Use offline, when
+                            logged out, or to see sessions the cloud doesn't
+                            track. (Auto-falls back to this if 'entire' is
+                            absent or returns nothing.)
   -w, --workspace           Alias for the default: force the session tree. Its
                             Enter opens the iTerm workspace (macOS + iTerm2).
   -l, --list-themes         List available themes (with descriptions) and exit.

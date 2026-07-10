@@ -112,56 +112,71 @@ rich diffs." A one-line `keys:` legend prints in the startup banner.
 
 ## The session tree (default)
 
-Can't remember which folder you ran that session in? Just run `entire tail` —
-with no session to tail, it opens an interactive tree of **every Claude session
-on disk**, grouped by the folder it ran in:
+Can't remember which session that was? Just run `entire tail` — with no session
+to tail, it opens an interactive tree of your sessions, grouped by **repo**:
 
 ```
   CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · t tail · / filter · q quit
 
-▾ ~/src/dvydra/claude-tail  (3)  2m ago  ● live
-    ● b7dd3e4a  2m ago   [main] level up the picker into a tree view
-    ○ f2410d3   4h ago   [main] fix discovery: encode claude slug fully
-    ○ cf9e1f2   1d ago   [main] render full tool output, no truncation
-▸ ~/src/entirehq/infra  (8)  3h ago
-▸ ~/src/dvydra/dotfiles  (1)  2d ago
+▾ entirehq/infra  (4)  20h ago
+    ○ 8babea4d  20h ago  Monitor Kubernetes Node Disk Usage
+    ○ 3f23dd13  4d ago   Investigate ENT-977 telemetry regression
+    ○ 9de20fff  4d ago   Fix AWS Server Nodegroup Telemetry Installer
+▸ entirehq/entiredb  (7)  27h ago
+▸ entirehq/entire.io  (4)  2d ago
 
-  31 folders · 214 sessions
+  4 repos · 16 sessions
 ```
 
-Each folder shows its real path (recovered from the session's own `cwd` — the
-on-disk project slug is lossy), a session count, and how long ago it was last
-active. Each session row shows its id (the session uuid), age, git branch, and a
-one-line snippet — the session's summary if it has one, else its ai-title, else
-its first prompt.
+### Where the sessions come from
 
-**Navigation:** arrow keys or `hjkl` move; `→` expands a folder and `←`
-collapses; `/` filters by folder path or snippet as you type (`Esc` clears);
-`q`/`Esc` quits. Your `$PWD`'s folder starts expanded with the cursor on it.
-On a session:
+By default the tree is sourced from the **[`entire`](https://docs.entire.io)
+CLI** (`entire api /me/sessions`): every tracked session across every repo,
+with a generated **title**, agent, repo, and checkpoint count — no local file
+reads for the listing. A session's uuid still maps to its local Claude jsonl
+(resolved by a name-only glob of `~/.claude`) so it can be tailed / resumed on
+this machine; cloud-only sessions (from another machine) show but can't be
+tailed here.
+
+`--local` (or `entire` being absent / logged out / returning nothing) falls back
+to **crawling `~/.claude` directly**, grouped by folder path with `● live`
+markers — the pre-entire behavior:
+
+```
+▾ ~/src/entirehq/entiredb  (3)  3m ago  ● live
+    ● 99044a91  3m ago   [main] Lightweight HubSpot product properties sync
+    ○ 6e18caf2  18h ago  [main] User self deletion and erasure epic
+```
+
+Each session row shows its id (the session uuid), age, and a one-line title;
+the local view adds the git branch and live markers.
+
+**Navigation:** arrow keys or `hjkl` move; `→` expands a group and `←`
+collapses; `/` filters by name/title/id as you type (`Esc` clears); `q`/`Esc`
+quits. The most recent group starts expanded. On a session:
 
 - **`Enter`** → open the **iTerm workspace** for it (see below).
 - **`t`** → just tail the session in the current pane.
 
-**Recency at a glance** — folders and sessions are colored on a four-step scale:
+**Recency at a glance** — rows are colored on a four-step scale by last activity:
 
-| color        | meaning                                    |
-|--------------|--------------------------------------------|
-| bright green | **live now** (a `claude` process is here)  |
-| muted green  | **recently live** (written in the last 15m)|
-| white        | **recent** (written today)                 |
-| grey         | **stale** (older)                          |
+| color        | meaning                                             |
+|--------------|-----------------------------------------------------|
+| bright green | **live now** — active in the last ~2 min (or, in `--local`, a running `claude` process) |
+| muted green  | **recently active** — last 15 min                   |
+| white        | **recent** — today                                  |
+| grey         | **older**                                           |
 
-**Scope & scaling.** The tree covers the last **`--days`** days (default **7**)
-so it stays fast no matter how much history you've accumulated: a cheap
-directory-mtime gate skips folders with no recent activity without ever opening
-their session files, and only the folders inside the window are read. Widen the
-window with `--days 30`, or `--days all` for everything.
+**Scope.** The tree covers the last **`--days`** days (default **7**); widen with
+`--days 30`, or `--days all` for everything. The `--local` crawl stays fast on
+huge histories via a cheap directory-mtime gate that skips cold folders without
+opening their session files; the `entire`-sourced view gets a bounded set from
+the cloud and reads no session files for the listing at all.
 
 **Skipping the picker.** `--no-pick` (or a non-interactive/piped run) goes
-straight to the old behavior: auto-discover `$PWD`'s most recent session and
-tail it in place. An explicit `SESSION_FILE` argument tails that file directly.
-Set a default via `ENTIRE_TAIL_PICK=always|never`.
+straight to auto-discovering `$PWD`'s most recent session and tailing it in
+place. An explicit `SESSION_FILE` argument tails that file directly. Set a
+default via `ENTIRE_TAIL_PICK=always|never`.
 
 `-L`/`--list` prints the same tree as a **static, greppable `ls`-style dump** and
 exits — handy for `grep`/`fzf` or just a full inventory. It's uncapped by default
@@ -172,11 +187,11 @@ entire tail --list | grep -i erasure     # find that session about account erasu
 entire tail --list --days 1              # what did I work on today?
 ```
 
-The tree is **Claude-only** (its per-folder project layout is what makes the
-grouping clean). Codex and Antigravity aren't in the tree yet — tail them
-directly with `--agent codex`/`agy`, or pass an explicit `SESSION_FILE`. Live
-markers need `pgrep` + `lsof` (present on macOS and most Linux); without them the
-tree still works, minus the live coloring.
+**Tailing** only works for sessions whose Claude jsonl is on **this** machine
+(the uuid is resolved against `~/.claude`). Cloud-only sessions from another
+machine still show in the `entire`-sourced tree, but selecting one reports that
+it isn't local. Codex/Antigravity aren't tailable through the tree yet — use
+`--agent codex`/`agy` or an explicit `SESSION_FILE`.
 
 ## The iTerm2 workspace (macOS)
 

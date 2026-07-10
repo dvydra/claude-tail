@@ -47,14 +47,19 @@ agent-agnostic and consumes only `Record`s.
 - `adapter_claude.go` / `adapter_codex.go` / `adapter_agy.go` — `normalize(line) []Record`
 - `adapter.go` — the `Record`/`Kind` types and the adapter interface
 - `discovery.go` — find the session file for `$PWD` per agent
-- `tree.go` — the interactive session **tree** picker (`--pick`): all Claude
-  sessions grouped by folder, arrow-key navigable, recency-colored, type-to-filter;
+- `tree.go` — the interactive session **tree** picker (the DEFAULT): sessions
+  grouped by repo/folder, arrow-key navigable, recency-colored, type-to-filter;
   also the static `--list` dump. Pure build/reduce/render split from a thin tty
   driver (alt-screen + `setRaw`), so navigation/render are unit-tested without a tty
-- `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) that
-  feeds the tree's live markers, plus `runPicker`/`resolveTreeChoice`. The tree
-  is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` / piped
-  runs / explicit SESSION_FILE skip it and tail directly
+- `entire.go` — the DEFAULT tree source: the `entire` CLI's cloud inventory
+  (`entire api /me/sessions`, grouped by repo, generated titles, no local file
+  reads). `buildSessionTree` dispatches: entire when available, else (or with
+  `--local`) the `~/.claude` crawl in `tree.go`. A session's uuid is resolved to
+  its local jsonl by a name-only glob so it stays tailable/resumable
+- `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) for
+  the `--local` view's live markers, plus `runPicker`/`resolveTreeChoice`. The
+  tree is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` /
+  piped runs / explicit SESSION_FILE skip it and tail directly
 - `iterm.go` — macOS/iTerm2 automation via `osascript`: the tree's `Enter`
   opens the 3-pane workspace (`claude --resume` + live tail + shell) in the
   CURRENT window, cd'd to the picked session's folder. Pure `workspaceScript`

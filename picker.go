@@ -113,11 +113,11 @@ func cwShort(cwd string) string {
 // tail that session in the current pane; it returns ok=false when there's no tty
 // or no Claude agent in scope, so the caller falls back to auto-discovery. A
 // workspace selection launches the iTerm layout and exits; quitting exits.
-func runPicker(agents []Agent, home, pwd string, days int, theme Theme) (string, Agent, bool) {
+func runPicker(agents []Agent, home, pwd string, days int, local bool, theme Theme) (string, Agent, bool) {
 	if !ttyUsable() || !slices.Contains(agents, AgentClaude) {
 		return "", "", false
 	}
-	if p, ok := resolveTreeChoice(runClaudeTree(home, pwd, days, theme)); ok {
+	if p, ok := resolveTreeChoice(runClaudeTree(home, pwd, days, local, theme)); ok {
 		return p, AgentClaude, true
 	}
 	return "", "", false
@@ -128,19 +128,24 @@ func runPicker(agents []Agent, home, pwd string, days int, theme Theme) (string,
 // exit, but only in a single-pane iTerm window; otherwise (already split, or no
 // iTerm) just tail in-place, leaving any existing layout alone. treeQuit → exit.
 // treeNone (empty tree / no tty) → ok=false so the caller auto-discovers.
+//
+// A cloud session with no local jsonl (Path=="") can't be tailed on this
+// machine, so it exits with a note rather than tailing something unrelated.
 func resolveTreeChoice(c treeChoice) (string, bool) {
 	switch c.Result {
-	case treeChosen:
-		return c.Path, true
-	case treeWorkspace:
-		if itermAvailable() && itermSinglePane() {
-			if err := launchWorkspace(c.Cwd, c.ID, c.Path); err != nil {
+	case treeChosen, treeWorkspace:
+		if c.Path == "" {
+			fmt.Fprintln(os.Stderr, "entire-tail: session "+shortID(c.ID)+" isn't on this machine — nothing to tail.")
+			os.Exit(1)
+		}
+		if c.Result == treeWorkspace && itermAvailable() && itermSinglePane() {
+			if err := launchWorkspace(sessionCwd(c.Path), c.ID, c.Path); err != nil {
 				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 				return c.Path, true // launch failed → tail in-place instead
 			}
 			os.Exit(0)
 		}
-		return c.Path, true // already split / no iTerm → just tail it here
+		return c.Path, true // tail in-place (already split / no iTerm / t key)
 	case treeQuit:
 		os.Exit(0)
 	}
