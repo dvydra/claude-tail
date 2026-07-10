@@ -81,62 +81,6 @@ func TestCollapsePreview(t *testing.T) {
 	}
 }
 
-func TestDecidePick(t *testing.T) {
-	pwd := "/here"
-	mk := func(cwds ...string) []liveSession {
-		var s []liveSession
-		for i, c := range cwds {
-			s = append(s, liveSession{Mtime: int64(100 - i), Agent: AgentClaude, Path: "p", Cwd: c})
-		}
-		return s
-	}
-
-	// auto, exactly one here → pick it, no note (nothing else live).
-	d := decidePick(mk("/here"), "auto", true, pwd)
-	if d.Action != actPick || d.Index != 0 || d.Note != "" {
-		t.Errorf("auto one-here: %+v", d)
-	}
-	// auto, one here + others elsewhere → pick here with a note.
-	d = decidePick(mk("/here", "/other"), "auto", true, pwd)
-	if d.Action != actPick || d.Index != 0 || d.Note == "" {
-		t.Errorf("auto one-here-plus-others: %+v", d)
-	}
-	// auto, two here → menu (tty ok).
-	d = decidePick(mk("/here", "/here"), "auto", true, pwd)
-	if d.Action != actMenu {
-		t.Errorf("auto two-here: %+v", d)
-	}
-	// auto, none here but 2 elsewhere, tty ok → menu.
-	d = decidePick(mk("/a", "/b"), "auto", true, pwd)
-	if d.Action != actMenu {
-		t.Errorf("auto none-here-2-elsewhere: %+v", d)
-	}
-	// auto, none here but 2 elsewhere, NO tty → fall back (none).
-	d = decidePick(mk("/a", "/b"), "auto", false, pwd)
-	if d.Action != actNone {
-		t.Errorf("auto no-tty: %+v", d)
-	}
-	// empty → none.
-	if decidePick(nil, "auto", true, pwd).Action != actNone {
-		t.Error("empty should be actNone")
-	}
-	// always, one session → pick it.
-	d = decidePick(mk("/x"), "always", true, pwd)
-	if d.Action != actPick || d.Index != 0 {
-		t.Errorf("always one: %+v", d)
-	}
-	// always, two sessions, tty → menu.
-	d = decidePick(mk("/x", "/y"), "always", true, pwd)
-	if d.Action != actMenu {
-		t.Errorf("always two: %+v", d)
-	}
-	// always, two sessions, no tty → pick first.
-	d = decidePick(mk("/x", "/y"), "always", false, pwd)
-	if d.Action != actPick || d.Index != 0 {
-		t.Errorf("always two no-tty: %+v", d)
-	}
-}
-
 func TestTailLines(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f.txt")

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.9.0"
+const version = "0.11.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -74,7 +74,7 @@ func run(cfg Config) {
 		if derr != nil {
 			die(derr.Error())
 		}
-		if path, ag, ok := runPicker(agents, home, pwd, cfg.Pick, days, theme, scanner, os.Stderr); ok {
+		if path, ag, ok := runPicker(agents, home, pwd, days, theme); ok {
 			session, agentStr, resolved = path, string(ag), true
 		}
 	}
@@ -394,10 +394,12 @@ USAGE:
   entire tail [OPTIONS] [SESSION_FILE]    # when installed as an entire plugin
 
 ARGUMENTS:
-  SESSION_FILE              Path to a session jsonl. If omitted, picks the
-                            most recently modified session for $PWD across
-                            all supported agents (or just the agent forced
-                            via --agent).
+  SESSION_FILE              Path to a session jsonl. If omitted on an
+                            interactive terminal, opens the session tree picker
+                            (see --pick). Non-interactively (piped) or with
+                            --no-pick, auto-discovers the most recently modified
+                            session for $PWD across all agents (or the one
+                            forced via --agent).
 
 OPTIONS:
   -a, --agent NAME          Which agent's session to tail:
@@ -435,25 +437,32 @@ OPTIONS:
                             overwhelm the view. Integer >= 1 (default: 5).
                             Re-run with --no-collapse to see the full text.
       --no-collapse         Never collapse — show every user message in full.
-  -p, --pick                Open the interactive session tree: every Claude
-                            session on disk, grouped by the folder it ran in,
-                            so you can find "which folder was I in?" without
-                            remembering. Arrow keys / hjkl move, →/Enter expand
-                            a folder, Enter tails a session, / filters by path
-                            or snippet, q/Esc quits. Folders and sessions are
-                            colored by recency: bright green = live now, muted
-                            green = active in the last 15m, white = today, grey
-                            = older. Scoped to the last --days days (default 7).
-                            By default (auto) the one live session in $PWD is
-                            tailed without asking; the tree opens when $PWD is
-                            ambiguous. Claude only (codex/agy tail directly via
-                            --agent).
-      --no-pick             Never show the picker — always auto-discover.
+  -p, --pick                Force the session tree (it's the DEFAULT already;
+                            use this to override ENTIRE_TAIL_PICK=never). The
+                            tree lists every Claude session on disk, grouped by
+                            the folder it ran in, so you can find "which folder
+                            was I in?" without remembering. Arrow keys / hjkl
+                            move, → expands a folder, / filters by path or
+                            snippet, q/Esc quits. Rows are colored by recency:
+                            bright green = live now, muted green = active in the
+                            last 15m, white = today, grey = older. Scoped to the
+                            last --days days (default 7). On a session:
+                              Enter   open the iTerm workspace — split the
+                                      current window into claude --resume, a
+                                      live tail, and a shell, all in the
+                                      session's folder (macOS + iTerm2; falls
+                                      back to tailing in place otherwise).
+                              t       just tail the session in the current pane.
+                            Claude only (codex/agy tail directly via --agent).
+      --no-pick             Skip the picker — auto-discover and tail $PWD's most
+                            recent session in place (the pre-tree behavior).
       --days N              Window for the session tree, in days (default 7).
                             'all' or 0 = every session, no cap.
   -L, --list                Print the session tree as a static, greppable
                             ls-style dump instead of the TUI, then exit.
                             Uncapped by default; narrow with --days.
+  -w, --workspace           Alias for the default: force the session tree. Its
+                            Enter opens the iTerm workspace (macOS + iTerm2).
   -l, --list-themes         List available themes (with descriptions) and exit.
   -h, --help                Show this help and exit.
   -V, --version             Show version and exit.
@@ -485,16 +494,14 @@ ENVIRONMENT (lower priority than flags):
   CLAUDE_TAIL_* variants of the above are honored for back-compat.
 
 EXAMPLES:
-  entire-tail                                 # auto-detect agent for $PWD
+  entire-tail                                 # open the session tree picker
+  entire-tail --no-pick                       # skip it: auto-detect + tail $PWD
   entire-tail --agent codex                   # follow the latest Codex session
-  entire-tail --agent agy                     # follow the latest Antigravity session
   entire-tail --theme dracula
   entire-tail -t nord -b 50
   entire-tail --no-backfill
-  entire-tail --pick                          # browse the Claude session tree
   entire-tail --list                          # static ls-style dump of all sessions
   entire-tail --list --days 3                 # ...only the last 3 days
-  entire-tail --list-themes
   entire-tail ~/.codex/sessions/2026/05/.../rollout-...jsonl
 `, version)
 }

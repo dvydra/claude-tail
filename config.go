@@ -170,6 +170,10 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.Days = strings.TrimPrefix(a, "--days=")
 		case a == "-L" || a == "--list":
 			c.List = true
+		case a == "-w" || a == "--workspace":
+			// Workspace is the default; -w just forces the picker even when the
+			// env default is 'never'.
+			c.Pick = "always"
 		case a == "-l" || a == "--list-themes":
 			return c, ActionListThemes, nil
 		case a == "-h" || a == "--help":

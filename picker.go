@@ -7,46 +7,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
-
-// liveSession is one row in the picker: a session file belonging to a cwd that
-// currently has a running agent process.
-type liveSession struct {
-	Mtime int64
-	Agent Agent
-	Path  string
-	Cwd   string
-}
-
-func agentProcname(a Agent) string {
-	switch a {
-	case AgentClaude:
-		return "claude"
-	case AgentCodex:
-		return "codex"
-	case AgentAgy:
-		return "agy"
-	}
-	return ""
-}
-
-// agentMaxAgeSecs caps how stale a matched session may be and still count as
-// live. Codex often runs headless with no tailable rollout, so requiring a
-// recent one avoids surfacing a stale leftover; claude/agy map reliably so any
-// age is kept.
-func agentMaxAgeSecs(a Agent) int64 {
-	if a == AgentCodex {
-		return 43200 // 12h
-	}
-	return 0
-}
 
 // relAge renders a relative age like "just now" / "3m ago" / "2h ago" /
 // "4d ago" from epoch seconds.
@@ -62,14 +28,6 @@ func relAge(t, now int64) string {
 	default:
 		return strconv.FormatInt((delta+43200)/86400, 10) + "d ago"
 	}
-}
-
-func fileMtime(path string) int64 {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return 0
-	}
-	return fi.ModTime().Unix()
 }
 
 // parsePIDs extracts PIDs from `pgrep -x` output.
@@ -141,113 +99,6 @@ func activeCwdCounts(procname string) []cwdCount {
 	return out2
 }
 
-// sessionsForCwdAgent returns up to n newest session files for the given agent
-// rooted in cwd.
-func sessionsForCwdAgent(agent Agent, home, cwd string, n int, scanner *codexScanner) []string {
-	switch agent {
-	case AgentClaude:
-		all := newestGlobAll(filepath.Join(home, ".claude", "projects", claudeSlug(cwd), "*.jsonl"))
-		if len(all) > n {
-			all = all[:n]
-		}
-		return all
-	case AgentCodex:
-		return scanner.sessionsForCwd(cwd, n)
-	case AgentAgy:
-		root := agyRoot(home)
-		id := agyConversationID(root, cwd)
-		if id == "" {
-			return nil
-		}
-		if t := agyTranscriptPath(root, id); isFile(t) {
-			return []string{t}
-		}
-	}
-	return nil
-}
-
-// findActiveSessions returns one row per live session across the given agents,
-// newest-first.
-func findActiveSessions(agents []Agent, home string, now int64, scanner *codexScanner) []liveSession {
-	if !pickerToolsAvailable() {
-		return nil
-	}
-	var sessions []liveSession
-	for _, agent := range agents {
-		procname := agentProcname(agent)
-		if procname == "" {
-			continue
-		}
-		maxage := agentMaxAgeSecs(agent)
-		for _, cc := range activeCwdCounts(procname) {
-			for _, f := range sessionsForCwdAgent(agent, home, cc.Cwd, cc.Count, scanner) {
-				if !isFile(f) {
-					continue
-				}
-				mtime := fileMtime(f)
-				if maxage > 0 && now-mtime > maxage {
-					continue
-				}
-				sessions = append(sessions, liveSession{Mtime: mtime, Agent: agent, Path: f, Cwd: cc.Cwd})
-			}
-		}
-	}
-	sort.SliceStable(sessions, func(i, j int) bool { return sessions[i].Mtime > sessions[j].Mtime })
-	return sessions
-}
-
-type pickAction int
-
-const (
-	actNone pickAction = iota // no pick → caller falls back to discovery
-	actPick                   // auto-resolved to a single session
-	actMenu                   // show the interactive menu
-)
-
-type pickDecision struct {
-	Action pickAction
-	Index  int
-	Note   string // optional stderr note for actPick
-}
-
-// decidePick reproduces the auto/always picker policy as a pure function.
-//
-//	auto:   one live session in pwd → tail it (note if others exist); 2+ here, or
-//	        none here but 2+ elsewhere → menu if a tty is usable, else fall back.
-//	always: one session → use it; otherwise menu (when a tty is usable).
-func decidePick(sessions []liveSession, pick string, ttyOK bool, pwd string) pickDecision {
-	n := len(sessions)
-	if n == 0 {
-		return pickDecision{Action: actNone}
-	}
-	localN, localIdx := 0, -1
-	for i, s := range sessions {
-		if s.Cwd == pwd {
-			localN++
-			if localIdx < 0 {
-				localIdx = i
-			}
-		}
-	}
-	if pick == "auto" {
-		if localN == 1 {
-			note := ""
-			if n > 1 {
-				note = fmt.Sprintf("tailing the live session here (%d other live; --pick to choose).", n-1)
-			}
-			return pickDecision{Action: actPick, Index: localIdx, Note: note}
-		}
-		if !(ttyOK && (localN >= 2 || n >= 2)) {
-			return pickDecision{Action: actNone}
-		}
-	} else { // always
-		if n == 1 || !ttyOK {
-			return pickDecision{Action: actPick, Index: 0}
-		}
-	}
-	return pickDecision{Action: actMenu}
-}
-
 // cwShort renders a cwd as its last two path components ("parent/base").
 func cwShort(cwd string) string {
 	parts := strings.Split(cwd, "/")
@@ -257,51 +108,43 @@ func cwShort(cwd string) string {
 	return parts[len(parts)-1]
 }
 
-// runPicker resolves a session for the given agents. For Claude/auto on a tty it
-// opens the interactive session tree (the leveled-up picker): `--pick` opens it
-// unconditionally (browsing past sessions is the point), while `auto` keeps the
-// zero-friction shortcut of tailing the single live session in $PWD and only
-// opens the tree when the live set is ambiguous. On a pick it returns
-// (path, agent, true); otherwise ok=false so the caller falls back to discovery.
-// Quitting the tree exits the process (like the old menu's `q`).
-func runPicker(agents []Agent, home, pwd, pick string, days int, theme Theme, scanner *codexScanner, stderr io.Writer) (string, Agent, bool) {
-	treeCapable := ttyUsable() && slices.Contains(agents, AgentClaude)
-
-	if pick == "always" && treeCapable {
-		if p, res := runClaudeTree(home, pwd, days, theme); res == treeChosen {
-			return p, AgentClaude, true
-		} else if res == treeQuit {
-			os.Exit(0)
-		}
-		return "", "", false // empty tree → discovery
+// runPicker opens the interactive session tree (the default entry point) and
+// acts on the selection. It returns (path, claude, true) when the caller should
+// tail that session in the current pane; it returns ok=false when there's no tty
+// or no Claude agent in scope, so the caller falls back to auto-discovery. A
+// workspace selection launches the iTerm layout and exits; quitting exits.
+func runPicker(agents []Agent, home, pwd string, days int, theme Theme) (string, Agent, bool) {
+	if !ttyUsable() || !slices.Contains(agents, AgentClaude) {
+		return "", "", false
 	}
-
-	// auto: the live-session shortcut still decides whether to prompt at all.
-	sessions := findActiveSessions(agents, home, time.Now().Unix(), scanner)
-	switch dec := decidePick(sessions, pick, ttyUsable(), pwd); dec.Action {
-	case actNone:
-		return "", "", false
-	case actPick:
-		if dec.Note != "" {
-			fmt.Fprintln(stderr, "entire-tail: "+dec.Note)
-		}
-		s := sessions[dec.Index]
-		return s.Path, s.Agent, true
-	case actMenu:
-		if treeCapable {
-			if p, res := runClaudeTree(home, pwd, days, theme); res == treeChosen {
-				return p, AgentClaude, true
-			} else if res == treeQuit {
-				os.Exit(0)
-			}
-		}
-		// Non-Claude ambiguity (codex/agy) or an empty tree → tail the newest live.
-		if len(sessions) > 0 {
-			return sessions[0].Path, sessions[0].Agent, true
-		}
-		return "", "", false
+	if p, ok := resolveTreeChoice(runClaudeTree(home, pwd, days, theme)); ok {
+		return p, AgentClaude, true
 	}
 	return "", "", false
+}
+
+// resolveTreeChoice acts on a tree selection. treeChosen → tail that session
+// in-place (return path, true). treeWorkspace → open the iTerm workspace and
+// exit, but only in a single-pane iTerm window; otherwise (already split, or no
+// iTerm) just tail in-place, leaving any existing layout alone. treeQuit → exit.
+// treeNone (empty tree / no tty) → ok=false so the caller auto-discovers.
+func resolveTreeChoice(c treeChoice) (string, bool) {
+	switch c.Result {
+	case treeChosen:
+		return c.Path, true
+	case treeWorkspace:
+		if itermAvailable() && itermSinglePane() {
+			if err := launchWorkspace(c.Cwd, c.ID, c.Path); err != nil {
+				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+				return c.Path, true // launch failed → tail in-place instead
+			}
+			os.Exit(0)
+		}
+		return c.Path, true // already split / no iTerm → just tail it here
+	case treeQuit:
+		os.Exit(0)
+	}
+	return "", false
 }
 
 func ttyUsable() bool {

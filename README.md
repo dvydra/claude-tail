@@ -65,9 +65,10 @@ without live markers.
 ## Usage
 
 ```sh
-entire tail                                # follow the latest session for $PWD
+entire tail                                # open the session tree picker (default)
 entire-tail                                # same, when called standalone
-entire tail --agent codex                  # force a specific agent
+entire tail --no-pick                      # skip the picker: auto-detect + tail $PWD
+entire tail --agent codex                  # force a specific agent (tails directly)
 entire tail /path/to/session.jsonl         # follow an explicit session
 entire tail --theme dracula                # pick a bundled theme (default: tokyo-night)
 entire tail -t nord -b 50                  # short flags also work
@@ -76,8 +77,6 @@ entire tail --tool-style dots              # show tool calls as colored dots
 entire tail --tool-style full              # Claude-style: ⏺ Update(main.go) + ⎿ diff
 entire tail --collapse 10                  # collapse user pastes over 10 lines
 entire tail --no-collapse                  # show every user message in full
-entire tail --pick                         # browse the interactive session tree
-entire tail --no-pick                      # never prompt; always auto-discover
 entire tail --list                         # static ls-style dump of every session
 entire tail --list --days 3                # ...only sessions from the last 3 days
 entire tail --list-themes                  # see what's available
@@ -111,14 +110,14 @@ transcript with the live settings, appending a fresh copy to the scrollback. So
 the usual flow is "cycle to full with `t`, then `r` to redraw everything as
 rich diffs." A one-line `keys:` legend prints in the startup banner.
 
-## The session tree
+## The session tree (default)
 
-Can't remember which folder you ran that session in? `--pick` opens an
-interactive tree of **every Claude session on disk**, grouped by the folder it
-ran in:
+Can't remember which folder you ran that session in? Just run `entire tail` —
+with no session to tail, it opens an interactive tree of **every Claude session
+on disk**, grouped by the folder it ran in:
 
 ```
-  CLAUDE SESSIONS      ↑↓ move · →/⏎ expand · ⏎ tail · / filter · q quit
+  CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · t tail · / filter · q quit
 
 ▾ ~/src/dvydra/claude-tail  (3)  2m ago  ● live
     ● b7dd3e4a  2m ago   [main] level up the picker into a tree view
@@ -136,10 +135,13 @@ active. Each session row shows its id (the session uuid), age, git branch, and a
 one-line snippet — the session's summary if it has one, else its ai-title, else
 its first prompt.
 
-**Navigation:** arrow keys or `hjkl` move; `→`/`Enter` expands a folder and
-`←` collapses; `Enter` on a session **tails** it; `/` filters by folder path or
-snippet as you type (`Esc` clears); `q`/`Esc` quits. Your `$PWD`'s folder starts
-expanded with the cursor on it.
+**Navigation:** arrow keys or `hjkl` move; `→` expands a folder and `←`
+collapses; `/` filters by folder path or snippet as you type (`Esc` clears);
+`q`/`Esc` quits. Your `$PWD`'s folder starts expanded with the cursor on it.
+On a session:
+
+- **`Enter`** → open the **iTerm workspace** for it (see below).
+- **`t`** → just tail the session in the current pane.
 
 **Recency at a glance** — folders and sessions are colored on a four-step scale:
 
@@ -156,6 +158,11 @@ directory-mtime gate skips folders with no recent activity without ever opening
 their session files, and only the folders inside the window are read. Widen the
 window with `--days 30`, or `--days all` for everything.
 
+**Skipping the picker.** `--no-pick` (or a non-interactive/piped run) goes
+straight to the old behavior: auto-discover `$PWD`'s most recent session and
+tail it in place. An explicit `SESSION_FILE` argument tails that file directly.
+Set a default via `ENTIRE_TAIL_PICK=always|never`.
+
 `-L`/`--list` prints the same tree as a **static, greppable `ls`-style dump** and
 exits — handy for `grep`/`fzf` or just a full inventory. It's uncapped by default
 (narrow it with `--days`) and only colorizes when writing to a terminal:
@@ -165,16 +172,39 @@ entire tail --list | grep -i erasure     # find that session about account erasu
 entire tail --list --days 1              # what did I work on today?
 ```
 
-**When the tree opens.** By default (`auto`) entire-tail stays out of your way:
-if a session for `$PWD` exists it's tailed silently; the tree only opens when
-`$PWD` is ambiguous or you ask for it with `--pick`. Disable prompting entirely
-with `--no-pick`, or set a default via `ENTIRE_TAIL_PICK=always|never|auto`.
-
 The tree is **Claude-only** (its per-folder project layout is what makes the
 grouping clean). Codex and Antigravity aren't in the tree yet — tail them
 directly with `--agent codex`/`agy`, or pass an explicit `SESSION_FILE`. Live
 markers need `pgrep` + `lsof` (present on macOS and most Linux); without them the
 tree still works, minus the live coloring.
+
+## The iTerm2 workspace (macOS)
+
+Pressing **`Enter`** on a session (on macOS + iTerm2) turns the **current**
+window into a 3-pane workspace for it, via AppleScript — no extra deps,
+`osascript` ships with the OS. The pane you launched from becomes Claude,
+resuming the picked session, with a live tail and a shell beside it — all `cd`'d
+to that **session's** folder (wherever it was, not necessarily `$PWD`):
+
+```
+┌──────────┬──────────┐
+│ claude   │          │   A = claude --resume <picked id>  (the pane you were in)
+│ --resume │ entire-  │   B = entire-tail, following that session
+├──────────┤ tail     │   C = a plain shell
+│ shell    │          │
+└──────────┴──────────┘
+```
+
+(The `claude --resume` command is queued into the current pane and runs the
+moment `entire-tail` exits, so that pane becomes A.)
+
+The workspace only fires when the current window is a **single pane**. If the
+window already has splits, `Enter` just **tails the session in the current pane**
+— no scripting, no new window — so your existing layout is never touched.
+
+Off iTerm (or non-macOS), `Enter` likewise falls back to tailing in place, same
+as `t`. `-w`/`--workspace` just forces the picker (it's already the default).
+tmux / other terminals are a possible follow-up.
 
 ## Tool calls
 
