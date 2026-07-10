@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -24,6 +25,19 @@ func itermAvailable() bool {
 	}
 	_, err := os.Stat("/Applications/iTerm.app")
 	return err == nil
+}
+
+// itermSinglePane reports whether the current iTerm tab has exactly one pane, so
+// we can lay out the workspace here without disturbing an existing split. On any
+// error (not iTerm, no window) it returns false — the caller then just tails.
+func itermSinglePane() bool {
+	out, err := exec.Command("osascript", "-e",
+		`tell application "iTerm2" to count of sessions of current tab of current window`).Output()
+	if err != nil {
+		return false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	return err == nil && n == 1
 }
 
 // shQuote single-quotes a string for safe inclusion in a POSIX shell command.
@@ -76,20 +90,16 @@ func launchWorkspace(cwd, resumeID, sessionFile string) error {
 //	--+ B    B = entire-tail <sessionFile>
 //	C │ B    C = shell
 //
-// It reuses the CURRENT window only when that window is a single pane — the pane
-// running the picker becomes A, and A's command is queued to its tty and runs the
-// moment entire-tail exits. If the current window already has splits, it opens a
-// NEW window instead (a fresh shell as A) so an existing layout isn't carved up.
-// All three panes cd into the picked session's folder.
+// It reuses the CURRENT window (the caller only invokes this when the window is a
+// single pane — see itermSinglePane): the pane running the picker becomes A, and
+// A's command is queued to its tty and runs the moment entire-tail exits. All
+// three panes cd into the picked session's folder.
 func workspaceScript(cwd, resumeID, sessionFile, self string) string {
 	cd := "cd " + shQuote(cwd)
 	a := cd + " && claude --resume " + shQuote(resumeID)
 	b := cd + " && " + shQuote(self) + " " + shQuote(sessionFile)
 	c := cd
 	return fmt.Sprintf(`tell application "iTerm2"
-	if (count of sessions of current tab of current window) > 1 then
-		create window with default profile
-	end if
 	tell current window
 		set a to current session
 		tell a

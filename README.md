@@ -198,13 +198,13 @@ to that **session's** folder (wherever it was, not necessarily `$PWD`):
 (The `claude --resume` command is queued into the current pane and runs the
 moment `entire-tail` exits, so that pane becomes A.)
 
-This only reuses the current window when it's a **single pane**. If the window
-already has splits, a **new** window opens instead — your existing layout is
-never carved up.
+The workspace only fires when the current window is a **single pane**. If the
+window already has splits, `Enter` just **tails the session in the current pane**
+— no scripting, no new window — so your existing layout is never touched.
 
-Off iTerm (or non-macOS), `Enter` falls back to tailing the session in place,
-same as `t`. `-w`/`--workspace` just forces the picker (it's already the
-default). tmux / other terminals are a possible follow-up.
+Off iTerm (or non-macOS), `Enter` likewise falls back to tailing in place, same
+as `t`. `-w`/`--workspace` just forces the picker (it's already the default).
+tmux / other terminals are a possible follow-up.
 
 ## Tool calls
 

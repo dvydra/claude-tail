@@ -125,21 +125,22 @@ func runPicker(agents []Agent, home, pwd string, days int, theme Theme) (string,
 
 // resolveTreeChoice acts on a tree selection. treeChosen → tail that session
 // in-place (return path, true). treeWorkspace → open the iTerm workspace and
-// exit; if iTerm isn't available it degrades to tailing in-place. treeQuit →
-// exit. treeNone (empty tree / no tty) → ok=false so the caller auto-discovers.
+// exit, but only in a single-pane iTerm window; otherwise (already split, or no
+// iTerm) just tail in-place, leaving any existing layout alone. treeQuit → exit.
+// treeNone (empty tree / no tty) → ok=false so the caller auto-discovers.
 func resolveTreeChoice(c treeChoice) (string, bool) {
 	switch c.Result {
 	case treeChosen:
 		return c.Path, true
 	case treeWorkspace:
-		if itermAvailable() {
+		if itermAvailable() && itermSinglePane() {
 			if err := launchWorkspace(c.Cwd, c.ID, c.Path); err != nil {
 				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 				return c.Path, true // launch failed → tail in-place instead
 			}
 			os.Exit(0)
 		}
-		return c.Path, true // no iTerm → just tail it here
+		return c.Path, true // already split / no iTerm → just tail it here
 	case treeQuit:
 		os.Exit(0)
 	}
