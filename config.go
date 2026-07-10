@@ -17,6 +17,8 @@ type Config struct {
 	ToolStyle string // none|dots|lines
 	Collapse  string
 	Pick      string // auto|always|never
+	Days      string // window for the session tree (empty = per-mode default)
+	List      bool   // --list: static ls-style dump instead of the TUI
 }
 
 // Action is what the parsed CLI asks for beyond a normal run.
@@ -27,6 +29,7 @@ const (
 	ActionHelp
 	ActionVersion
 	ActionListThemes
+	ActionList // static session-tree dump (--list)
 )
 
 // firstNonEmpty returns the first non-empty value (matching bash ${A:-${B:-c}},
@@ -51,6 +54,7 @@ func defaultConfig(getenv func(string) string) Config {
 		ToolStyle: firstNonEmpty(getenv("ENTIRE_TAIL_TOOL_STYLE"), getenv("CLAUDE_TAIL_TOOL_STYLE"), "dots"),
 		Collapse:  firstNonEmpty(getenv("ENTIRE_TAIL_COLLAPSE"), "5"),
 		Pick:      firstNonEmpty(getenv("ENTIRE_TAIL_PICK"), "auto"),
+		Days:      getenv("ENTIRE_TAIL_DAYS"),
 	}
 	c.Collapse = normalizeCollapseWord(c.Collapse)
 	c.Pick = normalizePickWord(c.Pick)
@@ -155,6 +159,17 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.Pick = "always"
 		case a == "--no-pick":
 			c.Pick = "never"
+		case a == "--days":
+			v, err := needValue(i, a)
+			if err != nil {
+				return c, ActionRun, err
+			}
+			c.Days = v
+			i++
+		case strings.HasPrefix(a, "--days="):
+			c.Days = strings.TrimPrefix(a, "--days=")
+		case a == "-L" || a == "--list":
+			c.List = true
 		case a == "-l" || a == "--list-themes":
 			return c, ActionListThemes, nil
 		case a == "-h" || a == "--help":
@@ -181,7 +196,26 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 	// Re-apply the off-synonym normalization for collapse provided via flag.
 	c.Collapse = normalizeCollapseWord(c.Collapse)
 	c.Pick = normalizePickWord(c.Pick)
+	if c.List {
+		return c, ActionList, nil
+	}
 	return c, ActionRun, nil
+}
+
+// resolveDays parses the --days window into a day count. Empty falls back to def;
+// "all"/"0" mean uncapped (0). The tree defaults to 7; --list defaults to all.
+func resolveDays(s string, def int) (int, error) {
+	switch s {
+	case "":
+		return def, nil
+	case "all", "ALL":
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid --days value: %s (want integer >= 0, or 'all')", s)
+	}
+	return n, nil
 }
 
 // validateAgent checks the --agent value and maps the antigravity alias.

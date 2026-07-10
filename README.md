@@ -57,9 +57,10 @@ The binary embeds its themes, so it's self-contained — the symlink works from
 anywhere. After editing source or themes, re-run `./install.sh` (or
 `go build -o entire-tail .`) to rebuild.
 
-**No runtime dependencies** beyond the binary itself. The interactive session
-picker additionally uses `pgrep` + `lsof` when present (both ship with macOS
-and most Linux); without them the picker is silently disabled.
+**No runtime dependencies** beyond the binary itself. The session tree
+additionally uses `pgrep` + `lsof` when present (both ship with macOS and most
+Linux) to mark which sessions are live; without them the tree still works, just
+without live markers.
 
 ## Usage
 
@@ -75,15 +76,17 @@ entire tail --tool-style dots              # show tool calls as colored dots
 entire tail --tool-style full              # Claude-style: ⏺ Update(main.go) + ⎿ diff
 entire tail --collapse 10                  # collapse user pastes over 10 lines
 entire tail --no-collapse                  # show every user message in full
-entire tail --pick                         # choose among live Claude sessions
+entire tail --pick                         # browse the interactive session tree
 entire tail --no-pick                      # never prompt; always auto-discover
+entire tail --list                         # static ls-style dump of every session
+entire tail --list --days 3                # ...only sessions from the last 3 days
 entire tail --list-themes                  # see what's available
 entire tail --help                         # full options
 ```
 
 All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 `ENTIRE_TAIL_THEME`, `ENTIRE_TAIL_BACKFILL`, `ENTIRE_TAIL_TOOL_STYLE`,
-`ENTIRE_TAIL_COLLAPSE`, `ENTIRE_TAIL_PICK`, `GLOW_STYLE`) for shell-rc
+`ENTIRE_TAIL_COLLAPSE`, `ENTIRE_TAIL_PICK`, `ENTIRE_TAIL_DAYS`, `GLOW_STYLE`) for shell-rc
 convenience — flags override env vars when both are set. The legacy
 `CLAUDE_TAIL_*` variants are still honored.
 
@@ -108,66 +111,70 @@ transcript with the live settings, appending a fresh copy to the scrollback. So
 the usual flow is "cycle to full with `t`, then `r` to redraw everything as
 rich diffs." A one-line `keys:` legend prints in the startup banner.
 
-## Picking among live sessions
+## The session tree
 
-When you have several agent panes open at once, `entire tail` finds every
-working directory with a running agent process and — if more than one session
-is live — drops you into a small picker before tailing:
+Can't remember which folder you ran that session in? `--pick` opens an
+interactive tree of **every Claude session on disk**, grouped by the folder it
+ran in:
 
 ```
-Active agent sessions:
+  CLAUDE SESSIONS      ↑↓ move · →/⏎ expand · ⏎ tail · / filter · q quit
 
-   1) claude  entirehq/infra            just now  Let me pull the authoritative `alert_type` list…
-   2) claude  entirehq/infra              2m ago  Want me to dig into the permsreconciler alert…
-   3) claude  dvydra/agent-planner        3m ago  Let me map the cwd→plan binding subsystem and…
+▾ ~/src/dvydra/claude-tail  (3)  2m ago  ● live
+    ● b7dd3e4a  2m ago   [main] level up the picker into a tree view
+    ○ f2410d3   4h ago   [main] fix discovery: encode claude slug fully
+    ○ cf9e1f2   1d ago   [main] render full tool output, no truncation
+▸ ~/src/entirehq/infra  (8)  3h ago
+▸ ~/src/dvydra/dotfiles  (1)  2d ago
 
-Pick a session [1-3] (Enter=1, q=quit):
+  31 folders · 214 sessions
 ```
 
-Each row shows the agent, the directory (last two path components, `(here)` if
-it's `$PWD`), how long ago the session was last written, and a one-line preview
-of its most recent message so you can tell them apart at a glance. Press the
-number, or Enter for the most-recently-active one.
+Each folder shows its real path (recovered from the session's own `cwd` — the
+on-disk project slug is lossy), a session count, and how long ago it was last
+active. Each session row shows its id (the session uuid), age, git branch, and a
+one-line snippet — the session's summary if it has one, else its ai-title, else
+its first prompt.
 
-**Multiple panes in the same directory** each get their own row: for every live
-cwd, entire-tail lists as many of its newest sessions as there are agent
-processes running there (so two `claude` panes in `infra` show as two rows, told
-apart by their previews).
+**Navigation:** arrow keys or `hjkl` move; `→`/`Enter` expands a folder and
+`←` collapses; `Enter` on a session **tails** it; `/` filters by folder path or
+snippet as you type (`Esc` clears); `q`/`Esc` quits. Your `$PWD`'s folder starts
+expanded with the cursor on it.
 
-By default (`auto`) the picker is **directory-aware**: if exactly one live
-session is rooted in `$PWD`, that's unambiguously "the session here" — it tails
-silently without a menu, even when other agents are live in other directories
-(it prints a one-line note so you know others exist). The menu only appears when
-the current directory is genuinely ambiguous — **2+ live sessions in `$PWD`** —
-or when `$PWD` has none but **2+ are live elsewhere** and you need to choose
-where to attach (and you're on an interactive terminal; a non-interactive run,
-e.g. a cron pane, tails silently). Force the menu with `--pick` (useful to
-confirm which session you're about to follow, or to attach to one in another
-directory), or disable it with `--no-pick`. Set a default via
-`ENTIRE_TAIL_PICK=always|never|auto`. The picker is scoped to `--agent`: `auto`
-scans Claude, Codex, and Antigravity; forcing `--agent claude`/`codex`/`agy`
-scans just that one.
+**Recency at a glance** — folders and sessions are colored on a four-step scale:
 
-A few caveats from how agents store sessions:
+| color        | meaning                                    |
+|--------------|--------------------------------------------|
+| bright green | **live now** (a `claude` process is here)  |
+| muted green  | **recently live** (written in the last 15m)|
+| white        | **recent** (written today)                 |
+| grey         | **stale** (older)                          |
 
-- **Claude** maps cleanly — a live pane always writes its session under
-  `~/.claude/projects/<cwd>/`, so every pane shows up at any age (including
-  idle-but-open ones).
-- **Codex** doesn't encode the cwd in its session path (it's in the rollout's
-  `session_meta`), and frequently runs *embedded* (driven by an editor or
-  plugin) with no interactive rollout at all. So a running `codex` process only
-  appears if it has a matching rollout written in the last ~12h — which filters
-  out the embedded/headless ones that aren't tailable.
-- **Antigravity (agy)** runs as a process named `agy`, so it's detected like
-  the others, but it maps each cwd to a single conversation id (in
-  `cache/last_conversations.json`) — so it always contributes **one row per
-  cwd**, never per pane. Note the cache only updates once you send a message,
-  so a freshly-launched agy session shows its *previous* conversation for that
-  directory until you interact with it.
+**Scope & scaling.** The tree covers the last **`--days`** days (default **7**)
+so it stays fast no matter how much history you've accumulated: a cheap
+directory-mtime gate skips folders with no recent activity without ever opening
+their session files, and only the folders inside the window are read. Widen the
+window with `--days 30`, or `--days all` for everything.
 
-Discovery is best-effort and needs `pgrep` + `lsof` (present on macOS and most
-Linux); without them the picker is silently disabled. Pass an explicit
-`SESSION_FILE` to tail anything the picker doesn't surface.
+`-L`/`--list` prints the same tree as a **static, greppable `ls`-style dump** and
+exits — handy for `grep`/`fzf` or just a full inventory. It's uncapped by default
+(narrow it with `--days`) and only colorizes when writing to a terminal:
+
+```sh
+entire tail --list | grep -i erasure     # find that session about account erasure
+entire tail --list --days 1              # what did I work on today?
+```
+
+**When the tree opens.** By default (`auto`) entire-tail stays out of your way:
+if a session for `$PWD` exists it's tailed silently; the tree only opens when
+`$PWD` is ambiguous or you ask for it with `--pick`. Disable prompting entirely
+with `--no-pick`, or set a default via `ENTIRE_TAIL_PICK=always|never|auto`.
+
+The tree is **Claude-only** (its per-folder project layout is what makes the
+grouping clean). Codex and Antigravity aren't in the tree yet — tail them
+directly with `--agent codex`/`agy`, or pass an explicit `SESSION_FILE`. Live
+markers need `pgrep` + `lsof` (present on macOS and most Linux); without them the
+tree still works, minus the live coloring.
 
 ## Tool calls
 

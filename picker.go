@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -256,44 +257,28 @@ func cwShort(cwd string) string {
 	return parts[len(parts)-1]
 }
 
-// menuLine formats one picker row, matching the bash printf layout.
-func menuLine(num int, s liveSession, pwd string, now int64) string {
-	here := ""
-	if s.Cwd == pwd {
-		here = " (here)"
-	}
-	age := relAge(s.Mtime, now)
-	prev := sessionPreview(s.Agent, s.Path)
-	return fmt.Sprintf("  %2d) %-7s %-24s %9s  %s", num, s.Agent, cwShort(s.Cwd)+here, age, prev)
-}
+// runPicker resolves a session for the given agents. For Claude/auto on a tty it
+// opens the interactive session tree (the leveled-up picker): `--pick` opens it
+// unconditionally (browsing past sessions is the point), while `auto` keeps the
+// zero-friction shortcut of tailing the single live session in $PWD and only
+// opens the tree when the live set is ambiguous. On a pick it returns
+// (path, agent, true); otherwise ok=false so the caller falls back to discovery.
+// Quitting the tree exits the process (like the old menu's `q`).
+func runPicker(agents []Agent, home, pwd, pick string, days int, theme Theme, scanner *codexScanner, stderr io.Writer) (string, Agent, bool) {
+	treeCapable := ttyUsable() && slices.Contains(agents, AgentClaude)
 
-// parseChoice interprets a menu input line. quit signals q/Q; retry carries a
-// validation message to reprint; otherwise choice is the 1-based selection.
-func parseChoice(input string, n int) (choice int, quit bool, retry string) {
-	switch {
-	case input == "":
-		return 1, false, ""
-	case input == "q" || input == "Q":
-		return 0, true, ""
-	case strings.ContainsFunc(input, func(r rune) bool { return r < '0' || r > '9' }):
-		return 0, false, "  not a number"
+	if pick == "always" && treeCapable {
+		if p, res := runClaudeTree(home, pwd, days, theme); res == treeChosen {
+			return p, AgentClaude, true
+		} else if res == treeQuit {
+			os.Exit(0)
+		}
+		return "", "", false // empty tree → discovery
 	}
-	c, err := strconv.Atoi(input)
-	if err != nil || c < 1 || c > n {
-		return 0, false, "  out of range"
-	}
-	return c, false, ""
-}
 
-// runPicker resolves a live session for the given agents. On a pick it returns
-// (path, agent, true); on no pick it returns ok=false so the caller falls back
-// to normal discovery. Quitting the menu exits the process (like the bash `q`).
-func runPicker(agents []Agent, home, pwd string, pick string, scanner *codexScanner, stderr io.Writer) (string, Agent, bool) {
+	// auto: the live-session shortcut still decides whether to prompt at all.
 	sessions := findActiveSessions(agents, home, time.Now().Unix(), scanner)
-	ttyOK := ttyUsable()
-	dec := decidePick(sessions, pick, ttyOK, pwd)
-
-	switch dec.Action {
+	switch dec := decidePick(sessions, pick, ttyUsable(), pwd); dec.Action {
 	case actNone:
 		return "", "", false
 	case actPick:
@@ -302,46 +287,21 @@ func runPicker(agents []Agent, home, pwd string, pick string, scanner *codexScan
 		}
 		s := sessions[dec.Index]
 		return s.Path, s.Agent, true
-	}
-
-	// actMenu: draw the menu on the tty and read a choice.
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		// No tty after all → fall back rather than block.
+	case actMenu:
+		if treeCapable {
+			if p, res := runClaudeTree(home, pwd, days, theme); res == treeChosen {
+				return p, AgentClaude, true
+			} else if res == treeQuit {
+				os.Exit(0)
+			}
+		}
+		// Non-Claude ambiguity (codex/agy) or an empty tree → tail the newest live.
+		if len(sessions) > 0 {
+			return sessions[0].Path, sessions[0].Agent, true
+		}
 		return "", "", false
 	}
-	defer tty.Close()
-
-	now := time.Now().Unix()
-	fmt.Fprintln(tty)
-	fmt.Fprintln(tty, "Active agent sessions:")
-	fmt.Fprintln(tty)
-	for i, s := range sessions {
-		fmt.Fprintln(tty, menuLine(i+1, s, pwd, now))
-	}
-	fmt.Fprintln(tty)
-
-	n := len(sessions)
-	reader := bufio.NewReader(tty)
-	for {
-		fmt.Fprintf(tty, "Pick a session [1-%d] (Enter=1, q=quit): ", n)
-		line, err := reader.ReadString('\n')
-		if err != nil && line == "" {
-			fmt.Fprintln(tty)
-			os.Exit(0)
-		}
-		choice, quit, retry := parseChoice(strings.TrimRight(line, "\n"), n)
-		if quit {
-			fmt.Fprintln(tty)
-			os.Exit(0)
-		}
-		if retry != "" {
-			fmt.Fprintln(tty, retry)
-			continue
-		}
-		s := sessions[choice-1]
-		return s.Path, s.Agent, true
-	}
+	return "", "", false
 }
 
 func ttyUsable() bool {
@@ -363,18 +323,9 @@ var (
 	prevSpaceRe    = regexp.MustCompile(` +`)
 )
 
-// sessionPreview returns a one-line preview of a session's last human-readable
-// message, whitespace-collapsed and truncated. It reads only the file tail.
-func sessionPreview(agent Agent, path string) string {
-	last := ""
-	for _, line := range tailLines(path, 100) {
-		if cand := previewCandidate(agent, line); strings.TrimSpace(cand) != "" {
-			last = cand
-		}
-	}
-	return collapsePreview(last)
-}
-
+// previewCandidate extracts a session's human-readable text from a single event
+// line, per agent. It underpins the preview/snippet tests and is reused where a
+// last-message preview is wanted.
 func previewCandidate(agent Agent, line []byte) string {
 	switch agent {
 	case AgentClaude:
