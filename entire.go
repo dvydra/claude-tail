@@ -74,94 +74,154 @@ func fetchEntireSessions() ([]entireSession, error) {
 	return body.Sessions, nil
 }
 
-// localClaudeSessionIDs maps every local Claude session uuid to its jsonl path,
-// by globbing ~/.claude/projects (names only — no file contents are read). Used
-// to resolve which cloud sessions are tailable on this machine.
-func localClaudeSessionIDs(home string) map[string]string {
-	m := map[string]string{}
-	// Glob only errors on a bad pattern (ours is fixed) and ignores I/O errors,
-	// so a discarded error here is safe — a missing/unreadable dir yields nil.
-	matches, _ := filepath.Glob(filepath.Join(claudeProjectsDir(home), "*", "*.jsonl"))
-	for _, p := range matches {
-		id := strings.TrimSuffix(filepath.Base(p), ".jsonl")
-		m[id] = p
+// buildSessionTree builds the picker tree. The local ~/.claude crawl is the
+// complete base (every session on this machine); when the entire CLI is
+// available it's merged in — regrouping by repo and overlaying entire's titles,
+// and appending cloud-only sessions from other machines. --local (forceLocal),
+// or entire being absent/offline/empty, yields the pure folder-grouped crawl.
+func buildSessionTree(home, pwd string, days int, now int64, forceLocal bool) sessionTree {
+	local := buildClaudeTree(home, pwd, days, now, claudeLiveCwds())
+	if forceLocal || !entireAvailable() {
+		return local
 	}
-	return m
+	sessions, err := fetchEntireSessions()
+	if err != nil || len(sessions) == 0 {
+		return local // offline / logged out / nothing tracked → pure local
+	}
+	return mergeEntire(local, sessions, home, days, now)
 }
 
-// buildSessionTree picks the discovery source: the entire CLI's cloud inventory
-// when available (unless forceLocal), else the local ~/.claude crawl. If the
-// entire fetch fails or is empty, it falls back to the crawl so offline / logged-
-// out / unenabled setups still work.
-func buildSessionTree(home, pwd string, days int, now int64, forceLocal bool) sessionTree {
-	if !forceLocal && entireAvailable() {
-		if sessions, err := fetchEntireSessions(); err == nil && len(sessions) > 0 {
-			return buildEntireTree(sessions, localClaudeSessionIDs(home), days, now)
+// mergeEntire regroups the complete local tree by repo and folds in entire's
+// cloud metadata: a tracked session gets entire's canonical repo + generated
+// title; an untracked local session is grouped by its cwd's git remote (else its
+// folder path). Cloud-only sessions (tracked elsewhere, not on this machine) are
+// appended with no local path so they list but can't be tailed here.
+func mergeEntire(local sessionTree, sessions []entireSession, home string, days int, now int64) sessionTree {
+	byID := make(map[string]entireSession, len(sessions))
+	for _, es := range sessions {
+		byID[es.SessionID] = es
+	}
+
+	repoCache := map[string]string{}
+	groups := map[string]*treeFolder{}
+	var order []string
+	add := func(repo string, s treeSession) {
+		g, ok := groups[repo]
+		if !ok {
+			g = &treeFolder{Cwd: repo, Slug: repo}
+			groups[repo] = g
+			order = append(order, repo)
+		}
+		g.Sessions = append(g.Sessions, s)
+		if s.Mtime > g.Mtime {
+			g.Mtime = s.Mtime
+		}
+		if s.Live {
+			g.Live++
 		}
 	}
-	return buildClaudeTree(home, pwd, days, now, claudeLiveCwds())
-}
 
-// buildEntireTree turns the cloud session inventory into the tree, grouped by
-// repo (repo_full_name), newest-first. Each session's local jsonl path (if any)
-// comes from localIDs — cloud-only sessions have an empty Path and can't be
-// tailed on this machine. days>0 drops sessions older than the window.
-func buildEntireTree(sessions []entireSession, localIDs map[string]string, days int, now int64) sessionTree {
+	seen := map[string]bool{}
+	for fi := range local.Folders {
+		f := local.Folders[fi]
+		for _, s := range f.Sessions {
+			seen[s.ID] = true
+			repo := ""
+			if es, ok := byID[s.ID]; ok {
+				repo = es.Repo
+				if es.DisplayName != "" {
+					s.Snippet = es.DisplayName // entire's title beats the raw snippet
+				}
+			}
+			if repo == "" {
+				repo = repoForCwd(f.Cwd, home, repoCache)
+			}
+			add(repo, s)
+		}
+	}
+
+	// Cloud-only sessions (tracked, but their jsonl isn't on this machine).
 	var cutoff int64
 	if days > 0 {
 		cutoff = now - int64(days)*86400
 	}
-	byRepo := map[string]*treeFolder{}
-	var order []string
-	for _, s := range sessions {
-		if s.SessionID == "" {
-			continue // guard against schema drift / junk rows
+	for _, es := range sessions {
+		if es.SessionID == "" || seen[es.SessionID] {
+			continue
 		}
-		mt := parseEntireTime(s.LastActivityAt)
-		// Apply the window only to sessions with a parseable timestamp — a missing
-		// or malformed lastActivityAt (mt==0) must not silently vanish; it sorts
-		// last instead.
+		mt := parseEntireTime(es.LastActivityAt)
 		if cutoff > 0 && mt > 0 && mt < cutoff {
 			continue
 		}
-		repo := s.Repo
+		repo := es.Repo
 		if repo == "" {
 			repo = "(unknown repo)"
 		}
-		f, ok := byRepo[repo]
-		if !ok {
-			f = &treeFolder{Cwd: repo, Slug: repo}
-			byRepo[repo] = f
-			order = append(order, repo)
-		}
-		f.Sessions = append(f.Sessions, treeSession{
-			ID:      s.SessionID,
-			Snippet: collapsePreview(firstNonEmpty(s.CustomName, s.DisplayName, s.Prompt)),
+		add(repo, treeSession{
+			ID:      es.SessionID,
+			Snippet: collapsePreview(firstNonEmpty(es.CustomName, es.DisplayName, es.Prompt)),
 			Mtime:   mt,
-			Msgs:    s.CheckpointCount,
-			Path:    localIDs[s.SessionID], // "" when not on this machine
+			Msgs:    es.CheckpointCount,
 			Live:    now-mt < recentLiveWindow,
 		})
-		if mt > f.Mtime {
-			f.Mtime = mt
-		}
 	}
-	tree := sessionTree{Now: now}
+
+	tree := sessionTree{Now: now, Home: home, Pwd: local.Pwd}
 	for _, repo := range order {
-		f := byRepo[repo]
-		sort.SliceStable(f.Sessions, func(i, j int) bool { return f.Sessions[i].Mtime > f.Sessions[j].Mtime })
-		for _, s := range f.Sessions {
-			if s.Live {
-				f.Live++
-			}
-		}
-		tree.Folders = append(tree.Folders, *f)
+		g := groups[repo]
+		sort.SliceStable(g.Sessions, func(i, j int) bool { return g.Sessions[i].Mtime > g.Sessions[j].Mtime })
+		tree.Folders = append(tree.Folders, *g)
 	}
 	sortFolders(tree.Folders)
 	if len(tree.Folders) > 0 {
-		tree.Folders[0].Expanded = true // most-recent repo open by default
+		tree.Folders[0].Expanded = true
 	}
 	return tree
+}
+
+// repoForCwd maps a working directory to an "owner/repo" group via its git
+// origin remote, caching per cwd. Falls back to the tilde-abbreviated path when
+// the dir isn't a git repo (so nothing is lost, just grouped by folder).
+func repoForCwd(cwd, home string, cache map[string]string) string {
+	if v, ok := cache[cwd]; ok {
+		return v
+	}
+	repo := parseGitRemote(gitOriginURL(cwd))
+	if repo == "" {
+		repo = tildify(cwd, home)
+	}
+	cache[cwd] = repo
+	return repo
+}
+
+func gitOriginURL(cwd string) string {
+	out, err := exec.Command("git", "-C", cwd, "config", "--get", "remote.origin.url").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// parseGitRemote reduces a git remote URL to "owner/repo". Handles scp-style
+// (git@host:owner/repo.git), https/ssh URLs, and a trailing .git; returns "" for
+// an empty/unrecognizable remote.
+func parseGitRemote(u string) string {
+	if u == "" {
+		return ""
+	}
+	u = strings.TrimSuffix(u, ".git")
+	if i := strings.Index(u, "://"); i >= 0 { // scheme://host/owner/repo
+		if _, after, ok := strings.Cut(u[i+3:], "/"); ok {
+			u = after
+		}
+	} else if i := strings.IndexByte(u, ':'); i >= 0 && !strings.Contains(u[:i], "/") {
+		u = u[i+1:] // scp-style host:owner/repo
+	}
+	parts := strings.Split(strings.Trim(u, "/"), "/")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+	}
+	return ""
 }
 
 func parseEntireTime(s string) int64 {

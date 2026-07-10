@@ -51,11 +51,13 @@ agent-agnostic and consumes only `Record`s.
   grouped by repo/folder, arrow-key navigable, recency-colored, type-to-filter;
   also the static `--list` dump. Pure build/reduce/render split from a thin tty
   driver (alt-screen + `setRaw`), so navigation/render are unit-tested without a tty
-- `entire.go` — the DEFAULT tree source: the `entire` CLI's cloud inventory
-  (`entire api /me/sessions`, grouped by repo, generated titles, no local file
-  reads). `buildSessionTree` dispatches: entire when available, else (or with
-  `--local`) the `~/.claude` crawl in `tree.go`. A session's uuid is resolved to
-  its local jsonl by a name-only glob so it stays tailable/resumable
+- `entire.go` — merges the DEFAULT tree: `buildSessionTree` takes the complete
+  local `~/.claude` crawl as the base and (unless `--local`) folds in the
+  `entire` CLI's cloud metadata via `mergeEntire` — regroup by repo (from
+  `entire api /me/sessions` for tracked sessions, else the cwd's git `origin`
+  remote, else the folder path), overlay entire's generated titles, and append
+  cloud-only sessions from other machines (listed, not tailable). `--local` or
+  entire being absent/offline/empty → the pure folder-grouped crawl
 - `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) for
   the `--local` view's live markers, plus `runPicker`/`resolveTreeChoice`. The
   tree is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` /

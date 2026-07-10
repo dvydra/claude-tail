@@ -130,17 +130,21 @@ to tail, it opens an interactive tree of your sessions, grouped by **repo**:
 
 ### Where the sessions come from
 
-By default the tree is sourced from the **[`entire`](https://docs.entire.io)
-CLI** (`entire api /me/sessions`): every tracked session across every repo,
-with a generated **title**, agent, repo, and checkpoint count — no local file
-reads for the listing. A session's uuid still maps to its local Claude jsonl
-(resolved by a name-only glob of `~/.claude`) so it can be tailed / resumed on
-this machine; cloud-only sessions (from another machine) show but can't be
-tailed here.
+By default the tree **unions** your complete local `~/.claude` history with the
+**[`entire`](https://docs.entire.io) CLI**'s cloud metadata:
 
-`--local` (or `entire` being absent / logged out / returning nothing) falls back
-to **crawling `~/.claude` directly**, grouped by folder path with `● live`
-markers — the pre-entire behavior:
+- **Every local session is shown** (nothing is omitted), grouped by **repo** —
+  from `entire` for sessions it tracks, otherwise from the folder's git
+  `origin` remote (falling back to the folder path when it isn't a git repo).
+- `entire`'s **generated title** is used where it has one, else the session's
+  own summary / first prompt.
+- **Cloud-only sessions** — tracked by `entire` on another machine but not
+  present here — are appended too; they list but can't be tailed on this
+  machine (selecting one says so).
+
+`--local` skips `entire` entirely — a pure `~/.claude` crawl, grouped by folder
+path with `● live` markers (also the automatic fallback when `entire` is absent,
+logged out, or offline):
 
 ```
 ▾ ~/src/entirehq/entiredb  (3)  3m ago  ● live
