@@ -34,6 +34,7 @@ type treeSession struct {
 	Mtime   int64
 	Branch  string
 	Snippet string
+	Repo    string // owner/repo (search hits) — used to reconstruct cloud-only transcripts
 	Msgs    int    // rough count: user+assistant events
 	Live    bool   // a running claude process holds this session's folder
 	cwd     string // recovered .cwd (build-only; folder carries the display copy)
@@ -361,20 +362,22 @@ func sessionMatches(s treeSession, f string) bool {
 // ── UI state + reducer (pure) ────────────────────────────────────────────────
 
 type treeUI struct {
-	Tree      sessionTree
-	Theme     Theme
-	Rows      []treeRow
-	Cursor    int
-	Top       int // first visible row (scroll offset)
-	Width     int
-	Height    int // body rows available (excludes header + footer)
-	Filter    string
-	Filtering bool
-	Quit      bool
-	Chosen    string // selected session path; non-empty ends the loop
-	ChosenCwd string // folder cwd of the selection (for the iTerm launcher)
-	ChosenID  string // session id of the selection (for claude --resume)
-	Workspace bool   // selection should open the iTerm workspace, not tail
+	Tree         sessionTree
+	Theme        Theme
+	Rows         []treeRow
+	Cursor       int
+	Top          int // first visible row (scroll offset)
+	Width        int
+	Height       int // body rows available (excludes header + footer)
+	Filter       string
+	Filtering    bool
+	Quit         bool
+	NewWorkspace bool   // 'n' → fresh session workspace in $PWD; ends the loop
+	Chosen       string // selected session path; non-empty ends the loop
+	ChosenCwd    string // folder cwd of the selection (for the iTerm launcher)
+	ChosenID     string // session id of the selection (for claude --resume)
+	ChosenRepo   string // repo of the selection (to reconstruct a cloud-only transcript)
+	Workspace    bool   // selection should open the iTerm workspace, not tail
 }
 
 type treeKey int
@@ -391,6 +394,8 @@ const (
 	kCtrlC
 	kHome
 	kEnd
+	kPageUp
+	kPageDown
 	kRune
 )
 
@@ -411,6 +416,10 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 			ui.Cursor--
 		case kDown:
 			ui.Cursor++
+		case kPageUp:
+			ui.Cursor -= ui.pageStep()
+		case kPageDown:
+			ui.Cursor += ui.pageStep()
 		case kRune:
 			ui.Filter += string(r)
 		}
@@ -428,6 +437,10 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 		ui.Cursor = 0
 	case kEnd:
 		ui.Cursor = len(ui.Rows) - 1
+	case kPageUp:
+		ui.Cursor -= ui.pageStep()
+	case kPageDown:
+		ui.Cursor += ui.pageStep()
 	case kRight:
 		ui.expand()
 	case kLeft:
@@ -450,6 +463,10 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 			ui.Cursor = 0
 		case 'G':
 			ui.Cursor = len(ui.Rows) - 1
+		case ' ':
+			ui.Cursor += ui.pageStep() // pager convention: space = page down
+		case 'n', 'N':
+			ui.NewWorkspace = true // fresh session workspace in $PWD
 		case 't', 'T':
 			ui.selectSession(false) // tail in-place, no windowing
 		case 'q', 'Q':
@@ -513,6 +530,7 @@ func (ui *treeUI) selectSession(workspace bool) {
 	ui.Chosen = s.Path
 	ui.ChosenCwd = folder.Cwd
 	ui.ChosenID = s.ID
+	ui.ChosenRepo = s.Repo
 	ui.Workspace = workspace
 }
 
@@ -523,6 +541,15 @@ func (ui *treeUI) folderHeaderIndex(folder int) int {
 		}
 	}
 	return ui.Cursor
+}
+
+// pageStep is how far PageUp/PageDown move — one viewport minus a row of
+// overlap, so you keep a line of context across the jump.
+func (ui *treeUI) pageStep() int {
+	if ui.Height > 1 {
+		return ui.Height - 1
+	}
+	return 1
 }
 
 func (ui *treeUI) clamp() {
@@ -643,7 +670,7 @@ func renderRow(ui treeUI, i int) string {
 }
 
 func composeHeader() string {
-	return "  CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · t tail · / filter · q quit"
+	return "  CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · t tail · n new↗ · / filter · q quit"
 }
 
 func composeFooter(ui treeUI) string {
@@ -731,19 +758,21 @@ func claudeLiveCwds() map[string]int {
 type treeResult int
 
 const (
-	treeWorkspace treeResult = iota // open the 3-pane iTerm workspace (Enter)
-	treeChosen                      // tail the session in-place (t)
+	treeWorkspace    treeResult = iota // open the 3-pane iTerm workspace (Enter)
+	treeChosen                         // tail the session in-place (t)
+	treeNewWorkspace                   // fresh session workspace in $PWD (n)
 	treeQuit
 	treeNone
 )
 
-// treeChoice is what the tree hands back: the picked session plus the folder cwd
-// and session id the iTerm workspace launcher needs.
+// treeChoice is what the tree hands back: the picked session plus the folder cwd,
+// session id, and repo the iTerm launcher / transcript reconstruction need.
 type treeChoice struct {
 	Result treeResult
 	Path   string
 	Cwd    string
 	ID     string
+	Repo   string
 }
 
 // runClaudeTree builds and runs the interactive tree. A treeNone result means the
@@ -801,12 +830,15 @@ func runTreeTUI(tree sessionTree, theme Theme) treeChoice {
 		if ui.Quit {
 			return treeChoice{Result: treeQuit}
 		}
+		if ui.NewWorkspace {
+			return treeChoice{Result: treeNewWorkspace, Cwd: ui.Tree.Pwd}
+		}
 		if ui.Chosen != "" {
 			res := treeChosen
 			if ui.Workspace {
 				res = treeWorkspace
 			}
-			return treeChoice{Result: res, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID}
+			return treeChoice{Result: res, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID, Repo: ui.ChosenRepo}
 		}
 	}
 }
@@ -836,10 +868,14 @@ func decodeKey(b []byte) (treeKey, rune) {
 			return kRight, 0
 		case 'D':
 			return kLeft, 0
-		case 'H':
+		case 'H', '1', '7':
 			return kHome, 0
-		case 'F':
+		case 'F', '4', '8':
 			return kEnd, 0
+		case '5':
+			return kPageUp, 0 // PgUp: ESC [ 5 ~
+		case '6':
+			return kPageDown, 0 // PgDn: ESC [ 6 ~
 		}
 		return kNone, 0
 	}
@@ -853,6 +889,10 @@ func decodeKey(b []byte) (treeKey, rune) {
 			return kBackspace, 0
 		case 0x03:
 			return kCtrlC, 0
+		case 0x06: // Ctrl-F
+			return kPageDown, 0
+		case 0x02: // Ctrl-B
+			return kPageUp, 0
 		}
 	}
 	if r := []rune(string(b)); len(r) > 0 && r[0] >= 0x20 {

@@ -161,6 +161,8 @@ quits. The most recent group starts expanded. On a session:
 
 - **`Enter`** → open the **iTerm workspace** for it (see below).
 - **`t`** → just tail the session in the current pane.
+- **`n`** → open a workspace for a **new** Claude session in `$PWD` (fresh
+  `claude` + tail + shell) — no session selected, just start fresh here.
 
 **Recency at a glance** — rows are colored on a four-step scale by last activity:
 
@@ -191,11 +193,14 @@ entire tail --list | grep -i erasure     # find that session about account erasu
 entire tail --list --days 1              # what did I work on today?
 ```
 
-**Tailing** only works for sessions whose Claude jsonl is on **this** machine
-(the uuid is resolved against `~/.claude`). Cloud-only sessions from another
-machine still show in the `entire`-sourced tree, but selecting one reports that
-it isn't local. Codex/Antigravity aren't tailable through the tree yet — use
-`--agent codex`/`agy` or an explicit `SESSION_FILE`.
+**Tailing** prefers the session's local `~/.claude` jsonl. If it's not there — a
+**cloud-only** session pruned locally or created on another machine — entire-tail
+**reconstructs the transcript from the repo's local git checkpoint refs**
+(`refs/entire/checkpoints/**`, where entire stores each session's transcript) as
+long as that repo is checked out here, and tails that. Only if the repo isn't
+cloned locally does it report the session can't be opened. Codex/Antigravity
+aren't tailable through the tree yet — use `--agent codex`/`agy` or an explicit
+`SESSION_FILE`.
 
 ## The iTerm2 workspace (macOS)
 
@@ -224,6 +229,42 @@ window already has splits, `Enter` just **tails the session in the current pane*
 Off iTerm (or non-macOS), `Enter` likewise falls back to tailing in place, same
 as `t`. `-w`/`--workspace` just forces the picker (it's already the default).
 tmux / other terminals are a possible follow-up.
+
+## Search
+
+Can't find the session where you said *"fire socks"*? `--search` (or `-S`) finds
+sessions by their **content**, not just titles, and ranks them by relevance:
+
+```sh
+entire tail fire socks                   # bare words = search — no flag needed
+entire tail --search "fire socks"        # explicit flag, identical
+entire tail --list fire socks            # static ranked dump
+entire tail fire socks --local           # local transcripts only, no network
+```
+
+Any bare arguments are treated as a search query (a single argument that's an
+existing file still tails that file). So `entire tail fire socks` just works.
+
+```
+🔎 "fire socks" — 11 result(s), best match first
+  b7dd3e4a  just now  [dvydra/claude-tail]  …we mentioned "fire socks" but i can't fin…
+  8e6bd2c4  72d ago   [browser-extension]   This is a chrome extension for the entire.io…
+  edec5f4a  46d ago   [infra]               we have set up a new datadog account…
+```
+
+It searches two sources and merges them by session:
+
+- **Local transcripts** via [ripgrep](https://github.com/BurntSushi/ripgrep)
+  (a literal, case-insensitive scan of `~/.claude`) — the exact phrase you typed.
+- **`entire` checkpoint search** — hybrid semantic + keyword across all your
+  repos, so it also surfaces sessions that *mean* the same thing without the
+  exact words (skipped with `--local`, or when offline).
+
+**Ranking**: an exact local phrase match weighs heaviest (you typed those words),
+`entire`'s semantic score adds on top, and matching both sources ranks highest;
+recency breaks ties. Each row shows the **matching snippet** so you can see why
+it hit. `Enter`/`t` resume or tail the result like any tree row. Results are
+capped at the top 50 (a ubiquitous term otherwise matches everything).
 
 ## Tool calls
 

@@ -44,7 +44,13 @@ Per-agent **adapters** lower each JSONL event to a canonical `Record`
 (`Kind` = USER | ASSISTANT | TOOLUSE | TOOLRESULT). Everything downstream is
 agent-agnostic and consumes only `Record`s.
 
-- `adapter_claude.go` / `adapter_codex.go` / `adapter_agy.go` — `normalize(line) []Record`
+- `adapter_claude.go` / `adapter_codex.go` / `adapter_agy.go` / `adapter_entire.go` — `normalize(line) []Record`
+  (`adapter_entire.go` handles entire's own transcript format — top-level
+  `content`/`ts` — used for reconstructed cloud-only sessions)
+- `reconstruct.go` — recovers a cloud-only session's transcript (not under
+  `~/.claude`) from its repo's local `refs/entire/checkpoints/**` git objects
+  (`git grep` the session id → largest `transcript.jsonl` → temp file), so search
+  hits from pruned/other-machine sessions stay tailable when the repo is local
 - `adapter.go` — the `Record`/`Kind` types and the adapter interface
 - `discovery.go` — find the session file for `$PWD` per agent
 - `tree.go` — the interactive session **tree** picker (the DEFAULT): sessions
@@ -67,10 +73,17 @@ agent-agnostic and consumes only `Record`s.
   piped runs / explicit SESSION_FILE skip it and tail directly
 - `iterm.go` — macOS/iTerm2 automation via `osascript`: the tree's `Enter`
   opens the 3-pane workspace (`claude --resume` + live tail + shell) in the
-  CURRENT window, cd'd to the picked session's folder. Pure `workspaceScript`
+  CURRENT window, cd'd to the picked session's folder; `n` opens the same
+  workspace for a FRESH `claude` session in `$PWD` (new window if the current
+  one is already split, since there's nothing to tail in place). Pure `workspaceScript`
   builder split from the `osaRun` executor so quoting/layout are unit-tested
   without launching iTerm. The queued-claude trick: the command is written to
   the current pane's tty and runs once entire-tail exits
+- `search.go` — `--search`: content search across local transcripts (ripgrep,
+  literal) + `entire checkpoint search` (semantic session results), merged by
+  session id and ranked (`searchHit.score`: exact local match dominates, entire
+  score adds, recency tiebreak). Builds a single-group ranked `sessionTree`
+  (reuses the same TUI/`renderList`); rows show the match snippet, capped at 50
 - `render.go` — the **rendering state machine** (one path shared by backfill +
   live): tracks previous participant (consecutive same-participant turns collapse
   to a dim `⋯ ts` marker) and dot-streak state; tool tristate lives here

@@ -260,6 +260,14 @@ func sniffAgent(first []byte) Agent {
 	if upperEnumRe.MatchString(jqToStringRaw(top["type"])) {
 		return AgentAgy
 	}
+	// entire's own transcript format: top-level content + ts, no nested message.
+	if _, hasMsg := top["message"]; !hasMsg {
+		_, hasContent := top["content"]
+		_, hasTs := top["ts"]
+		if hasContent && hasTs {
+			return AgentEntire
+		}
+	}
 	return AgentClaude
 }
 

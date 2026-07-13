@@ -9,6 +9,9 @@ const (
 	AgentClaude Agent = "claude"
 	AgentCodex  Agent = "codex"
 	AgentAgy    Agent = "agy"
+	// AgentEntire is entire's own transcript format (top-level content/ts), used
+	// for cloud sessions reconstructed from a repo's git checkpoint refs.
+	AgentEntire Agent = "entire"
 )
 
 // normalize lowers one raw jsonl line to zero or more Records for the given
@@ -21,6 +24,8 @@ func normalize(agent Agent, line []byte, loc *time.Location) []Record {
 		return normalizeCodex(line, loc)
 	case AgentAgy:
 		return normalizeAgy(line, loc)
+	case AgentEntire:
+		return normalizeEntireTranscript(line, loc)
 	}
 	return nil
 }
