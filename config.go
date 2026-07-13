@@ -22,6 +22,7 @@ type Config struct {
 	Local      bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
 	Cloud      bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
 	Search     string // --search: content-search sessions, ranked by relevance
+	WaitNew    bool   // --wait-new: block until a new Claude session appears in $PWD, then tail it
 }
 
 // Action is what the parsed CLI asks for beyond a normal run.
@@ -177,6 +178,8 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.Local = true
 		case a == "--cloud":
 			c.Cloud = true
+		case a == "--wait-new":
+			c.WaitNew = true
 		case a == "-S" || a == "--search":
 			v, err := needValue(i, a)
 			if err != nil {

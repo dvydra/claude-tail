@@ -188,6 +188,9 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 		if s.Mtime > g.Mtime {
 			g.Mtime = s.Mtime
 		}
+		if g.Dir == "" && s.cwd != "" {
+			g.Dir = s.cwd // a real local dir for the repo group, for `n`
+		}
 		if s.Live {
 			g.Live++
 		}

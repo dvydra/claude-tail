@@ -298,6 +298,29 @@ func TestUpdateTreeEnterWorkspace(t *testing.T) {
 	}
 }
 
+func TestUpdateTreeNewWorkspace(t *testing.T) {
+	tr := sampleTree()
+	tr.Folders[0].Dir = "/work/alpha"
+	ui := treeUI{Tree: tr, Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+
+	// 'n' on folder A's header → new workspace in that folder's dir.
+	ui.Cursor = 0
+	ui = updateTree(ui, kRune, 'n')
+	if !ui.NewWorkspace || ui.NewWorkspaceDir != "/work/alpha" {
+		t.Errorf("'n' on folder → new=%v dir=%q, want /work/alpha", ui.NewWorkspace, ui.NewWorkspaceDir)
+	}
+
+	// 'n' on a folder with no local dir → empty (driver falls back to $PWD).
+	ui2 := treeUI{Tree: sampleTree(), Height: 20} // folders have no Dir
+	ui2.Rows = flattenRows(ui2.Tree, "")
+	ui2.Cursor = 0
+	ui2 = updateTree(ui2, kRune, 'n')
+	if !ui2.NewWorkspace || ui2.NewWorkspaceDir != "" {
+		t.Errorf("'n' with no dir → dir=%q, want empty", ui2.NewWorkspaceDir)
+	}
+}
+
 func TestUpdateTreeTailInPlace(t *testing.T) {
 	tr := sampleTree()
 	tr.Folders[0].Sessions[0].Path = "/sessions/aaaa1111.jsonl"

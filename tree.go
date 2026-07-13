@@ -41,7 +41,8 @@ type treeSession struct {
 }
 
 type treeFolder struct {
-	Cwd      string // real path, recovered from a session's .cwd (slug is lossy)
+	Cwd      string // display: real path (local tree) or owner/repo (merged/search)
+	Dir      string // a real local directory for the group, for `n` to cd into ("" if none)
 	Slug     string // project-folder base name
 	Mtime    int64  // newest session mtime
 	Live     int    // running claude processes in this cwd
@@ -114,6 +115,7 @@ func buildClaudeTree(home, pwd string, days int, now int64, liveCwds map[string]
 			Sessions: sessions,
 			Mtime:    sessions[0].Mtime,
 			Cwd:      firstNonEmpty(sessions[0].cwd, unslugGuess(slug)),
+			Dir:      sessions[0].cwd, // real recorded cwd, for `n`
 			Expanded: slug == pwdSlug,
 		}
 		folder.Live = liveCwds[folder.Cwd]
@@ -362,22 +364,23 @@ func sessionMatches(s treeSession, f string) bool {
 // ── UI state + reducer (pure) ────────────────────────────────────────────────
 
 type treeUI struct {
-	Tree         sessionTree
-	Theme        Theme
-	Rows         []treeRow
-	Cursor       int
-	Top          int // first visible row (scroll offset)
-	Width        int
-	Height       int // body rows available (excludes header + footer)
-	Filter       string
-	Filtering    bool
-	Quit         bool
-	NewWorkspace bool   // 'n' → fresh session workspace in $PWD; ends the loop
-	Chosen       string // selected session path; non-empty ends the loop
-	ChosenCwd    string // folder cwd of the selection (for the iTerm launcher)
-	ChosenID     string // session id of the selection (for claude --resume)
-	ChosenRepo   string // repo of the selection (to reconstruct a cloud-only transcript)
-	Workspace    bool   // selection should open the iTerm workspace, not tail
+	Tree            sessionTree
+	Theme           Theme
+	Rows            []treeRow
+	Cursor          int
+	Top             int // first visible row (scroll offset)
+	Width           int
+	Height          int // body rows available (excludes header + footer)
+	Filter          string
+	Filtering       bool
+	Quit            bool
+	NewWorkspace    bool   // 'n' → fresh session workspace; ends the loop
+	NewWorkspaceDir string // folder under the cursor when 'n' pressed ("" = $PWD)
+	Chosen          string // selected session path; non-empty ends the loop
+	ChosenCwd       string // folder cwd of the selection (for the iTerm launcher)
+	ChosenID        string // session id of the selection (for claude --resume)
+	ChosenRepo      string // repo of the selection (to reconstruct a cloud-only transcript)
+	Workspace       bool   // selection should open the iTerm workspace, not tail
 }
 
 type treeKey int
@@ -466,7 +469,11 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 		case ' ':
 			ui.Cursor += ui.pageStep() // pager convention: space = page down
 		case 'n', 'N':
-			ui.NewWorkspace = true // fresh session workspace in $PWD
+			// Fresh session workspace in the highlighted folder's dir (else $PWD).
+			ui.NewWorkspace = true
+			if row, ok := ui.current(); ok {
+				ui.NewWorkspaceDir = ui.Tree.Folders[row.Folder].Dir
+			}
 		case 't', 'T':
 			ui.selectSession(false) // tail in-place, no windowing
 		case 'q', 'Q':
@@ -831,7 +838,7 @@ func runTreeTUI(tree sessionTree, theme Theme) treeChoice {
 			return treeChoice{Result: treeQuit}
 		}
 		if ui.NewWorkspace {
-			return treeChoice{Result: treeNewWorkspace, Cwd: ui.Tree.Pwd}
+			return treeChoice{Result: treeNewWorkspace, Cwd: firstNonEmpty(ui.NewWorkspaceDir, ui.Tree.Pwd)}
 		}
 		if ui.Chosen != "" {
 			res := treeChosen
