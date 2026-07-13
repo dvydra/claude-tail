@@ -152,7 +152,8 @@ lookups, no cloud) — fastest / fully offline — with `● live` markers:
     ○ 6e18caf2  18h ago  [main] User self deletion and erasure epic
 ```
 
-Each session row shows its id (the session uuid), age, and a one-line title;
+Each session row shows its id (the session uuid), age, **token spend**
+(compact — `300k`, `1.2m`; entire-tracked sessions only), and a one-line title;
 the local view adds the git branch and live markers.
 
 **Navigation:** arrow keys or `hjkl` move; `→` expands a group and `←`
@@ -160,6 +161,10 @@ collapses; `/` filters by name/title/id as you type (`Esc` clears); `q`/`Esc`
 quits. The most recent group starts expanded. On a session:
 
 - **`Enter`** → open the **iTerm workspace** for it (see below).
+- **`p`** → **preview** the session's recent transcript in a scrollable pager
+  (works for cloud-only sessions too — reconstructed from git checkpoint refs).
+- **`i`** → a **summary card**: title, repo, model, token spend, checkpoint
+  count, and the opening prompt (entire's metadata for the session).
 - **`t`** → just tail the session in the current pane.
 - **`n`** → open a workspace for a **new** Claude session in the **highlighted
   folder's** directory (or `$PWD` if it has none) — fresh `claude` + tail +

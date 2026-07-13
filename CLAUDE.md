@@ -84,6 +84,11 @@ agent-agnostic and consumes only `Record`s.
   session id and ranked (`searchHit.score`: exact local match dominates, entire
   score adds, recency tiebreak). Builds a single-group ranked `sessionTree`
   (reuses the same TUI/`renderList`); rows show the match snippet, capped at 50
+- `preview.go` — the tree's in-picker sub-views: `p` previews a session's recent
+  transcript in a scrollable ANSI pager (reconstructing cloud-only ones), `i`
+  shows a summary card (title/repo/model/tokens/checkpoints/prompt from entire's
+  metadata). Both run inside the alt-screen and return on q/Esc. Token totals
+  (`formatTokens`) also show in tree rows + `--list`
 - `render.go` — the **rendering state machine** (one path shared by backfill +
   live): tracks previous participant (consecutive same-participant turns collapse
   to a dim `⋯ ts` marker) and dot-streak state; tool tristate lives here
