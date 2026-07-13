@@ -4,3 +4,6 @@
 .antigravitycli/
 /entire-tail
 /claude-tail
+
+# entire session-tracking artifacts (this repo isn't an entire project)
+/.entire/
