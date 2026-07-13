@@ -73,7 +73,9 @@ agent-agnostic and consumes only `Record`s.
   piped runs / explicit SESSION_FILE skip it and tail directly
 - `iterm.go` — macOS/iTerm2 automation via `osascript`: the tree's `Enter`
   opens the 3-pane workspace (`claude --resume` + live tail + shell) in the
-  CURRENT window, cd'd to the picked session's folder. Pure `workspaceScript`
+  CURRENT window, cd'd to the picked session's folder; `n` opens the same
+  workspace for a FRESH `claude` session in `$PWD` (new window if the current
+  one is already split, since there's nothing to tail in place). Pure `workspaceScript`
   builder split from the `osaRun` executor so quoting/layout are unit-tested
   without launching iTerm. The queued-claude trick: the command is written to
   the current pane's tty and runs once entire-tail exits

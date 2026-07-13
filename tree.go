@@ -362,21 +362,22 @@ func sessionMatches(s treeSession, f string) bool {
 // ── UI state + reducer (pure) ────────────────────────────────────────────────
 
 type treeUI struct {
-	Tree       sessionTree
-	Theme      Theme
-	Rows       []treeRow
-	Cursor     int
-	Top        int // first visible row (scroll offset)
-	Width      int
-	Height     int // body rows available (excludes header + footer)
-	Filter     string
-	Filtering  bool
-	Quit       bool
-	Chosen     string // selected session path; non-empty ends the loop
-	ChosenCwd  string // folder cwd of the selection (for the iTerm launcher)
-	ChosenID   string // session id of the selection (for claude --resume)
-	ChosenRepo string // repo of the selection (to reconstruct a cloud-only transcript)
-	Workspace  bool   // selection should open the iTerm workspace, not tail
+	Tree         sessionTree
+	Theme        Theme
+	Rows         []treeRow
+	Cursor       int
+	Top          int // first visible row (scroll offset)
+	Width        int
+	Height       int // body rows available (excludes header + footer)
+	Filter       string
+	Filtering    bool
+	Quit         bool
+	NewWorkspace bool   // 'n' → fresh session workspace in $PWD; ends the loop
+	Chosen       string // selected session path; non-empty ends the loop
+	ChosenCwd    string // folder cwd of the selection (for the iTerm launcher)
+	ChosenID     string // session id of the selection (for claude --resume)
+	ChosenRepo   string // repo of the selection (to reconstruct a cloud-only transcript)
+	Workspace    bool   // selection should open the iTerm workspace, not tail
 }
 
 type treeKey int
@@ -464,6 +465,8 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 			ui.Cursor = len(ui.Rows) - 1
 		case ' ':
 			ui.Cursor += ui.pageStep() // pager convention: space = page down
+		case 'n', 'N':
+			ui.NewWorkspace = true // fresh session workspace in $PWD
 		case 't', 'T':
 			ui.selectSession(false) // tail in-place, no windowing
 		case 'q', 'Q':
@@ -667,7 +670,7 @@ func renderRow(ui treeUI, i int) string {
 }
 
 func composeHeader() string {
-	return "  CLAUDE SESSIONS   ↑↓/PgUp/PgDn move · → expand · ⏎ workspace↗ · t tail · / filter · q quit"
+	return "  CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · t tail · n new↗ · / filter · q quit"
 }
 
 func composeFooter(ui treeUI) string {
@@ -755,8 +758,9 @@ func claudeLiveCwds() map[string]int {
 type treeResult int
 
 const (
-	treeWorkspace treeResult = iota // open the 3-pane iTerm workspace (Enter)
-	treeChosen                      // tail the session in-place (t)
+	treeWorkspace    treeResult = iota // open the 3-pane iTerm workspace (Enter)
+	treeChosen                         // tail the session in-place (t)
+	treeNewWorkspace                   // fresh session workspace in $PWD (n)
 	treeQuit
 	treeNone
 )
@@ -825,6 +829,9 @@ func runTreeTUI(tree sessionTree, theme Theme) treeChoice {
 		ui = updateTree(ui, k, r)
 		if ui.Quit {
 			return treeChoice{Result: treeQuit}
+		}
+		if ui.NewWorkspace {
+			return treeChoice{Result: treeNewWorkspace, Cwd: ui.Tree.Pwd}
 		}
 		if ui.Chosen != "" {
 			res := treeChosen

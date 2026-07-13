@@ -134,6 +134,15 @@ func runPicker(agents []Agent, home, pwd string, days int, local, cloud bool, th
 // a note rather than tailing something unrelated.
 func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 	switch c.Result {
+	case treeNewWorkspace:
+		if itermAvailable() {
+			if err := launchNewWorkspace(c.Cwd); err != nil {
+				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+			}
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "entire-tail: a new-session workspace needs iTerm2 on macOS.")
+		os.Exit(0)
 	case treeChosen, treeWorkspace:
 		if c.Path == "" {
 			if tmp, ok := reconstructTranscript(home, c.ID, c.Repo); ok {

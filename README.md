@@ -161,6 +161,8 @@ quits. The most recent group starts expanded. On a session:
 
 - **`Enter`** → open the **iTerm workspace** for it (see below).
 - **`t`** → just tail the session in the current pane.
+- **`n`** → open a workspace for a **new** Claude session in `$PWD` (fresh
+  `claude` + tail + shell) — no session selected, just start fresh here.
 
 **Recency at a glance** — rows are colored on a four-step scale by last activity:
 

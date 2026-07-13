@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const version = "0.15.0"
+const version = "0.16.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -497,6 +497,8 @@ OPTIONS:
                                       session's folder (macOS + iTerm2; falls
                                       back to tailing in place otherwise).
                               t       just tail the session in the current pane.
+                              n       open a workspace for a NEW Claude session
+                                      in $PWD (fresh claude + tail + shell).
                             Claude only (codex/agy tail directly via --agent).
       --no-pick             Skip the picker — auto-discover and tail $PWD's most
                             recent session in place (the pre-tree behavior).
