@@ -29,7 +29,7 @@ func showPreview(tty *os.File, s treeSession, home string, theme Theme) {
 	} else {
 		lines = renderPreviewLines(path, home, theme)
 	}
-	pager(tty, lines, "PREVIEW "+shortID(s.ID)+"  "+s.Snippet)
+	pager(tty, lines, "PREVIEW "+shortID(s.ID)+"  "+s.Snippet, true) // start at the latest turns
 }
 
 // renderPreviewLines renders the last chunk of a transcript to ANSI lines via the
@@ -96,13 +96,17 @@ func showSummary(tty *os.File, s treeSession) {
 		add("")
 		add("  (not tracked by entire — only local metadata available)")
 	}
-	pager(tty, L, "SUMMARY "+shortID(s.ID))
+	pager(tty, L, "SUMMARY "+shortID(s.ID), false)
 }
 
 // pager is a minimal scroll view over pre-rendered lines. q/Esc returns.
-func pager(tty *os.File, lines []string, title string) {
+// atBottom starts scrolled to the end (for previews — show the latest turns).
+func pager(tty *os.File, lines []string, title string, atBottom bool) {
 	buf := make([]byte, 16)
 	top := 0
+	if atBottom {
+		top = len(lines) // clamped to maxTop on the first render below
+	}
 	for {
 		w, h := termSize(tty)
 		body := max(h-2, 1)
