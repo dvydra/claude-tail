@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -53,36 +54,45 @@ func run(cfg Config) {
 
 	scanner := newCodexScanner(home)
 	resolved := false
-
-	// Positional args are sugar: a single existing file is a session to tail;
-	// anything else is a search query (so `entire-tail fire socks` just searches).
-	// An explicit --search always wins.
 	session := ""
-	query := cfg.Search
-	if len(cfg.Positional) == 1 && isFile(cfg.Positional[0]) {
-		session = cfg.Positional[0]
-	} else if query == "" && len(cfg.Positional) > 0 {
-		query = strings.Join(cfg.Positional, " ")
-	}
 
-	// search: rank sessions by relevance to a content query, then let the user
-	// pick one to tail/resume (or dump the ranking when non-interactive).
-	if query != "" {
-		tree := buildSearchTree(home, pwd, query, cfg.Local, time.Now().Unix())
-		if len(tree.Folders) == 0 {
-			die(fmt.Sprintf("no sessions matched %q", query))
+	if cfg.WaitNew {
+		// The `n` workspace launches this alongside a fresh `claude`: block until a
+		// session that didn't exist at launch appears in $PWD, then tail exactly it
+		// (no racing the newest-file heuristic).
+		session = waitForNewSession(home, pwd)
+		if agentStr == "auto" {
+			agentStr = string(AgentClaude)
 		}
-		if !ttyUsable() {
-			out := bufio.NewWriter(os.Stdout)
-			renderList(out, tree, isCharDevice(os.Stdout))
-			out.Flush()
-			return
+	} else {
+		// Positional args are sugar: a single existing file is a session to tail;
+		// anything else is a search query (so `entire-tail fire socks` just
+		// searches). An explicit --search always wins.
+		query := cfg.Search
+		if len(cfg.Positional) == 1 && isFile(cfg.Positional[0]) {
+			session = cfg.Positional[0]
+		} else if query == "" && len(cfg.Positional) > 0 {
+			query = strings.Join(cfg.Positional, " ")
 		}
-		p, ok := resolveTreeChoice(home, runTreeTUI(tree, theme))
-		if !ok {
-			return
+		// search: rank sessions by relevance to a content query, then let the user
+		// pick one to tail/resume (or dump the ranking when non-interactive).
+		if query != "" {
+			tree := buildSearchTree(home, pwd, query, cfg.Local, time.Now().Unix())
+			if len(tree.Folders) == 0 {
+				die(fmt.Sprintf("no sessions matched %q", query))
+			}
+			if !ttyUsable() {
+				out := bufio.NewWriter(os.Stdout)
+				renderList(out, tree, isCharDevice(os.Stdout))
+				out.Flush()
+				return
+			}
+			p, ok := resolveTreeChoice(home, runTreeTUI(home, tree, theme))
+			if !ok {
+				return
+			}
+			session = p // fall through to tail it via the explicit-session path below
 		}
-		session = p // fall through to tail it via the explicit-session path below
 	}
 
 	switch {
@@ -254,6 +264,35 @@ func run(cfg Config) {
 			out.Flush()
 		}
 	}
+}
+
+// waitForNewSession blocks until a Claude session file appears in pwd's project
+// dir that wasn't there at launch (and has content), then returns its path. Used
+// by the `n` workspace so entire-tail latches onto the session the freshly
+// launched `claude` creates, not whatever was newest before.
+func waitForNewSession(home, pwd string) string {
+	pattern := filepath.Join(claudeProjectsDir(home), claudeSlug(pwd), "*.jsonl")
+	before := map[string]bool{}
+	for _, f := range globList(pattern) {
+		before[f] = true
+	}
+	fmt.Fprintf(os.Stderr, "entire-tail: waiting for a new Claude session in %s … (Ctrl-C to cancel)\n", pwd)
+	for {
+		for _, f := range globList(pattern) {
+			if before[f] {
+				continue
+			}
+			if fi, err := os.Stat(f); err == nil && fi.Size() > 0 {
+				return f // the session the new `claude` just created
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func globList(pattern string) []string {
+	m, _ := filepath.Glob(pattern)
+	return m
 }
 
 // discoverSession resolves a session path + concrete agent via per-agent
@@ -506,9 +545,16 @@ OPTIONS:
                                       live tail, and a shell, all in the
                                       session's folder (macOS + iTerm2; falls
                                       back to tailing in place otherwise).
+                              p       preview the session's recent transcript.
+                              i       summary card: an on-device Apple
+                                      Intelligence summary (headline, summary,
+                                      key points, outcome — macOS 26+ with
+                                      Apple Intelligence) plus entire's metadata
+                                      (repo, model, tokens, checkpoints, prompt).
                               t       just tail the session in the current pane.
                               n       open a workspace for a NEW Claude session
-                                      in $PWD (fresh claude + tail + shell).
+                                      in the highlighted folder's directory
+                                      (or $PWD) — fresh claude + tail + shell.
                             Claude only (codex/agy tail directly via --agent).
       --no-pick             Skip the picker — auto-discover and tail $PWD's most
                             recent session in place (the pre-tree behavior).
@@ -534,6 +580,10 @@ OPTIONS:
       --local               Build the tree by crawling ~/.claude directly,
                             grouped by folder — no git remote lookups, no cloud.
                             The fastest / fully-offline view.
+      --wait-new            Block until a NEW Claude session appears in $PWD,
+                            then tail exactly it. The picker's 'n' workspace uses
+                            this so the tail latches onto the session the fresh
+                            'claude' creates, instead of racing an older one.
   -w, --workspace           Alias for the default: force the session tree. Its
                             Enter opens the iTerm workspace (macOS + iTerm2).
   -l, --list-themes         List available themes (with descriptions) and exit.

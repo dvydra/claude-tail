@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,13 +36,20 @@ type treeSession struct {
 	Branch  string
 	Snippet string
 	Repo    string // owner/repo (search hits) — used to reconstruct cloud-only transcripts
-	Msgs    int    // rough count: user+assistant events
+	Msgs    int    // rough count: user+assistant events (checkpoints for entire rows)
 	Live    bool   // a running claude process holds this session's folder
 	cwd     string // recovered .cwd (build-only; folder carries the display copy)
+
+	// entire cloud metadata (0/empty for untracked local sessions) — for the token
+	// column and the summary card.
+	Tokens int64  // spend: input + output + cache-write tokens
+	Model  string // e.g. claude-opus-4-8[1m]
+	Prompt string // the session's opening prompt
 }
 
 type treeFolder struct {
-	Cwd      string // real path, recovered from a session's .cwd (slug is lossy)
+	Cwd      string // display: real path (local tree) or owner/repo (merged/search)
+	Dir      string // a real local directory for the group, for `n` to cd into ("" if none)
 	Slug     string // project-folder base name
 	Mtime    int64  // newest session mtime
 	Live     int    // running claude processes in this cwd
@@ -114,6 +122,7 @@ func buildClaudeTree(home, pwd string, days int, now int64, liveCwds map[string]
 			Sessions: sessions,
 			Mtime:    sessions[0].Mtime,
 			Cwd:      firstNonEmpty(sessions[0].cwd, unslugGuess(slug)),
+			Dir:      sessions[0].cwd, // real recorded cwd, for `n`
 			Expanded: slug == pwdSlug,
 		}
 		folder.Live = liveCwds[folder.Cwd]
@@ -362,22 +371,26 @@ func sessionMatches(s treeSession, f string) bool {
 // ── UI state + reducer (pure) ────────────────────────────────────────────────
 
 type treeUI struct {
-	Tree         sessionTree
-	Theme        Theme
-	Rows         []treeRow
-	Cursor       int
-	Top          int // first visible row (scroll offset)
-	Width        int
-	Height       int // body rows available (excludes header + footer)
-	Filter       string
-	Filtering    bool
-	Quit         bool
-	NewWorkspace bool   // 'n' → fresh session workspace in $PWD; ends the loop
-	Chosen       string // selected session path; non-empty ends the loop
-	ChosenCwd    string // folder cwd of the selection (for the iTerm launcher)
-	ChosenID     string // session id of the selection (for claude --resume)
-	ChosenRepo   string // repo of the selection (to reconstruct a cloud-only transcript)
-	Workspace    bool   // selection should open the iTerm workspace, not tail
+	Tree            sessionTree
+	Theme           Theme
+	Rows            []treeRow
+	Cursor          int
+	Top             int // first visible row (scroll offset)
+	Width           int
+	Height          int // body rows available (excludes header + footer)
+	Filter          string
+	Filtering       bool
+	Quit            bool
+	NewWorkspace    bool        // 'n' → fresh session workspace; ends the loop
+	NewWorkspaceDir string      // folder under the cursor when 'n' pressed ("" = $PWD)
+	PreviewReq      bool        // 'p' → show the highlighted session's transcript preview
+	SummaryReq      bool        // 'i' → show the highlighted session's summary card
+	Sel             treeSession // the session captured for preview/summary
+	Chosen          string      // selected session path; non-empty ends the loop
+	ChosenCwd       string      // folder cwd of the selection (for the iTerm launcher)
+	ChosenID        string      // session id of the selection (for claude --resume)
+	ChosenRepo      string      // repo of the selection (to reconstruct a cloud-only transcript)
+	Workspace       bool        // selection should open the iTerm workspace, not tail
 }
 
 type treeKey int
@@ -466,7 +479,19 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 		case ' ':
 			ui.Cursor += ui.pageStep() // pager convention: space = page down
 		case 'n', 'N':
-			ui.NewWorkspace = true // fresh session workspace in $PWD
+			// Fresh session workspace in the highlighted folder's dir (else $PWD).
+			ui.NewWorkspace = true
+			if row, ok := ui.current(); ok {
+				ui.NewWorkspaceDir = ui.Tree.Folders[row.Folder].Dir
+			}
+		case 'p', 'P':
+			if s, ok := ui.currentSession(); ok {
+				ui.Sel, ui.PreviewReq = s, true
+			}
+		case 'i', 'I':
+			if s, ok := ui.currentSession(); ok {
+				ui.Sel, ui.SummaryReq = s, true
+			}
 		case 't', 'T':
 			ui.selectSession(false) // tail in-place, no windowing
 		case 'q', 'Q':
@@ -484,6 +509,14 @@ func (ui *treeUI) current() (treeRow, bool) {
 		return treeRow{}, false
 	}
 	return ui.Rows[ui.Cursor], true
+}
+
+// currentSession returns the session under the cursor (false on a folder header).
+func (ui *treeUI) currentSession() (treeSession, bool) {
+	if row, ok := ui.current(); ok && row.Session >= 0 {
+		return ui.Tree.Folders[row.Folder].Sessions[row.Session], true
+	}
+	return treeSession{}, false
 }
 
 func (ui *treeUI) expand() {
@@ -608,6 +641,21 @@ func shortID(id string) string {
 	return id
 }
 
+// formatTokens renders a token count compactly: 300k, 1.2m, 28m ("" for 0).
+func formatTokens(n int64) string {
+	switch {
+	case n <= 0:
+		return ""
+	case n >= 1_000_000:
+		s := fmt.Sprintf("%.1f", float64(n)/1e6)
+		return strings.TrimSuffix(s, ".0") + "m"
+	case n >= 1_000:
+		return strconv.FormatInt((n+500)/1000, 10) + "k"
+	default:
+		return strconv.FormatInt(n, 10)
+	}
+}
+
 func liveBadge(n int) string {
 	switch {
 	case n <= 0:
@@ -636,7 +684,7 @@ func composeSessionRow(s treeSession, now int64) string {
 	if s.Branch != "" {
 		branch = "[" + s.Branch + "] "
 	}
-	return fmt.Sprintf("    %s %-8s  %-7s  %s%s", bullet, shortID(s.ID), relAge(s.Mtime, now), branch, s.Snippet)
+	return fmt.Sprintf("    %s %-8s  %-7s %6s  %s%s", bullet, shortID(s.ID), relAge(s.Mtime, now), formatTokens(s.Tokens), branch, s.Snippet)
 }
 
 // styleRow applies the cursor marker, recency color, and width truncation.
@@ -670,7 +718,7 @@ func renderRow(ui treeUI, i int) string {
 }
 
 func composeHeader() string {
-	return "  CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · t tail · n new↗ · / filter · q quit"
+	return "  CLAUDE SESSIONS  ↑↓ · → expand · ⏎ workspace↗ · p preview · i info · t tail · n new↗ · / filter · q"
 }
 
 func composeFooter(ui treeUI) string {
@@ -722,7 +770,7 @@ func renderList(w io.Writer, t sessionTree, color bool) {
 			if s.Branch != "" {
 				branch = "[" + s.Branch + "] "
 			}
-			line := fmt.Sprintf("  %-8s  %-8s  %s%s", shortID(s.ID), relAge(s.Mtime, t.Now), branch, s.Snippet)
+			line := fmt.Sprintf("  %-8s  %-8s %6s  %s%s", shortID(s.ID), relAge(s.Mtime, t.Now), formatTokens(s.Tokens), branch, s.Snippet)
 			writeColored(w, line, classifyTier(s.Mtime, t.Now, s.Live), color)
 		}
 	}
@@ -784,10 +832,10 @@ func runClaudeTree(home, pwd string, days int, local, cloud bool, theme Theme) t
 	if len(tree.Folders) == 0 {
 		return treeChoice{Result: treeNone}
 	}
-	return runTreeTUI(tree, theme)
+	return runTreeTUI(home, tree, theme)
 }
 
-func runTreeTUI(tree sessionTree, theme Theme) treeChoice {
+func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return treeChoice{Result: treeNone}
@@ -830,8 +878,18 @@ func runTreeTUI(tree sessionTree, theme Theme) treeChoice {
 		if ui.Quit {
 			return treeChoice{Result: treeQuit}
 		}
+		if ui.PreviewReq {
+			ui.PreviewReq = false
+			showPreview(tty, ui.Sel, home, theme)
+			continue
+		}
+		if ui.SummaryReq {
+			ui.SummaryReq = false
+			showSummary(tty, ui.Sel, home)
+			continue
+		}
 		if ui.NewWorkspace {
-			return treeChoice{Result: treeNewWorkspace, Cwd: ui.Tree.Pwd}
+			return treeChoice{Result: treeNewWorkspace, Cwd: firstNonEmpty(ui.NewWorkspaceDir, ui.Tree.Pwd)}
 		}
 		if ui.Chosen != "" {
 			res := treeChosen

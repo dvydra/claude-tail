@@ -97,12 +97,12 @@ func launchNewWorkspace(cwd string) error {
 // current window when it's a single pane, else opens a NEW window rather than
 // carving up an existing split.
 //
-//	A = claude (new)   B = entire-tail --no-pick (auto-follows A's new session,
-//	C = shell              after a brief wait for its file)
+//	A = claude (new)   B = entire-tail --wait-new (blocks until A's new session
+//	C = shell              file appears, then tails exactly it)
 func newWorkspaceScript(cwd, self string) string {
 	cd := "cd " + shQuote(cwd)
 	a := cd + " && claude"
-	b := cd + " && sleep 1 && " + shQuote(self) + " --no-pick"
+	b := cd + " && " + shQuote(self) + " --wait-new"
 	c := cd
 	return fmt.Sprintf(`tell application "iTerm2"
 	if (count of sessions of current tab of current window) > 1 then

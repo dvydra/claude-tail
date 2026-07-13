@@ -215,7 +215,7 @@ func (r *Renderer) question(rec Record) {
 	if rec.QID != "" {
 		r.seenQuestions[rec.QID] = true
 	}
-	io.WriteString(r.w, questionCard(rec.Questions, r.theme))
+	io.WriteString(r.w, questionCard(rec.Questions))
 }
 
 func (r *Renderer) header(kind Kind, ts string) {
@@ -298,7 +298,7 @@ const (
 // questionCard draws a bold bordered card for one or more pending questions.
 // Width is content-driven (no terminal-width dependency) so it works when
 // rendering to a pipe; over-long option lines are truncated with an ellipsis.
-func questionCard(qs []QuestionItem, theme Theme) string {
+func questionCard(qs []QuestionItem) string {
 	var content []string
 	for i, q := range qs {
 		if i > 0 {

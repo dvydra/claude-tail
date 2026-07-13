@@ -33,6 +33,18 @@ type entireSession struct {
 	LastActivityAt  string `json:"lastActivityAt"`
 	CheckpointCount int    `json:"checkpointCount"`
 	StepCount       int    `json:"stepCount"`
+
+	InputTokens         int64 `json:"inputTokens"`
+	OutputTokens        int64 `json:"outputTokens"`
+	CacheCreationTokens int64 `json:"cacheCreationTokens"`
+	CacheReadTokens     int64 `json:"cacheReadTokens"`
+}
+
+// spend is the session's headline token count: model input + output + cache
+// writes. Cache reads (re-reading context) are excluded — they dwarf everything
+// and don't reflect work done.
+func (s entireSession) spend() int64 {
+	return s.InputTokens + s.OutputTokens + s.CacheCreationTokens
 }
 
 // entireAvailable reports whether the `entire` CLI is on PATH.
@@ -188,6 +200,9 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 		if s.Mtime > g.Mtime {
 			g.Mtime = s.Mtime
 		}
+		if g.Dir == "" && s.cwd != "" {
+			g.Dir = s.cwd // a real local dir for the repo group, for `n`
+		}
 		if s.Live {
 			g.Live++
 		}
@@ -204,6 +219,7 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 				if es.DisplayName != "" {
 					s.Snippet = es.DisplayName // entire's title beats the raw snippet
 				}
+				s.Tokens, s.Model, s.Prompt, s.Msgs = es.spend(), es.Model, es.Prompt, es.CheckpointCount
 			}
 			if repo == "" {
 				repo = repoForCwd(f.Cwd, home, repoCache)
@@ -234,6 +250,9 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 			Snippet: collapsePreview(firstNonEmpty(es.CustomName, es.DisplayName, es.Prompt)),
 			Mtime:   mt,
 			Msgs:    es.CheckpointCount,
+			Tokens:  es.spend(),
+			Model:   es.Model,
+			Prompt:  es.Prompt,
 			Live:    now-mt < recentLiveWindow,
 		})
 	}
