@@ -54,13 +54,52 @@ func renderPreviewLines(path, home string, theme Theme) []string {
 	return out
 }
 
-// showSummary shows a static card of what entire knows about the session.
-func showSummary(tty *os.File, s treeSession) {
+// showSummary shows a card for the session: an on-device Apple Intelligence
+// summary (when the helper is built and the model is available) plus entire's
+// metadata. Falls back to metadata only.
+func showSummary(tty *os.File, s treeSession, home string) {
+	// Resolve a transcript (local, else reconstructed) and summarize it on-device.
+	var ai aiSummary
+	haveAI := false
+	if aisumHelper() != "" {
+		path := s.Path
+		if path == "" {
+			if tmp, ok := reconstructTranscript(home, s.ID, s.Repo); ok {
+				path = tmp
+			}
+		}
+		if path != "" {
+			io.WriteString(tty, "\x1b[H\x1b[2J\n  Summarizing with Apple Intelligence…")
+			ai, haveAI = aiSummarize(transcriptText(path, home))
+		}
+	}
+
 	var L []string
 	add := func(f string, a ...any) { L = append(L, fmt.Sprintf(f, a...)) }
 
-	add("")
-	add("  %s", firstNonEmpty(s.Snippet, "(untitled session)"))
+	if haveAI {
+		add("")
+		add("  %s", firstNonEmpty(ai.Headline, s.Snippet))
+		add("")
+		for _, w := range wrapText(ai.Summary, 76) {
+			add("  %s", w)
+		}
+		if len(ai.KeyPoints) > 0 {
+			add("")
+			for _, kp := range ai.KeyPoints {
+				add("  • %s", kp)
+			}
+		}
+		if ai.Outcome != "" {
+			add("")
+			add("  → %s", ai.Outcome)
+		}
+		add("")
+		add("  ── entire ─────────────────────────")
+	} else {
+		add("")
+		add("  %s", firstNonEmpty(s.Snippet, "(untitled session)"))
+	}
 	add("")
 	add("  session    %s", s.ID)
 	if s.Repo != "" {

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const version = "0.18.0"
+const version = "0.19.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -536,8 +536,11 @@ OPTIONS:
                                       session's folder (macOS + iTerm2; falls
                                       back to tailing in place otherwise).
                               p       preview the session's recent transcript.
-                              i       show a summary card (title, repo, model,
-                                      tokens, checkpoints, opening prompt).
+                              i       summary card: an on-device Apple
+                                      Intelligence summary (headline, summary,
+                                      key points, outcome — macOS 26+ with
+                                      Apple Intelligence) plus entire's metadata
+                                      (repo, model, tokens, checkpoints, prompt).
                               t       just tail the session in the current pane.
                               n       open a workspace for a NEW Claude session
                                       in the highlighted folder's directory

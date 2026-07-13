@@ -89,6 +89,12 @@ agent-agnostic and consumes only `Record`s.
   shows a summary card (title/repo/model/tokens/checkpoints/prompt from entire's
   metadata). Both run inside the alt-screen and return on q/Esc. Token totals
   (`formatTokens`) also show in tree rows + `--list`
+- `aisum.swift` / `aisummary.go` — on-device AI summaries for the `i` card.
+  `aisum.swift` is a Foundation Models helper (guided generation → structured
+  {headline, summary, keyPoints, outcome} JSON) that `install.sh` compiles to
+  `entire-tail-aisum` on macOS when the toolchain + framework exist (gated,
+  optional). `aisummary.go` feeds it a cleaned transcript tail and parses the
+  result; absent/unavailable → the card is metadata-only
 - `render.go` — the **rendering state machine** (one path shared by backfill +
   live): tracks previous participant (consecutive same-participant turns collapse
   to a dim `⋯ ts` marker) and dot-streak state; tool tristate lives here

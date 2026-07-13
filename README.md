@@ -62,6 +62,11 @@ additionally uses `pgrep` + `lsof` when present (both ship with macOS and most
 Linux) to mark which sessions are live; without them the tree still works, just
 without live markers.
 
+On **macOS with the Swift toolchain** (Xcode) and the Foundation Models
+framework, `install.sh` also compiles a tiny on-device summarizer
+(`entire-tail-aisum` from `aisum.swift`) that powers the AI summary in the `i`
+card. It's optional and gated — skipped cleanly everywhere else.
+
 ## Usage
 
 ```sh
@@ -163,8 +168,11 @@ quits. The most recent group starts expanded. On a session:
 - **`Enter`** → open the **iTerm workspace** for it (see below).
 - **`p`** → **preview** the session's recent transcript in a scrollable pager
   (works for cloud-only sessions too — reconstructed from git checkpoint refs).
-- **`i`** → a **summary card**: title, repo, model, token spend, checkpoint
-  count, and the opening prompt (entire's metadata for the session).
+- **`i`** → a **summary card**. On macOS with Apple Intelligence it opens with an
+  **on-device AI summary** (headline · 2-3 sentence summary · key points ·
+  outcome), generated locally in ~1-2s via the Foundation Models framework — no
+  cloud, no keys, works offline. Below it: entire's metadata (repo, model, token
+  spend, checkpoint count, opening prompt). Without the model it's metadata only.
 - **`t`** → just tail the session in the current pane.
 - **`n`** → open a workspace for a **new** Claude session in the **highlighted
   folder's** directory (or `$PWD` if it has none) — fresh `claude` + tail +

@@ -885,7 +885,7 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 		}
 		if ui.SummaryReq {
 			ui.SummaryReq = false
-			showSummary(tty, ui.Sel)
+			showSummary(tty, ui.Sel, home)
 			continue
 		}
 		if ui.NewWorkspace {
