@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,6 +72,57 @@ func TestSummaryCardLinks(t *testing.T) {
 	bare := strings.Join(summaryCardLines(s, aiSummary{}, false, nil, 0), "\n")
 	if strings.Contains(bare, "trails & prs") {
 		t.Error("empty links should not render the section")
+	}
+}
+
+func TestSummaryCardMetadataBeforeLinks(t *testing.T) {
+	s := treeSession{
+		ID: "abc", Repo: "o/r", Mtime: 1_700_000_000,
+		Path: "/Users/x/.claude/projects/o/abc.jsonl",
+	}
+	// 12 PRs → the list is capped at 8 with a "+N more" line.
+	var links []sessionLink
+	for i := range 12 {
+		links = append(links, sessionLink{Kind: "PR", Owner: "o", Repo: "r", ID: fmt.Sprint(i),
+			URL: fmt.Sprintf("https://github.com/o/r/pull/%d", i)})
+	}
+	lines := summaryCardLines(s, aiSummary{}, false, links, 1_700_000_500)
+	out := strings.Join(lines, "\n")
+
+	// path + last-updated are present…
+	if !strings.Contains(out, "path       /Users/x/.claude/projects/o/abc.jsonl") {
+		t.Errorf("path missing:\n%s", out)
+	}
+	if !strings.Contains(out, "updated    ") {
+		t.Errorf("updated missing:\n%s", out)
+	}
+	// …and appear BEFORE the trails/prs section (survive card clipping).
+	idxPath := strings.Index(out, "path       ")
+	idxLinks := strings.Index(out, "trails & prs")
+	if idxPath < 0 || idxLinks < 0 || idxPath > idxLinks {
+		t.Errorf("metadata should precede trails/prs (path@%d links@%d)", idxPath, idxLinks)
+	}
+	// Link list capped at 8 + a "+4 more" line.
+	if got := strings.Count(out, "o/r #"); got != 8 {
+		t.Errorf("shown links = %d, want 8", got)
+	}
+	if !strings.Contains(out, "… +4 more") {
+		t.Errorf("missing overflow count:\n%s", out)
+	}
+}
+
+func TestSplitPaneHeights(t *testing.T) {
+	// Roomy terminal: whole card fits, preview gets the rest.
+	if c, b := splitPaneHeights(60, 30); c != 30 || b != 27 {
+		t.Errorf("splitPaneHeights(60,30) = %d,%d want 30,27", c, b)
+	}
+	// Tight terminal: card clipped, preview keeps its floor.
+	if c, b := splitPaneHeights(20, 40); c != 12 || b != minPreviewRows {
+		t.Errorf("splitPaneHeights(20,40) = %d,%d want 12,%d", c, b, minPreviewRows)
+	}
+	// Preview floor always honored even on a tiny screen.
+	if _, b := splitPaneHeights(6, 40); b < 1 {
+		t.Errorf("body must stay ≥1, got %d", b)
 	}
 }
 

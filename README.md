@@ -194,17 +194,23 @@ collapses; `/` filters by name/title/id as you type (`Esc` clears); `q`/`Esc`
 quits. The most recent group starts expanded. On a session:
 
 - **`Enter`** → open the **iTerm workspace** for it (see below).
-- **`p`** → **preview** the session's recent transcript in a scrollable pager
-  (works for cloud-only sessions too — reconstructed from git checkpoint refs).
-- **`i`** → a **summary card**. On macOS with Apple Intelligence it opens with an
-  **on-device AI summary** (headline · 2-3 sentence summary · key points ·
-  outcome), generated locally in ~1-2s via the `fm` Foundation Models CLI — no
-  cloud, no keys, works offline. Then a **trails & prs** section listing every
-  entire trail (`entire.io/gh/owner/repo/trails/id`) and GitHub PR
-  (`github.com/owner/repo/pull/n`) referenced anywhere in the transcript, each a
-  clickable link (OSC 8 — ⌘-click in iTerm2). Below that: entire's metadata (repo,
-  model, token spend, checkpoint count, opening prompt). Without the model the AI
-  block is dropped; the links and metadata still show.
+- **`i`** → the combined **info view**: an info card fixed at the top, a divider,
+  then the session's recent transcript in a **scrollable** pane below (starts at
+  the latest turns; works for cloud-only sessions too — reconstructed from git
+  checkpoint refs). The card holds, in order:
+  - an **on-device AI summary** (headline · 2-3 sentence summary · key points ·
+    outcome), generated locally in ~1-2s via the `fm` Foundation Models CLI on
+    macOS — no cloud, no keys, works offline (dropped when unavailable);
+  - **entire's metadata** — repo, model, token spend, checkpoints, activity,
+    **last-updated**, and the transcript **path**;
+  - a **trails & prs** section listing the entire trails
+    (`entire.io/gh/owner/repo/trails/id`) and GitHub PRs
+    (`github.com/owner/repo/pull/n`) referenced in the transcript, each a
+    clickable link (OSC 8 — ⌘-click in iTerm2), capped with a `+N more`.
+
+  Metadata sits above the link list so path/last-updated stay visible even when
+  the card is clipped on a short terminal. `↑↓`/PgUp/PgDn scroll the preview,
+  `q`/`Esc` returns.
 - **`t`** → just tail the session in the current pane.
 - **`n`** → open a workspace for a **new** Claude session in the **highlighted
   folder's** directory (or `$PWD` if it has none) — fresh `claude` + tail +

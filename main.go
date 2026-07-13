@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const version = "0.21.0"
+const version = "0.22.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
