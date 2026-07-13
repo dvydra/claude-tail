@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -54,26 +55,88 @@ func renderPreviewLines(path, home string, theme Theme) []string {
 	return out
 }
 
-// showSummary shows a card for the session: an on-device Apple Intelligence
-// summary (when the helper is built and the model is available) plus entire's
-// metadata. Falls back to metadata only.
-func showSummary(tty *os.File, s treeSession, home string) {
-	// Resolve a transcript (local, else reconstructed) and summarize it on-device.
-	var ai aiSummary
-	haveAI := false
-	if fmAvailable() {
-		path := s.Path
-		if path == "" {
-			if tmp, ok := reconstructTranscript(home, s.ID, s.Repo); ok {
-				path = tmp
-			}
+// sessionLink is an entire trail or GitHub PR referenced somewhere in a
+// session's transcript, split into its owner/repo/id parts + canonical URL.
+type sessionLink struct {
+	Kind        string // "trail" | "PR"
+	Owner, Repo string
+	ID          string
+	URL         string
+}
+
+// The two URL shapes we surface. Segments are constrained to real path atoms so
+// documentation placeholders ({owner}, <repo>, &lt;number&gt;) don't match.
+var (
+	reTrailURL = regexp.MustCompile(`https://entire\.io/gh/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/trails/([A-Za-z0-9._-]+)`)
+	rePRURL    = regexp.MustCompile(`https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/pull/([0-9]+)`)
+)
+
+// extractLinks scans a transcript file for entire-trail and GitHub-PR URLs and
+// returns them deduped in first-seen order (trails before PRs). The URL is
+// rebuilt from the captured owner/repo/id so it's canonical regardless of how it
+// appeared (trailing slash, query string, …).
+func extractLinks(path string) []sessionLink {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	s := string(data)
+	seen := map[string]bool{}
+	var out []sessionLink
+	add := func(kind, owner, repo, id, url string) {
+		if seen[url] {
+			return
 		}
-		if path != "" {
-			io.WriteString(tty, "\x1b[H\x1b[2J\n  Summarizing with Apple Intelligence…")
-			ai, haveAI = aiSummarize(transcriptText(path, home))
+		seen[url] = true
+		out = append(out, sessionLink{Kind: kind, Owner: owner, Repo: repo, ID: id, URL: url})
+	}
+	for _, m := range reTrailURL.FindAllStringSubmatch(s, -1) {
+		add("trail", m[1], m[2], m[3], "https://entire.io/gh/"+m[1]+"/"+m[2]+"/trails/"+m[3]+"/")
+	}
+	for _, m := range rePRURL.FindAllStringSubmatch(s, -1) {
+		add("PR", m[1], m[2], m[3], "https://github.com/"+m[1]+"/"+m[2]+"/pull/"+m[3])
+	}
+	return out
+}
+
+// osc8 wraps label as a clickable terminal hyperlink (OSC 8) pointing at url.
+// Terminals without OSC 8 just show the label text.
+func osc8(url, label string) string {
+	return "\x1b]8;;" + url + "\x1b\\" + label + "\x1b]8;;\x1b\\"
+}
+
+// showSummary shows a card for the session: an on-device Apple Intelligence
+// summary (when fm + the model are available), the trails/PRs referenced in the
+// transcript, and entire's metadata. Falls back to metadata only.
+func showSummary(tty *os.File, s treeSession, home string) {
+	// Resolve a transcript (local, else reconstructed) once — used for both the
+	// on-device summary and the trail/PR scan.
+	path := s.Path
+	if path == "" {
+		if tmp, ok := reconstructTranscript(home, s.ID, s.Repo); ok {
+			path = tmp
 		}
 	}
 
+	var ai aiSummary
+	haveAI := false
+	if fmAvailable() && path != "" {
+		io.WriteString(tty, "\x1b[H\x1b[2J\n  Summarizing with Apple Intelligence…")
+		ai, haveAI = aiSummarize(transcriptText(path, home))
+	}
+	var links []sessionLink
+	if path != "" {
+		links = extractLinks(path)
+	}
+
+	pager(tty, summaryCardLines(s, ai, haveAI, links, time.Now().Unix()), "SUMMARY "+shortID(s.ID), false)
+}
+
+// summaryCardLines builds the `i` card body: the AI summary (or snippet), the
+// trails/PRs found in the transcript as clickable links, then entire's metadata.
+// Pure so the layout is unit-tested without a tty; now is the reference time for
+// the relative "activity" age.
+func summaryCardLines(s treeSession, ai aiSummary, haveAI bool, links []sessionLink, now int64) []string {
 	var L []string
 	add := func(f string, a ...any) { L = append(L, fmt.Sprintf(f, a...)) }
 
@@ -94,11 +157,27 @@ func showSummary(tty *os.File, s treeSession, home string) {
 			add("")
 			add("  → %s", ai.Outcome)
 		}
-		add("")
-		add("  ── entire ─────────────────────────")
 	} else {
 		add("")
 		add("  %s", firstNonEmpty(s.Snippet, "(untitled session)"))
+	}
+
+	// Trails & PRs referenced anywhere in the transcript, as clickable links.
+	if len(links) > 0 {
+		add("")
+		add("  ── trails & prs ────────────────────")
+		for _, ln := range links {
+			tag, label := "PR   ", fmt.Sprintf("%s/%s #%s", ln.Owner, ln.Repo, ln.ID)
+			if ln.Kind == "trail" {
+				tag, label = "trail", fmt.Sprintf("%s/%s · %s", ln.Owner, ln.Repo, ln.ID)
+			}
+			add("  %s  %s", tag, osc8(ln.URL, label))
+		}
+	}
+
+	if haveAI || len(links) > 0 {
+		add("")
+		add("  ── entire ─────────────────────────")
 	}
 	add("")
 	add("  session    %s", s.ID)
@@ -122,7 +201,7 @@ func showSummary(tty *os.File, s treeSession, home string) {
 		add("  usage      %s", strings.Join(usage, " · "))
 	}
 	if s.Mtime > 0 {
-		add("  activity   %s", relAge(s.Mtime, time.Now().Unix()))
+		add("  activity   %s", relAge(s.Mtime, now))
 	}
 	if s.Prompt != "" {
 		add("")
@@ -135,7 +214,7 @@ func showSummary(tty *os.File, s treeSession, home string) {
 		add("")
 		add("  (not tracked by entire — only local metadata available)")
 	}
-	pager(tty, L, "SUMMARY "+shortID(s.ID), false)
+	return L
 }
 
 // pager is a minimal scroll view over pre-rendered lines. q/Esc returns.
@@ -202,9 +281,24 @@ func truncVisible(s string, w int) string {
 	vis := 0
 	rs := []rune(s)
 	for i := 0; i < len(rs); i++ {
-		if rs[i] == 0x1b { // copy the whole escape (…letter terminator) without counting
+		if rs[i] == 0x1b { // copy the whole escape without counting it
 			b.WriteRune(rs[i])
-			for i++; i < len(rs); i++ {
+			i++
+			if i >= len(rs) {
+				break
+			}
+			if rs[i] == ']' { // OSC (e.g. an OSC 8 hyperlink): ends at BEL or ST (ESC \)
+				b.WriteRune(rs[i])
+				for i++; i < len(rs); i++ {
+					b.WriteRune(rs[i])
+					if rs[i] == 0x07 || (rs[i] == '\\' && rs[i-1] == 0x1b) {
+						break
+					}
+				}
+				continue
+			}
+			// CSI / other: ends at an ASCII-letter final byte
+			for ; i < len(rs); i++ {
 				b.WriteRune(rs[i])
 				if (rs[i] >= 'a' && rs[i] <= 'z') || (rs[i] >= 'A' && rs[i] <= 'Z') {
 					break

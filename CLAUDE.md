@@ -86,15 +86,22 @@ agent-agnostic and consumes only `Record`s.
   (reuses the same TUI/`renderList`); rows show the match snippet, capped at 50
 - `preview.go` — the tree's in-picker sub-views: `p` previews a session's recent
   transcript in a scrollable ANSI pager (reconstructing cloud-only ones), `i`
-  shows a summary card (title/repo/model/tokens/checkpoints/prompt from entire's
-  metadata). Both run inside the alt-screen and return on q/Esc. Token totals
-  (`formatTokens`) also show in tree rows + `--list`
-- `aisum.swift` / `aisummary.go` — on-device AI summaries for the `i` card.
-  `aisum.swift` is a Foundation Models helper (guided generation → structured
-  {headline, summary, keyPoints, outcome} JSON) that `install.sh` compiles to
-  `entire-tail-aisum` on macOS when the toolchain + framework exist (gated,
-  optional). `aisummary.go` feeds it a cleaned transcript tail and parses the
-  result; absent/unavailable → the card is metadata-only
+  shows a summary card. The card body is built by the pure `summaryCardLines`
+  (unit-tested without a tty): optional AI summary, then a **trails & prs**
+  section (`extractLinks` greps the transcript for `entire.io/gh/o/r/trails/id`
+  and `github.com/o/r/pull/n` URLs, rendered as `osc8` clickable hyperlinks), then
+  entire's metadata (repo/model/tokens/checkpoints/prompt). `truncVisible` is
+  OSC-8-aware so hyperlinks survive truncation. Both sub-views run inside the
+  alt-screen and return on q/Esc. Token totals (`formatTokens`) also show in tree
+  rows + `--list`
+- `aisummary.go` — on-device AI summary for the `i` card via Apple's built-in
+  Foundation Models CLI (`fm`, `/usr/bin/fm`, macOS 26+): `fm respond --model
+  system --no-stream --schema <file> -i <instr>` with the transcript on stdin →
+  structured {headline, summary, keyPoints, outcome} JSON. The schema needs fm's
+  `title`+`x-order` keys (a bare JSON Schema is rejected). Always the on-device
+  `system` model (no PCC). `transcriptText`/`sampleTurns` clean + head/tail-sample
+  the transcript to fit the context. `fm` absent/unavailable → card is
+  metadata-only (no build-time dependency)
 - `render.go` — the **rendering state machine** (one path shared by backfill +
   live): tracks previous participant (consecutive same-participant turns collapse
   to a dim `⋯ ts` marker) and dot-streak state; tool tristate lives here
