@@ -10,28 +10,11 @@ import (
 	"time"
 )
 
-// preview.go renders the two in-picker sub-views reached from the tree: `p`
-// previews a session's recent transcript, `i` shows a summary card. Both run
-// inside the alt-screen (the tty is already in raw mode) and return to the tree
-// on q/Esc. They read/exec (transcript files, reconstruction), so they live in
-// the driver rather than the pure reducer.
-
-// showPreview renders the tail of a session's transcript and pages through it.
-func showPreview(tty *os.File, s treeSession, home string, theme Theme) {
-	path := s.Path
-	if path == "" { // cloud-only — pull it from the repo's git checkpoint refs
-		if tmp, ok := reconstructTranscript(home, s.ID, s.Repo); ok {
-			path = tmp
-		}
-	}
-	var lines []string
-	if path == "" {
-		lines = []string{"", "  No local transcript for this session, and its repo isn't checked out here."}
-	} else {
-		lines = renderPreviewLines(path, home, theme)
-	}
-	pager(tty, lines, "PREVIEW "+shortID(s.ID)+"  "+s.Snippet, true) // start at the latest turns
-}
+// preview.go renders the tree's `i` sub-view: a combined info card (AI summary +
+// trails/PRs + metadata) fixed at the top, a divider, then the session's recent
+// transcript in a scrollable pane below. It runs inside the alt-screen (the tty
+// is already in raw mode) and returns to the tree on q/Esc. It reads/execs
+// (transcript files, reconstruction), so it lives in the driver, not the reducer.
 
 // renderPreviewLines renders the last chunk of a transcript to ANSI lines via the
 // normal renderer (dots + collapse, so a preview stays compact).
@@ -105,12 +88,13 @@ func osc8(url, label string) string {
 	return "\x1b]8;;" + url + "\x1b\\" + label + "\x1b]8;;\x1b\\"
 }
 
-// showSummary shows a card for the session: an on-device Apple Intelligence
-// summary (when fm + the model are available), the trails/PRs referenced in the
-// transcript, and entire's metadata. Falls back to metadata only.
-func showSummary(tty *os.File, s treeSession, home string) {
-	// Resolve a transcript (local, else reconstructed) once — used for both the
-	// on-device summary and the trail/PR scan.
+// showInfo shows the combined `i` view: an info card (on-device Apple
+// Intelligence summary when fm + the model are available, the trails/PRs
+// referenced in the transcript, and entire's metadata) fixed at the top, then
+// the session's recent transcript in a scrollable pane below the divider.
+func showInfo(tty *os.File, s treeSession, home string, theme Theme) {
+	// Resolve a transcript (local, else reconstructed) once — used for the
+	// on-device summary, the trail/PR scan, and the preview pane.
 	path := s.Path
 	if path == "" {
 		if tmp, ok := reconstructTranscript(home, s.ID, s.Repo); ok {
@@ -128,12 +112,98 @@ func showSummary(tty *os.File, s treeSession, home string) {
 	if path != "" {
 		links = extractLinks(path)
 	}
+	card := summaryCardLines(s, ai, haveAI, links, time.Now().Unix())
 
-	pager(tty, summaryCardLines(s, ai, haveAI, links, time.Now().Unix()), "SUMMARY "+shortID(s.ID), false)
+	var preview []string
+	if path == "" {
+		preview = []string{"  No local transcript for this session, and its repo isn't checked out here."}
+	} else {
+		preview = renderPreviewLines(path, home, theme)
+	}
+
+	pagerSplit(tty, card, preview, "INFO "+shortID(s.ID)+"  "+s.Snippet, theme)
 }
 
-// summaryCardLines builds the `i` card body: the AI summary (or snippet), the
-// trails/PRs found in the transcript as clickable links, then entire's metadata.
+// minPreviewRows is the minimum scrollable preview height; the fixed card is
+// clipped before the preview drops below it.
+const minPreviewRows = 5
+
+// splitPaneHeights divides a terminal of h rows between the fixed card pane and
+// the scrollable preview pane, reserving 3 rows of chrome (title + divider +
+// footer) and always leaving the preview at least minPreviewRows — so the card
+// (which carries path/updated) is what gets clipped when space is tight.
+func splitPaneHeights(h, cardLen int) (cardH, body int) {
+	avail := max(h-3, 1)
+	cardH = min(cardLen, max(avail-minPreviewRows, 1))
+	body = max(avail-cardH, 1)
+	return cardH, body
+}
+
+// pagerSplit renders a fixed top pane (the info card), a divider, and a
+// scrollable bottom pane (the transcript preview, started at the latest turns).
+// The card is clipped if the terminal is too short to show it whole and still
+// leave room to scroll; only the preview scrolls. q/Esc returns.
+func pagerSplit(tty *os.File, card, preview []string, title string, theme Theme) {
+	buf := make([]byte, 16)
+	top := len(preview) // clamped to the bottom on the first render
+	for {
+		w, h := termSize(tty)
+		cardH, body := splitPaneHeights(h, len(card))
+		maxTop := max(len(preview)-body, 0)
+		top = min(max(top, 0), maxTop)
+
+		var b strings.Builder
+		b.WriteString("\x1b[H")
+		b.WriteString("\x1b[1m" + truncVisible("  "+title, w) + reset + "\x1b[K\n")
+		for i := range cardH {
+			line := card[i]
+			if i == cardH-1 && cardH < len(card) { // card clipped → mark it
+				line = fmt.Sprintf("%s  ⋯ (%d more — resize taller for the full card)%s", theme.DimANSI, len(card)-cardH+1, reset)
+			}
+			b.WriteString(truncVisible(line, w) + "\x1b[K\n")
+		}
+		b.WriteString(theme.DimANSI + strings.Repeat("─", max(w, 1)) + reset + "\x1b[K\n")
+		shown := 0
+		for i := top; i < top+body && i < len(preview); i++ {
+			b.WriteString(truncVisible(preview[i], w) + "\x1b[K\n")
+			shown++
+		}
+		for ; shown < body; shown++ {
+			b.WriteString("\x1b[K\n")
+		}
+		fmt.Fprintf(&b, "\x1b[2m  preview %d–%d of %d · ↑↓/PgUp/PgDn scroll · q/Esc back"+reset,
+			min(top+1, len(preview)), min(top+body, len(preview)), len(preview))
+		b.WriteString("\x1b[K\x1b[J")
+		io.WriteString(tty, b.String())
+
+		n, err := tty.Read(buf)
+		if err != nil || n == 0 {
+			return
+		}
+		k, r := decodeKey(buf[:n])
+		switch {
+		case k == kEsc, k == kCtrlC, k == kRune && (r == 'q' || r == 'Q'):
+			return
+		case k == kUp, k == kRune && r == 'k':
+			top--
+		case k == kDown, k == kRune && r == 'j':
+			top++
+		case k == kPageUp:
+			top -= body - 1
+		case k == kPageDown, k == kRune && r == ' ':
+			top += body - 1
+		case k == kHome, k == kRune && r == 'g':
+			top = 0
+		case k == kEnd, k == kRune && r == 'G':
+			top = maxTop
+		}
+	}
+}
+
+// summaryCardLines builds the `i` card body: the AI summary (or snippet), then
+// entire's metadata (repo/model/tokens/activity/updated/path), then the
+// trails/PRs found in the transcript as clickable links. Metadata comes before
+// the (capped) link list so the high-value facts survive if the card is clipped.
 // Pure so the layout is unit-tested without a tty; now is the reference time for
 // the relative "activity" age.
 func summaryCardLines(s treeSession, ai aiSummary, haveAI bool, links []sessionLink, now int64) []string {
@@ -162,19 +232,8 @@ func summaryCardLines(s treeSession, ai aiSummary, haveAI bool, links []sessionL
 		add("  %s", firstNonEmpty(s.Snippet, "(untitled session)"))
 	}
 
-	// Trails & PRs referenced anywhere in the transcript, as clickable links.
-	if len(links) > 0 {
-		add("")
-		add("  ── trails & prs ────────────────────")
-		for _, ln := range links {
-			tag, label := "PR   ", fmt.Sprintf("%s/%s #%s", ln.Owner, ln.Repo, ln.ID)
-			if ln.Kind == "trail" {
-				tag, label = "trail", fmt.Sprintf("%s/%s · %s", ln.Owner, ln.Repo, ln.ID)
-			}
-			add("  %s  %s", tag, osc8(ln.URL, label))
-		}
-	}
-
+	// entire's metadata first — including path + last-updated, the highest-value
+	// facts — so they stay visible even if a long card is clipped in the info view.
 	if haveAI || len(links) > 0 {
 		add("")
 		add("  ── entire ─────────────────────────")
@@ -202,7 +261,32 @@ func summaryCardLines(s treeSession, ai aiSummary, haveAI bool, links []sessionL
 	}
 	if s.Mtime > 0 {
 		add("  activity   %s", relAge(s.Mtime, now))
+		add("  updated    %s", time.Unix(s.Mtime, 0).Format("2006-01-02 15:04"))
 	}
+	if s.Path != "" {
+		add("  path       %s", s.Path)
+	}
+
+	// Trails & PRs referenced in the transcript, as clickable links — after the
+	// metadata (they're also visible in the preview), capped so a long list
+	// doesn't push the card off-screen.
+	if len(links) > 0 {
+		add("")
+		add("  ── trails & prs ────────────────────")
+		const maxShownLinks = 8
+		for i, ln := range links {
+			if i >= maxShownLinks {
+				add("  … +%d more", len(links)-maxShownLinks)
+				break
+			}
+			tag, label := "PR   ", fmt.Sprintf("%s/%s #%s", ln.Owner, ln.Repo, ln.ID)
+			if ln.Kind == "trail" {
+				tag, label = "trail", fmt.Sprintf("%s/%s · %s", ln.Owner, ln.Repo, ln.ID)
+			}
+			add("  %s  %s", tag, osc8(ln.URL, label))
+		}
+	}
+
 	if s.Prompt != "" {
 		add("")
 		add("  opening prompt")
@@ -215,60 +299,6 @@ func summaryCardLines(s treeSession, ai aiSummary, haveAI bool, links []sessionL
 		add("  (not tracked by entire — only local metadata available)")
 	}
 	return L
-}
-
-// pager is a minimal scroll view over pre-rendered lines. q/Esc returns.
-// atBottom starts scrolled to the end (for previews — show the latest turns).
-func pager(tty *os.File, lines []string, title string, atBottom bool) {
-	buf := make([]byte, 16)
-	top := 0
-	if atBottom {
-		top = len(lines) // clamped to maxTop on the first render below
-	}
-	for {
-		w, h := termSize(tty)
-		body := max(h-2, 1)
-		maxTop := max(len(lines)-body, 0)
-		top = min(max(top, 0), maxTop)
-
-		var b strings.Builder
-		b.WriteString("\x1b[H")
-		b.WriteString("\x1b[1m" + truncVisible("  "+title, w) + reset + "\x1b[K\n")
-		shown := 0
-		for i := top; i < top+body && i < len(lines); i++ {
-			b.WriteString(truncVisible(lines[i], w) + "\x1b[K\n")
-			shown++
-		}
-		for ; shown < body; shown++ {
-			b.WriteString("\x1b[K\n")
-		}
-		fmt.Fprintf(&b, "\x1b[2m  %d–%d of %d · ↑↓/PgUp/PgDn scroll · q/Esc back"+reset,
-			min(top+1, len(lines)), min(top+body, len(lines)), len(lines))
-		b.WriteString("\x1b[K\x1b[J")
-		io.WriteString(tty, b.String())
-
-		n, err := tty.Read(buf)
-		if err != nil || n == 0 {
-			return
-		}
-		k, r := decodeKey(buf[:n])
-		switch {
-		case k == kEsc, k == kCtrlC, k == kRune && (r == 'q' || r == 'Q'):
-			return
-		case k == kUp, k == kRune && r == 'k':
-			top--
-		case k == kDown, k == kRune && r == 'j':
-			top++
-		case k == kPageUp:
-			top -= body - 1
-		case k == kPageDown, k == kRune && r == ' ':
-			top += body - 1
-		case k == kHome, k == kRune && r == 'g':
-			top = 0
-		case k == kEnd, k == kRune && r == 'G':
-			top = maxTop
-		}
-	}
 }
 
 // truncVisible truncates s to w visible columns, passing ANSI escapes through

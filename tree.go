@@ -383,9 +383,8 @@ type treeUI struct {
 	Quit            bool
 	NewWorkspace    bool        // 'n' → fresh session workspace; ends the loop
 	NewWorkspaceDir string      // folder under the cursor when 'n' pressed ("" = $PWD)
-	PreviewReq      bool        // 'p' → show the highlighted session's transcript preview
-	SummaryReq      bool        // 'i' → show the highlighted session's summary card
-	Sel             treeSession // the session captured for preview/summary
+	SummaryReq      bool        // 'i' → show the highlighted session's combined info view
+	Sel             treeSession // the session captured for the info view
 	Chosen          string      // selected session path; non-empty ends the loop
 	ChosenCwd       string      // folder cwd of the selection (for the iTerm launcher)
 	ChosenID        string      // session id of the selection (for claude --resume)
@@ -483,10 +482,6 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 			ui.NewWorkspace = true
 			if row, ok := ui.current(); ok {
 				ui.NewWorkspaceDir = ui.Tree.Folders[row.Folder].Dir
-			}
-		case 'p', 'P':
-			if s, ok := ui.currentSession(); ok {
-				ui.Sel, ui.PreviewReq = s, true
 			}
 		case 'i', 'I':
 			if s, ok := ui.currentSession(); ok {
@@ -718,7 +713,7 @@ func renderRow(ui treeUI, i int) string {
 }
 
 func composeHeader() string {
-	return "  CLAUDE SESSIONS  ↑↓ · → expand · ⏎ workspace↗ · p preview · i info · t tail · n new↗ · / filter · q"
+	return "  CLAUDE SESSIONS  ↑↓ · → expand · ⏎ workspace↗ · i info · t tail · n new↗ · / filter · q"
 }
 
 func composeFooter(ui treeUI) string {
@@ -878,14 +873,9 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 		if ui.Quit {
 			return treeChoice{Result: treeQuit}
 		}
-		if ui.PreviewReq {
-			ui.PreviewReq = false
-			showPreview(tty, ui.Sel, home, theme)
-			continue
-		}
 		if ui.SummaryReq {
 			ui.SummaryReq = false
-			showSummary(tty, ui.Sel, home)
+			showInfo(tty, ui.Sel, home, theme)
 			continue
 		}
 		if ui.NewWorkspace {

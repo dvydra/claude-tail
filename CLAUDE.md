@@ -84,16 +84,19 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   session id and ranked (`searchHit.score`: exact local match dominates, entire
   score adds, recency tiebreak). Builds a single-group ranked `sessionTree`
   (reuses the same TUI/`renderList`); rows show the match snippet, capped at 50
-- `preview.go` — the tree's in-picker sub-views: `p` previews a session's recent
-  transcript in a scrollable ANSI pager (reconstructing cloud-only ones), `i`
-  shows a summary card. The card body is built by the pure `summaryCardLines`
-  (unit-tested without a tty): optional AI summary, then a **trails & prs**
+- `preview.go` — the tree's `i` **combined info view** (`showInfo`): a fixed info
+  card on top, a divider, and the session's recent transcript in a scrollable
+  pane below (`pagerSplit`; `splitPaneHeights` divides the rows, reserving
+  `minPreviewRows` so the CARD is what clips — its path/last-updated stay
+  visible). The card body is the pure `summaryCardLines` (unit-tested without a
+  tty): optional AI summary, then entire's metadata
+  (repo/model/tokens/activity/**updated**/**path**), then a capped **trails & prs**
   section (`extractLinks` greps the transcript for `entire.io/gh/o/r/trails/id`
-  and `github.com/o/r/pull/n` URLs, rendered as `osc8` clickable hyperlinks), then
-  entire's metadata (repo/model/tokens/checkpoints/prompt). `truncVisible` is
-  OSC-8-aware so hyperlinks survive truncation. Both sub-views run inside the
-  alt-screen and return on q/Esc. Token totals (`formatTokens`) also show in tree
-  rows + `--list`
+  and `github.com/o/r/pull/n` URLs, rendered as `osc8` clickable hyperlinks —
+  metadata comes first so it survives clipping). `truncVisible` is OSC-8-aware so
+  hyperlinks survive truncation. Runs inside the alt-screen, returns on q/Esc.
+  Token totals (`formatTokens`) also show in tree rows + `--list`. (There's no
+  separate `p` preview anymore — it folded into `i`.)
 - `aisummary.go` — on-device AI summary for the `i` card via Apple's built-in
   Foundation Models CLI (`fm`, `/usr/bin/fm`, macOS 26+): `fm respond --model
   system --no-stream --schema <file> -i <instr>` with the transcript on stdin →
