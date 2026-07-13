@@ -25,6 +25,7 @@ type claudeMessage struct {
 
 type claudeBlock struct {
 	Type    string          `json:"type"`
+	ID      string          `json:"id"` // tool_use id (used to dedup question bells)
 	Text    string          `json:"text"`
 	Name    string          `json:"name"`
 	Input   json.RawMessage `json:"input"`
@@ -87,9 +88,13 @@ func normalizeClaude(line []byte, loc *time.Location) []Record {
 			case "text":
 				out = append(out, Record{Kind: KindAssistant, Ts: ts, Body: b.Text})
 			case "tool_use":
-				if b.Name == "AskUserQuestion" {
-					out = append(out, Record{Kind: KindAssistant, Ts: ts, Body: claudeAskQBody(b.Input)})
-				} else {
+				switch b.Name {
+				case "AskUserQuestion":
+					out = append(out, Record{Kind: KindQuestion, Ts: ts, QID: b.ID, Questions: claudeParseQuestions(b.Input)})
+				case "Agent", "Task":
+					desc, atype := claudeAgentSpawn(b.Input)
+					out = append(out, Record{Kind: KindAgentSpawn, Ts: ts, AgentDesc: desc, AgentType: atype})
+				default:
 					out = append(out, Record{Kind: KindToolUse, Name: b.Name, Summary: claudeToolSummary(b.Name, b.Input)})
 				}
 			}
@@ -141,10 +146,25 @@ func claudeToolSummary(name string, input json.RawMessage) string {
 	return strings.ReplaceAll(s, "\n", " ")
 }
 
-func claudeAskQBody(input json.RawMessage) string {
+// claudeAgentSpawn pulls the task description + subagent type from an Agent/Task
+// tool_use input.
+func claudeAgentSpawn(input json.RawMessage) (desc, atype string) {
+	var in struct {
+		Description  string `json:"description"`
+		SubagentType string `json:"subagent_type"`
+	}
+	_ = json.Unmarshal(input, &in)
+	return strings.ReplaceAll(in.Description, "\n", " "), in.SubagentType
+}
+
+// claudeParseQuestions extracts the structured questions from an AskUserQuestion
+// tool_use input. Each option's short description is folded onto its label so the
+// card is self-explanatory without being verbose.
+func claudeParseQuestions(input json.RawMessage) []QuestionItem {
 	var in struct {
 		Questions []struct {
 			Question string `json:"question"`
+			Header   string `json:"header"`
 			Options  []struct {
 				Label       string `json:"label"`
 				Description string `json:"description"`
@@ -153,25 +173,17 @@ func claudeAskQBody(input json.RawMessage) string {
 	}
 	_ = json.Unmarshal(input, &in)
 
-	parts := make([]string, 0, len(in.Questions))
+	out := make([]QuestionItem, 0, len(in.Questions))
 	for _, q := range in.Questions {
-		var b strings.Builder
-		b.WriteString("**❓ ")
-		b.WriteString(q.Question)
-		b.WriteString("**")
-		if len(q.Options) > 0 {
-			b.WriteString("\n\n")
-			opts := make([]string, 0, len(q.Options))
-			for _, o := range q.Options {
-				line := "- **" + o.Label + "**"
-				if o.Description != "" {
-					line += " — " + o.Description
-				}
-				opts = append(opts, line)
+		it := QuestionItem{Header: q.Header, Question: strings.ReplaceAll(q.Question, "\n", " ")}
+		for _, o := range q.Options {
+			label := o.Label
+			if o.Description != "" {
+				label += " — " + o.Description
 			}
-			b.WriteString(strings.Join(opts, "\n"))
+			it.Options = append(it.Options, strings.ReplaceAll(label, "\n", " "))
 		}
-		parts = append(parts, b.String())
+		out = append(out, it)
 	}
-	return strings.Join(parts, "\n\n")
+	return out
 }

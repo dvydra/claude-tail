@@ -22,6 +22,7 @@ type entireEvent struct {
 
 type entireBlock struct {
 	Type  string          `json:"type"`
+	ID    string          `json:"id"`
 	Text  string          `json:"text"`
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input"`
@@ -57,9 +58,13 @@ func normalizeEntireTranscript(line []byte, loc *time.Location) []Record {
 		for _, b := range blocks {
 			switch {
 			case b.Name != "":
-				if b.Name == "AskUserQuestion" {
-					out = append(out, Record{Kind: KindAssistant, Ts: ts, Body: claudeAskQBody(b.Input)})
-				} else {
+				switch b.Name {
+				case "AskUserQuestion":
+					out = append(out, Record{Kind: KindQuestion, Ts: ts, QID: b.ID, Questions: claudeParseQuestions(b.Input)})
+				case "Agent", "Task":
+					desc, atype := claudeAgentSpawn(b.Input)
+					out = append(out, Record{Kind: KindAgentSpawn, Ts: ts, AgentDesc: desc, AgentType: atype})
+				default:
 					out = append(out, Record{Kind: KindToolUse, Name: b.Name, Summary: claudeToolSummary(b.Name, b.Input)})
 				}
 			case b.Text != "":

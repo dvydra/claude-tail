@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const version = "0.16.0"
+const version = "0.21.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -171,8 +171,10 @@ func run(cfg Config) {
 	r.live = true
 	codeCh := make(chan int, 3)        // signal + keyboard quit; never block a sender
 	reloadCh := make(chan struct{}, 1) // keyboard 'r'; coalesced (buffered 1)
+	focusCh := make(chan struct{}, 1)  // keyboard '→'; the render goroutine runs the overlay
+	resumeCh := make(chan struct{})    // handed back to unpark the keyboard after the overlay
 	installSignals(codeCh)             // SIGINT → 130, SIGTERM → 0
-	restoreTTY := startKeyboard(r, codeCh, reloadCh)
+	restoreTTY, kbTTY := startKeyboard(r, codeCh, reloadCh, focusCh, resumeCh)
 	defer restoreTTY() // panic safety; the normal path restores explicitly below
 
 	emit := func(line []byte) {
@@ -239,6 +241,14 @@ func run(cfg Config) {
 		case <-reloadCh:
 			reload()
 			out.Flush()
+		case <-focusCh:
+			// The keyboard goroutine is parked on resumeCh; we're the sole tty
+			// owner. Run the alt-screen subagent overlay on its SAME fd, then
+			// unpark it. Only Claude sessions have subagents; runFocus no-ops
+			// (with a hint) otherwise.
+			out.Flush()
+			runFocus(kbTTY, session, home, theme)
+			resumeCh <- struct{}{}
 		case <-ticker.C:
 			poll()
 			out.Flush()
@@ -324,7 +334,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		fmt.Fprintln(w, "  collapse: off")
 	}
 	if isCharDevice(os.Stdin) {
-		fmt.Fprintln(w, "  keys:     t=cycle tools (full/dots/hidden)  c=toggle collapse  r=reload  q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     t=cycle tools  c=toggle collapse  →=focus subagents  r=reload  q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
@@ -535,6 +545,10 @@ LIVE KEYS (while following, on an interactive terminal):
                             full → dots → hidden → full.
   c                         Toggle collapsing of long user pastes for new
                             events.
+  →                         Focus subagents: open an alt-screen view of the
+                            session's subagent transcripts. ←/→ cycles between
+                            them, ↑↓ scrolls, r reloads, q/Esc returns to the
+                            tail. (Claude sessions only; no-op when none.)
   r                         Reload: re-render the whole current transcript with
                             the current settings — applies t/c retrospectively
                             by appending a fresh copy to the scrollback.

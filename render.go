@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/muesli/termenv"
@@ -84,6 +86,10 @@ type Renderer struct {
 	lastKind    Kind
 	inDotStreak bool
 	live        bool // set true for the follow phase → ring the bell on assistant turns
+
+	// seenQuestions dedups the question bell so a card that's re-rendered (reload,
+	// or a poll that re-reads the same line) rings at most once per question id.
+	seenQuestions map[string]bool
 }
 
 func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse int) (*Renderer, error) {
@@ -120,6 +126,7 @@ func newRendererWith(w io.Writer, theme Theme, toolStyle string, collapse int, r
 		collapseDefault: collapseDefault,
 		userHdr:         theme.UserANSI + userHdrBody + reset,
 		claudeHdr:       theme.ClaudeANSI + claudeHdrBody + reset,
+		seenQuestions:   map[string]bool{},
 	}
 	r.toolStyle.Store(int32(parseToolStyle(toolStyle)))
 	r.collapse.Store(int32(collapse))
@@ -177,7 +184,38 @@ func (r *Renderer) emit(rec Record) {
 		r.toolUse(rec.Name, rec.Summary)
 	case KindToolResult:
 		r.toolResult(rec.Result)
+	case KindAgentSpawn:
+		r.agentSpawn(rec.AgentDesc, rec.AgentType)
+	case KindQuestion:
+		r.question(rec)
 	}
+}
+
+// agentSpawn renders a subagent launch as a distinct marker, shown in every tool
+// style (it's orchestration, not a routine tool call). Purple to match the
+// Task/Agent dot color.
+func (r *Renderer) agentSpawn(desc, atype string) {
+	r.breakDotStreak()
+	agentColor := dotColor("Agent")
+	line := agentColor + "⏺" + reset + " " + agentColor + "▸ agent:" + reset + " " + desc
+	if atype != "" {
+		line += " " + r.theme.DimANSI + "(" + atype + ")" + reset
+	}
+	io.WriteString(r.w, line+"\n")
+}
+
+// question renders a pending AskUserQuestion as a bold bordered card, and — live
+// only, once per question id — rings the terminal bell so a waiting prompt is
+// noticed even when the user isn't looking at the pane.
+func (r *Renderer) question(rec Record) {
+	r.breakDotStreak()
+	if r.live && rec.QID != "" && !r.seenQuestions[rec.QID] {
+		io.WriteString(r.w, "\a")
+	}
+	if rec.QID != "" {
+		r.seenQuestions[rec.QID] = true
+	}
+	io.WriteString(r.w, questionCard(rec.Questions, r.theme))
 }
 
 func (r *Renderer) header(kind Kind, ts string) {
@@ -247,6 +285,82 @@ func (r *Renderer) toolUse(name, summary string) {
 		label, arg := toolLabelArg(name, summary)
 		io.WriteString(r.w, dotColor(name)+"⏺"+reset+" "+label+"("+truncateRunes(arg, 120)+")\n")
 	}
+}
+
+// Question-card colors (fixed amber, prominent on dark themes).
+const (
+	qBorderANSI = "\x1b[38;2;240;190;90m"
+	qTitleANSI  = "\x1b[1m\x1b[38;2;240;190;90m"
+	qTitle      = "⁉ WAITING FOR YOUR ANSWER"
+	qMaxInner   = 76 // max card content width (chars); longer lines are truncated
+)
+
+// questionCard draws a bold bordered card for one or more pending questions.
+// Width is content-driven (no terminal-width dependency) so it works when
+// rendering to a pipe; over-long option lines are truncated with an ellipsis.
+func questionCard(qs []QuestionItem, theme Theme) string {
+	var content []string
+	for i, q := range qs {
+		if i > 0 {
+			content = append(content, "")
+		}
+		head := q.Question
+		if q.Header != "" {
+			head = q.Header + ": " + q.Question
+		}
+		content = append(content, head)
+		for j, o := range q.Options {
+			content = append(content, fmt.Sprintf("  %d. %s", j+1, o))
+		}
+	}
+
+	// Card body width W (chars between the "│ " and " │"): widest content line,
+	// but at least wide enough for the title, capped at qMaxInner.
+	W := runeLen(qTitle) + 4
+	for _, c := range content {
+		if w := runeLen(c); w > W {
+			W = w
+		}
+	}
+	if W > qMaxInner {
+		W = qMaxInner
+	}
+
+	var b strings.Builder
+	// Top border: ╭─ <title> <dashes> ╮  — spans W+2 chars between the corners.
+	tail := W + 2 - 2 - runeLen(qTitle) - 1 // "─ " + title + " " + dashes
+	if tail < 0 {
+		tail = 0
+	}
+	b.WriteString(qBorderANSI + "╭─ " + reset + qTitleANSI + qTitle + reset + " " +
+		qBorderANSI + strings.Repeat("─", tail) + "╮" + reset + "\n")
+	for _, c := range content {
+		b.WriteString(qBorderANSI + "│" + reset + " " + runePad(runeTrunc(c, W), W) + " " + qBorderANSI + "│" + reset + "\n")
+	}
+	b.WriteString(qBorderANSI + "╰" + strings.Repeat("─", W+2) + "╯" + reset + "\n")
+	return b.String()
+}
+
+func runeLen(s string) int { return utf8.RuneCountInString(s) }
+
+// runeTrunc caps s to n runes, adding an ellipsis when it cuts.
+func runeTrunc(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return "…"
+	}
+	rs := []rune(s)
+	return string(rs[:n-1]) + "…"
+}
+
+// runePad right-pads s with spaces to n runes (assumes s already ≤ n runes).
+func runePad(s string, n int) string {
+	if p := n - utf8.RuneCountInString(s); p > 0 {
+		return s + strings.Repeat(" ", p)
+	}
+	return s
 }
 
 // Diff colors (fixed, readable on dark themes): green add, red remove.

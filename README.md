@@ -98,6 +98,7 @@ events show as they stream:
 |----------------|---------------------------------------------------------------|
 | `t`            | cycle tool-call rendering: **full → dots → hidden**           |
 | `c`            | toggle collapsing of long user pastes                         |
+| `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
 | `r`            | reload — re-render the whole transcript with current settings |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 
@@ -109,6 +110,34 @@ them to the **history**, press **`r`**: it re-renders the whole current
 transcript with the live settings, appending a fresh copy to the scrollback. So
 the usual flow is "cycle to full with `t`, then `r` to redraw everything as
 rich diffs." A one-line `keys:` legend prints in the startup banner.
+
+## Subagents & pending questions (Claude)
+
+When the agent you're tailing spawns **subagents** (the `Agent`/Task tool — often
+several background agents at once), entire-tail surfaces them so the
+orchestration isn't invisible:
+
+- **Spawn markers** in the main stream — `⏺ ▸ agent: <task>  (<type>)` — appear
+  in every tool style, so you always see what was launched.
+- **`→` focus overlay** — press `→` to open a full-screen view of the subagent
+  transcripts. `←`/`→` cycle between them (the header shows `focus 2/3 · <task> ·
+  ✔ done 8m47s`), `↑↓`/PgUp/PgDn scroll, `r` reloads, `q`/Esc returns to the live
+  tail. The focused subagent **live-follows** — new turns stream in while you
+  watch. entire-tail finds the subagent files next to the main transcript
+  (`…/<sessionId>/subagents/agent-*.jsonl`).
+
+When the agent asks you an **AskUserQuestion**, entire-tail renders a prominent
+card the instant it's asked — *before* you answer, since your answer is a
+separate later event — and rings the terminal bell once so you notice even if
+you've looked away:
+
+```
+╭─ ⁉ WAITING FOR YOUR ANSWER ────────────────────────────╮
+│ Scope: What are we building this session?              │
+│   1. Reconcile process, ledger first — Treat the led…  │
+│   2. Reconcile process, ledger stays WIP — Design + …  │
+╰────────────────────────────────────────────────────────╯
+```
 
 ## The session tree (default)
 

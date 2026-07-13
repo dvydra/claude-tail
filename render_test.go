@@ -23,6 +23,62 @@ func renderRecords(toolStyle string, collapse int, live bool, recs ...Record) st
 	return b.String()
 }
 
+func TestAgentSpawnMarker(t *testing.T) {
+	// Rendered in every tool style (it's orchestration, not a routine call).
+	for _, style := range []string{"dots", "full", "hidden"} {
+		out := renderRecords(style, 0, false,
+			Record{Kind: KindAgentSpawn, Ts: "T1", AgentDesc: "Map the model", AgentType: "general-purpose"},
+		)
+		if !strings.Contains(out, "▸ agent:") || !strings.Contains(out, "Map the model") ||
+			!strings.Contains(out, "(general-purpose)") {
+			t.Errorf("style %s: marker missing in %q", style, out)
+		}
+	}
+}
+
+func TestQuestionCardLayout(t *testing.T) {
+	rec := Record{Kind: KindQuestion, Ts: "T1", QID: "q1", Questions: []QuestionItem{
+		{Header: "Scope", Question: "Which approach?", Options: []string{"Fast — quick", "Careful"}},
+	}}
+	out := renderRecords("dots", 0, false, rec)
+	plain := stripANSI(out)
+	for _, want := range []string{"⁉ WAITING FOR YOUR ANSWER", "Scope: Which approach?", "1. Fast — quick", "2. Careful"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("card missing %q in:\n%s", want, plain)
+		}
+	}
+	// Every border row is the same visible width (box stays aligned).
+	var widths []int
+	for _, ln := range strings.Split(strings.TrimRight(plain, "\n"), "\n") {
+		widths = append(widths, len([]rune(ln)))
+	}
+	for i, w := range widths {
+		if w != widths[0] {
+			t.Errorf("row %d width %d != %d\n%s", i, w, widths[0], plain)
+		}
+	}
+}
+
+func TestQuestionBellFiresOncePerID(t *testing.T) {
+	var b strings.Builder
+	r := newRendererWith(&b, testTheme(), "dots", 0, identityRender)
+	r.live = true
+	q := Record{Kind: KindQuestion, QID: "q1", Questions: []QuestionItem{{Question: "?"}}}
+	r.emit(q)
+	r.emit(q) // same id re-rendered (e.g. a reload) → must not ring again
+	r.emit(Record{Kind: KindQuestion, QID: "q2", Questions: []QuestionItem{{Question: "?"}}})
+	if n := strings.Count(b.String(), "\a"); n != 2 {
+		t.Errorf("bell count = %d, want 2 (one per distinct question id)", n)
+	}
+	// Backfill (not live) never rings.
+	var b2 strings.Builder
+	r2 := newRendererWith(&b2, testTheme(), "dots", 0, identityRender)
+	r2.emit(q)
+	if strings.Contains(b2.String(), "\a") {
+		t.Error("backfill should not ring the bell")
+	}
+}
+
 func TestHeaderDifferentKinds(t *testing.T) {
 	out := renderRecords("dots", 0, false,
 		Record{Kind: KindUser, Ts: "T1", Body: "hi"},

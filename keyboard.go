@@ -44,18 +44,22 @@ func keyActionFor(b byte) keyAction {
 // are atomic, so this is race-free with the render goroutine). A quit key
 // reports exit code 0 on codeCh. Returns a restore func the caller must run
 // before exit; it's a no-op when there's no usable tty.
-func startKeyboard(r *Renderer, codeCh chan<- int, reloadCh chan<- struct{}) func() {
+// The returned *os.File is the controlling tty the keyboard goroutine reads (nil
+// when there's no usable tty). The focus overlay reuses this SAME fd — while it
+// runs, the keyboard goroutine is parked on resumeCh, so there's a single tty
+// reader at all times (two fds on the same tty race for input).
+func startKeyboard(r *Renderer, codeCh chan<- int, reloadCh chan<- struct{}, focusCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
 	if !isCharDevice(os.Stdin) {
-		return func() {}
+		return func() {}, nil
 	}
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		return func() {}
+		return func() {}, nil
 	}
 	saved, ok := setCbreak(tty)
 	if !ok {
 		tty.Close()
-		return func() {}
+		return func() {}, nil
 	}
 
 	var once sync.Once
@@ -67,7 +71,7 @@ func startKeyboard(r *Renderer, codeCh chan<- int, reloadCh chan<- struct{}) fun
 	}
 
 	go func() {
-		buf := make([]byte, 1)
+		buf := make([]byte, 16)
 		for {
 			n, err := tty.Read(buf)
 			if err != nil {
@@ -75,6 +79,19 @@ func startKeyboard(r *Renderer, codeCh chan<- int, reloadCh chan<- struct{}) fun
 				return
 			}
 			if n == 0 {
+				continue
+			}
+			// Multi-byte escape sequence (arrow keys): → enters the subagent
+			// focus overlay. We hand the tty to the render goroutine (which runs
+			// the alt-screen overlay) and PARK here until it signals done, so
+			// there's never two readers on the tty. Other arrows are ignored.
+			if n >= 3 && buf[0] == 0x1b {
+				if k, _ := decodeKey(buf[:n]); k == kRight {
+					// Hand the tty to the render goroutine's overlay and park
+					// until it's done — one tty reader at a time.
+					focusCh <- struct{}{}
+					<-resumeCh
+				}
 				continue
 			}
 			switch keyActionFor(buf[0]) {
@@ -94,7 +111,7 @@ func startKeyboard(r *Renderer, codeCh chan<- int, reloadCh chan<- struct{}) fun
 			}
 		}
 	}()
-	return restore
+	return restore, tty
 }
 
 // setCbreak puts tty into cbreak mode via stty (which handles the BSD/Linux
@@ -137,6 +154,29 @@ func setRaw(tty *os.File) (saved string, ok bool) {
 	saved = strings.TrimSpace(buf.String())
 
 	set := exec.Command("stty", "-icanon", "-echo", "-isig", "min", "1", "time", "0")
+	set.Stdin = tty
+	if set.Run() != nil {
+		restoreCbreak(tty, saved)
+		return "", false
+	}
+	return saved, true
+}
+
+// setRawTimed is setRaw with a read timeout (min 0, time 5 = 0.5s): tty.Read
+// returns n==0 after the timeout even with no keypress. The focus overlay uses
+// this to poll the subagent file for new content between keystrokes (live
+// follow) on a single goroutine. Restored with restoreCbreak.
+func setRawTimed(tty *os.File) (saved string, ok bool) {
+	var buf bytes.Buffer
+	get := exec.Command("stty", "-g")
+	get.Stdin = tty
+	get.Stdout = &buf
+	if get.Run() != nil {
+		return "", false
+	}
+	saved = strings.TrimSpace(buf.String())
+
+	set := exec.Command("stty", "-icanon", "-echo", "-isig", "min", "0", "time", "5")
 	set.Stdin = tty
 	if set.Run() != nil {
 		restoreCbreak(tty, saved)

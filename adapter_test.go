@@ -49,17 +49,34 @@ func TestNormalizeClaudeToolResultCount(t *testing.T) {
 
 func TestNormalizeClaudeAskQuestion(t *testing.T) {
 	line := []byte(`{"type":"assistant","timestamp":"2026-06-15T05:00:00Z","message":{"content":[
-		{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[
-			{"question":"Pick one","options":[
+		{"type":"tool_use","id":"toolu_q1","name":"AskUserQuestion","input":{"questions":[
+			{"question":"Pick one","header":"Scope","options":[
 				{"label":"A","description":"first"},
 				{"label":"B"}
 			]}
 		]}}
 	]}}`)
 	got := normalize(AgentClaude, line, utc)
-	wantBody := "**❓ Pick one**\n\n- **A** — first\n- **B**"
-	if len(got) != 1 || got[0].Kind != KindAssistant || got[0].Body != wantBody {
-		t.Errorf("got %+v want body %q", got, wantBody)
+	if len(got) != 1 || got[0].Kind != KindQuestion || got[0].QID != "toolu_q1" {
+		t.Fatalf("got %+v, want one KindQuestion with QID toolu_q1", got)
+	}
+	q := got[0].Questions
+	if len(q) != 1 || q[0].Header != "Scope" || q[0].Question != "Pick one" {
+		t.Fatalf("question = %+v", q)
+	}
+	if len(q[0].Options) != 2 || q[0].Options[0] != "A — first" || q[0].Options[1] != "B" {
+		t.Errorf("options = %+v", q[0].Options)
+	}
+}
+
+func TestNormalizeClaudeAgentSpawn(t *testing.T) {
+	line := []byte(`{"type":"assistant","timestamp":"2026-06-15T05:00:00Z","message":{"content":[
+		{"type":"tool_use","name":"Agent","input":{"description":"Map the data model","subagent_type":"general-purpose","prompt":"go do it"}}
+	]}}`)
+	got := normalize(AgentClaude, line, utc)
+	want := []Record{{Kind: KindAgentSpawn, Ts: "2026-06-15 05:00:00", AgentDesc: "Map the data model", AgentType: "general-purpose"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v want %+v", got, want)
 	}
 }
 
