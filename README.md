@@ -163,7 +163,9 @@ quits. The most recent group starts expanded. On a session:
 - **`t`** → just tail the session in the current pane.
 - **`n`** → open a workspace for a **new** Claude session in the **highlighted
   folder's** directory (or `$PWD` if it has none) — fresh `claude` + tail +
-  shell. Pick a repo group, hit `n`, and it `cd`s there and starts fresh.
+  shell. Pick a repo group, hit `n`, and it `cd`s there and starts fresh. The
+  tail pane uses `--wait-new`: it **blocks until the fresh `claude` creates its
+  session**, then latches onto exactly that one (no racing an older session).
 
 **Recency at a glance** — rows are colored on a four-step scale by last activity:
 
