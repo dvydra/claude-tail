@@ -7,6 +7,3 @@
 
 # entire session-tracking artifacts (this repo isn't an entire project)
 /.entire/
-
-# compiled Apple Intelligence summarizer helper
-/entire-tail-aisum

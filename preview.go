@@ -61,7 +61,7 @@ func showSummary(tty *os.File, s treeSession, home string) {
 	// Resolve a transcript (local, else reconstructed) and summarize it on-device.
 	var ai aiSummary
 	haveAI := false
-	if aisumHelper() != "" {
+	if fmAvailable() {
 		path := s.Path
 		if path == "" {
 			if tmp, ok := reconstructTranscript(home, s.ID, s.Repo); ok {

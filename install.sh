@@ -30,26 +30,6 @@ mkdir -p "$LOCAL_BIN"
 ln -sf "$BIN" "$LOCAL_BIN/entire-tail"
 echo "Linked: $LOCAL_BIN/entire-tail -> $BIN"
 
-# ── Apple Intelligence summarizer (macOS, best-effort) ────────────────────────
-# Compiles aisum.swift → entire-tail-aisum when the Swift toolchain + Foundation
-# Models framework are present. Powers the on-device AI summary in the 'i' card;
-# absent, the card just shows metadata. Kept beside the binary so entire-tail
-# finds it next to itself.
-AISUM="$HERE/entire-tail-aisum"
-if [ "$(uname -s)" = "Darwin" ] && command -v swiftc >/dev/null 2>&1; then
-  SDK="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
-  if [ -n "$SDK" ] && [ -d "$SDK/System/Library/Frameworks/FoundationModels.framework" ]; then
-    if ( cd "$HERE" && swiftc -O aisum.swift -o "$AISUM" ) 2>/dev/null; then
-      ln -sf "$AISUM" "$LOCAL_BIN/entire-tail-aisum"
-      echo "Built Apple Intelligence summarizer: $AISUM (powers the 'i' card)"
-    else
-      echo "note: aisum.swift failed to compile — 'i' shows metadata only." >&2
-    fi
-  else
-    echo "note: FoundationModels not in the macOS SDK — 'i' shows metadata only."
-  fi
-fi
-
 # ── entire plugin install (best-effort) ──────────────────────────────────────
 if command -v entire >/dev/null 2>&1; then
   # --force so a re-install replaces the existing 'tail' plugin entry instead of
