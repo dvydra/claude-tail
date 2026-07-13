@@ -62,6 +62,10 @@ additionally uses `pgrep` + `lsof` when present (both ship with macOS and most
 Linux) to mark which sessions are live; without them the tree still works, just
 without live markers.
 
+On **macOS 26+** the `i` card's AI summary uses Apple's built-in Foundation
+Models CLI (`fm`, `/usr/bin/fm`) on the on-device model — no build step, no extra
+dependency. When `fm` is absent the card falls back to metadata only.
+
 ## Usage
 
 ```sh
@@ -152,7 +156,8 @@ lookups, no cloud) — fastest / fully offline — with `● live` markers:
     ○ 6e18caf2  18h ago  [main] User self deletion and erasure epic
 ```
 
-Each session row shows its id (the session uuid), age, and a one-line title;
+Each session row shows its id (the session uuid), age, **token spend**
+(compact — `300k`, `1.2m`; entire-tracked sessions only), and a one-line title;
 the local view adds the git branch and live markers.
 
 **Navigation:** arrow keys or `hjkl` move; `→` expands a group and `←`
@@ -160,6 +165,17 @@ collapses; `/` filters by name/title/id as you type (`Esc` clears); `q`/`Esc`
 quits. The most recent group starts expanded. On a session:
 
 - **`Enter`** → open the **iTerm workspace** for it (see below).
+- **`p`** → **preview** the session's recent transcript in a scrollable pager
+  (works for cloud-only sessions too — reconstructed from git checkpoint refs).
+- **`i`** → a **summary card**. On macOS with Apple Intelligence it opens with an
+  **on-device AI summary** (headline · 2-3 sentence summary · key points ·
+  outcome), generated locally in ~1-2s via the `fm` Foundation Models CLI — no
+  cloud, no keys, works offline. Then a **trails & prs** section listing every
+  entire trail (`entire.io/gh/owner/repo/trails/id`) and GitHub PR
+  (`github.com/owner/repo/pull/n`) referenced anywhere in the transcript, each a
+  clickable link (OSC 8 — ⌘-click in iTerm2). Below that: entire's metadata (repo,
+  model, token spend, checkpoint count, opening prompt). Without the model the AI
+  block is dropped; the links and metadata still show.
 - **`t`** → just tail the session in the current pane.
 - **`n`** → open a workspace for a **new** Claude session in the **highlighted
   folder's** directory (or `$PWD` if it has none) — fresh `claude` + tail +
