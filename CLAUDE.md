@@ -41,8 +41,8 @@ Quick manual render of a fixture (backfill then exit):
 ## Architecture (single `package main`, ~10 files)
 
 Per-agent **adapters** lower each JSONL event to a canonical `Record`
-(`Kind` = USER | ASSISTANT | TOOLUSE | TOOLRESULT). Everything downstream is
-agent-agnostic and consumes only `Record`s.
+(`Kind` = USER | ASSISTANT | TOOLUSE | TOOLRESULT | AGENTSPAWN | QUESTION).
+Everything downstream is agent-agnostic and consumes only `Record`s.
 
 - `adapter_claude.go` / `adapter_codex.go` / `adapter_agy.go` / `adapter_entire.go` — `normalize(line) []Record`
   (`adapter_entire.go` handles entire's own transcript format — top-level
@@ -108,8 +108,22 @@ agent-agnostic and consumes only `Record`s.
 - `toolresult.go` — parse Claude `toolUseResult` into diffs / output / read-summary
 - `tail.go` — follow loop (byte-offset resume for claude/codex; whole-file
   re-read + `step_index` dedup for agy)
+- `subagents.go` — discovers a Claude session's subagent transcripts
+  (`<transcript>/<sessionId>/subagents/agent-*.jsonl` + `.meta.json`), ordered by
+  spawn time, with best-effort running/done + duration from each file's timespan.
+  Subagent files are standard Claude JSONL, so the normal renderer handles them
+- `focus.go` — the `→` focus overlay: an alt-screen live view over the selected
+  subagent, `←/→` to cycle channels, `↑↓`/PgUp/PgDn scroll, `r` reload, `q`/Esc
+  back. Reuses the renderer (dots) to format the subagent; follows via a timed
+  raw read (`setRawTimed`, MIN 0 TIME 5) so it re-reads the file between
+  keystrokes. Runs on the render goroutine while the keyboard goroutine is parked
+  on `resumeCh`, sharing the SAME tty fd (two fds on one tty race for input).
+  **Gotcha:** a raw timed read reports a 0-byte timeout as `(0, io.EOF)` — treat
+  that as a follow tick, not end-of-input, or the overlay exits instantly
 - `theme.go` / `config.go` / `main.go` — themes, flags+env, wiring
-- `keyboard.go` — live single-key toggles via cbreak (`t`/`c`/`r`/`q`)
+- `keyboard.go` — live single-key toggles via cbreak (`t`/`c`/`r`/`q`), plus `→`
+  which signals the render goroutine to run the focus overlay and parks until it
+  returns. Returns the tty fd so the overlay reuses it (single reader)
 - `jqutil.go` — tiny JSON-value-to-string helpers (replaces shelling out to `jq`)
 
 Adding a new agent = write a `normalize` + a discovery function. Nothing else
@@ -131,6 +145,14 @@ needs to change.
   truncates to 120 runes — that's deliberate: long/badly-indented commands stay
   one predictable line instead of wrapping into scrollback garbage. Command
   output under `⎿` is shown in **full** (no truncation — "full means full").
+- **Subagent spawns + questions render Claude-only, and intentionally diverge
+  from the bash oracle.** `AskUserQuestion` renders as a bold bordered card (+ a
+  one-shot bell, live only, deduped per question id via `seenQuestions`) and
+  `Agent`/`Task` as a `⏺ ▸ agent:` marker — replacing the old markdown question
+  the oracle emits. The `claude_dots`/`claude_lines` goldens were regenerated for
+  this deliberately; `RUN_ORACLE=1` will now differ on those events (the default
+  gate is goldens + units, oracle is opt-in). Both are always shown regardless of
+  tool style — they're orchestration, not routine tool calls.
 - **Word wrap is off** (`glamour.WithWordWrap(0)`): each paragraph is one logical
   line the terminal soft-wraps, so resizing reflows on the next render. Don't
   re-enable wrap.

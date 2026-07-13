@@ -10,6 +10,13 @@ const (
 	KindAssistant  Kind = "CLAUDE" // historical name; rendered as "AGENT"
 	KindToolUse    Kind = "TOOLUSE"
 	KindToolResult Kind = "TOOLRESULT"
+	// KindAgentSpawn is a subagent (Agent/Task tool_use) launch — rendered as a
+	// distinct marker in the main stream regardless of tool style, so the
+	// orchestration is always visible.
+	KindAgentSpawn Kind = "AGENTSPAWN"
+	// KindQuestion is an AskUserQuestion tool_use — rendered as a prominent card
+	// (and, live, rings the bell once) so a waiting prompt is noticed.
+	KindQuestion Kind = "QUESTION"
 )
 
 // Record is one renderable unit. Which fields are populated depends on Kind:
@@ -17,6 +24,8 @@ const (
 //	USER/CLAUDE   → Ts, Body
 //	TOOLUSE       → Name, Summary
 //	TOOLRESULT    → N, and (full mode, when available) Result
+//	AGENTSPAWN    → Ts, AgentDesc, AgentType
+//	QUESTION      → Ts, QID, Questions
 type Record struct {
 	Kind    Kind
 	Ts      string      // "YYYY-MM-DD HH:MM:SS" local time
@@ -25,6 +34,19 @@ type Record struct {
 	Summary string      // one-line tool input preview
 	N       int         // tool_result count
 	Result  *ToolResult // rich result detail for full mode (nil if unavailable)
+
+	AgentDesc string // subagent task description (AGENTSPAWN)
+	AgentType string // subagent type, e.g. "general-purpose" (AGENTSPAWN)
+
+	QID       string         // AskUserQuestion tool_use id — bell dedup (QUESTION)
+	Questions []QuestionItem // the pending question(s) (QUESTION)
+}
+
+// QuestionItem is one question within an AskUserQuestion call.
+type QuestionItem struct {
+	Header   string   // short tag, e.g. "Scope"
+	Question string   // the question text
+	Options  []string // option labels (description folded in when short)
 }
 
 // ToolResult is the detail rendered under the "⎿" in full mode. Populated from
