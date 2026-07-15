@@ -85,7 +85,12 @@ type Renderer struct {
 
 	lastKind    Kind
 	inDotStreak bool
-	live        bool // set true for the follow phase → ring the bell on assistant turns
+	// lineOpen means an unterminated line is pending output — a body whose final
+	// newline was deferred (so a dot streak can ride the end of the agent turn) or
+	// an in-progress dot streak. endLine() emits the owed newline before the next
+	// block. inDotStreak implies lineOpen.
+	lineOpen bool
+	live     bool // set true for the follow phase → ring the bell on assistant turns
 
 	// seenQuestions dedups the question bell so a card that's re-rendered (reload,
 	// or a poll that re-reads the same line) rings at most once per question id.
@@ -154,6 +159,7 @@ func (r *Renderer) cycleTools() string {
 func (r *Renderer) reset() {
 	r.lastKind = ""
 	r.inDotStreak = false
+	r.lineOpen = false
 }
 
 // toggleCollapse flips long-user-paste collapsing on/off (future events only).
@@ -195,7 +201,7 @@ func (r *Renderer) emit(rec Record) {
 // style (it's orchestration, not a routine tool call). Purple to match the
 // Task/Agent dot color.
 func (r *Renderer) agentSpawn(desc, atype string) {
-	r.breakDotStreak()
+	r.endLine()
 	agentColor := dotColor("Agent")
 	line := agentColor + "⏺" + reset + " " + agentColor + "▸ agent:" + reset + " " + desc
 	if atype != "" {
@@ -208,7 +214,7 @@ func (r *Renderer) agentSpawn(desc, atype string) {
 // only, once per question id — rings the terminal bell so a waiting prompt is
 // noticed even when the user isn't looking at the pane.
 func (r *Renderer) question(rec Record) {
-	r.breakDotStreak()
+	r.endLine()
 	if r.live && rec.QID != "" && !r.seenQuestions[rec.QID] {
 		io.WriteString(r.w, "\a")
 	}
@@ -219,9 +225,7 @@ func (r *Renderer) question(rec Record) {
 }
 
 func (r *Renderer) header(kind Kind, ts string) {
-	if r.inDotStreak {
-		io.WriteString(r.w, "\n")
-	}
+	r.endLine() // flush any open body/dots line before the box header or marker
 	if kind == r.lastKind {
 		// Same participant as the previous turn → dim continuation marker.
 		io.WriteString(r.w, r.theme.DimANSI+"  ⋯ "+ts+reset+"\n")
@@ -232,7 +236,6 @@ func (r *Renderer) header(kind Kind, ts string) {
 		}
 		io.WriteString(r.w, hdr+" "+r.theme.DimANSI+ts+reset+"\n")
 	}
-	r.inDotStreak = false
 	r.lastKind = kind
 }
 
@@ -257,20 +260,29 @@ func (r *Renderer) body(mdText string) {
 	// Squeeze runs of blank lines to a single blank, discarding whitespace on
 	// blank lines — matching the bash backfill awk's held_blank behavior, and
 	// keeping backfill and live consistent (the bash live path did not squeeze).
+	var kept []string
 	prevBlank := false
 	for i := start; i <= end; i++ {
 		if isBlank(lines[i]) {
 			if prevBlank {
 				continue
 			}
-			io.WriteString(r.w, "\n")
+			kept = append(kept, "")
 			prevBlank = true
 			continue
 		}
-		io.WriteString(r.w, lines[i])
-		io.WriteString(r.w, "\n")
+		kept = append(kept, lines[i])
 		prevBlank = false
 	}
+	if len(kept) == 0 {
+		return
+	}
+	// Write the body joined by newlines but DEFER the final newline, leaving the
+	// last line open so a following dot streak rides the end of the agent turn
+	// (dots mode). endLine() emits the owed newline before the next header/block.
+	io.WriteString(r.w, strings.Join(kept, "\n"))
+	r.lineOpen = true
+	r.inDotStreak = false
 }
 
 func (r *Renderer) toolUse(name, summary string) {
@@ -278,10 +290,25 @@ func (r *Renderer) toolUse(name, summary string) {
 	case toolNone:
 		return
 	case toolDots:
+		// A tool streak renders as a bracketed group riding the end of the agent
+		// turn: [.] growing to [.....]. Open the bracket on the first dot; endLine()
+		// writes the closing ']' when the streak ends. Only ride an *assistant*
+		// line (space-joined) — tools belong to the agent, so a streak after a user
+		// turn (a text-less assistant turn emits no body) starts on its own line
+		// instead of corrupting the user's text.
+		if !r.inDotStreak {
+			if r.lineOpen && r.lastKind == KindAssistant {
+				io.WriteString(r.w, " ")
+			} else {
+				r.endLine() // flush a user (or empty) line; start the streak fresh
+			}
+			io.WriteString(r.w, r.theme.DimANSI+"["+reset)
+			r.lineOpen = true
+			r.inDotStreak = true
+		}
 		io.WriteString(r.w, dotColor(name)+"."+reset)
-		r.inDotStreak = true
 	default: // full → Claude-style "⏺ Label(arg)"
-		r.breakDotStreak()
+		r.endLine()
 		label, arg := toolLabelArg(name, summary)
 		io.WriteString(r.w, dotColor(name)+"⏺"+reset+" "+label+"("+truncateRunes(arg, 120)+")\n")
 	}
@@ -387,7 +414,7 @@ func (r *Renderer) toolResult(res *ToolResult) {
 	if head == "" && len(res.Diff) == 0 {
 		return // nothing to show
 	}
-	r.breakDotStreak()
+	r.endLine()
 	io.WriteString(r.w, dim+"  ⎿  "+head+reset+"\n")
 	for _, d := range res.Diff {
 		r.writeDiffLine(d)
@@ -463,9 +490,17 @@ func baseName(p string) string {
 	return p
 }
 
-func (r *Renderer) breakDotStreak() {
-	if r.inDotStreak {
+// endLine terminates any open line — a body whose final newline was deferred (so
+// dots can ride it) or an in-progress dot streak — so the next header/marker/block
+// starts at column 0. Closes the dot-streak bracket first. A no-op when nothing is
+// pending.
+func (r *Renderer) endLine() {
+	if r.lineOpen {
+		if r.inDotStreak {
+			io.WriteString(r.w, r.theme.DimANSI+"]"+reset)
+		}
 		io.WriteString(r.w, "\n")
+		r.lineOpen = false
 		r.inDotStreak = false
 	}
 }

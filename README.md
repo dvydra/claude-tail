@@ -218,6 +218,10 @@ quits. The most recent group starts expanded. On a session:
   tail pane uses `--wait-new`: it **blocks until the fresh `claude` creates its
   session**, then latches onto exactly that one (no racing an older session).
 
+The **current directory always appears** in the tree — even with no sessions yet
+(shown as `▸ path  (no sessions — n to start one)`), so you can always land on
+"here" and hit `n` to start one.
+
 **Recency at a glance** — rows are colored on a four-step scale by last activity:
 
 | color        | meaning                                             |
@@ -322,10 +326,19 @@ capped at the top 50 (a ubiquitous term otherwise matches everything).
 
 ## Tool calls
 
-By default, each tool call collapses to a **single colored dot** — a
-flurry of reads, greps, and edits between two assistant turns shows up
-as a horizontal streak like `..........` instead of one verbose line per
-call. The color encodes the kind: blue=read, green=edit, yellow=bash/exec,
+By default, each tool call collapses to a **single colored dot**, and the streak
+**rides the end of the agent's turn** as a bracketed group — a flurry of reads,
+greps, and edits shows up appended to the last line of what the agent just said,
+growing `[.]` → `[.....]`:
+
+```
+Reading the files, then I'll bump the version. [.....]
+  ⋯ 14:03:11
+Done — version is now 0.7.1.
+```
+
+rather than on a line of its own below it (which wasted a whole row for one or two
+dots). The color encodes the kind: blue=read, green=edit, yellow=bash/exec,
 magenta=grep, cyan=web, lavender=task, orange=mcp. A legend prints to stderr
 at startup as a key. Tool results are dropped — each one is 1:1 with the
 preceding tool call, so rendering both would just double-count every action.
@@ -475,8 +488,10 @@ writing a `normalize` + a discovery function.
 
 The rendering state machine (`render.go`) is one path shared by backfill and
 live: it tracks the previous participant (so consecutive same-participant turns
-collapse to a dim `⋯ ts` marker) and the dot-streak state, and renders each body
-through an in-process glamour renderer.
+collapse to a dim `⋯ ts` marker) and the open-line/dot-streak state (a body
+defers its trailing newline so a dots-mode streak rides the end of the turn as a
+bracketed `[.....]` group), and renders each body through an in-process glamour
+renderer.
 
 ## Notes
 
@@ -507,17 +522,22 @@ through an in-process glamour renderer.
   truncate-in-place), so the follower re-reads the file on each change and
   dedups by `step_index` (seeded from the backfill snapshot).
 
-## Tested against the bash original
+## Tested against golden files
 
-The port is validated **byte-identical** (ANSI-stripped) to the original bash
-implementation across Claude, Codex, and Antigravity in `dots` and `none`
-modes. `go test` runs a golden-file suite over synthetic fixtures; `RUN_ORACLE=1
-go test` additionally diffs the live Go output against the bash oracle
-(`entire-tail.bash`) when `bash`/`jq`/`glow` are present.
+`go test` runs a golden-file suite (`testdata/*.golden`) over synthetic fixtures
+— that's the rendering contract. The port *started* byte-identical to the
+original bash implementation, but has since deliberately diverged (see the
+improvements below), so the bash oracle (`entire-tail.bash`,
+`RUN_ORACLE=1 go test`) is retired as a live parity gate and kept only for manual
+A/B inspection.
 
-Two deliberate improvements over the bash version:
+Deliberate improvements over the bash version:
 
 - **Full truecolor** bodies (the bash `glow` pipe capped them at 256 colors).
+- **Dots ride the agent turn** — a `dots`-mode tool streak attaches to the end of
+  the agent's last line as a bracketed `[.....]` group instead of a standalone row.
+- **Claude questions / subagent spawns** render as a bordered card / a
+  `⏺ ▸ agent:` marker instead of the bash oracle's raw markdown.
 - **`--tool-style lines`** shows tool-input previews literally; the bash version
   piped them through markdown, which silently ate `*`, `\`, and trailing spaces.
 

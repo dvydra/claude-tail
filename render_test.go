@@ -20,6 +20,7 @@ func renderRecords(toolStyle string, collapse int, live bool, recs ...Record) st
 	for _, rec := range recs {
 		r.emit(rec)
 	}
+	r.endLine() // settle the deferred trailing newline (as backfill/quit do)
 	return b.String()
 }
 
@@ -113,11 +114,61 @@ func TestDotStreakThenHeaderBreaksWithNewline(t *testing.T) {
 		Record{Kind: KindToolUse, Name: "Bash"},
 		Record{Kind: KindUser, Ts: "T1", Body: "x"},
 	)
-	want := dotColor("Read") + "." + reset +
+	want := "D:[" + reset + // dim open bracket
+		dotColor("Read") + "." + reset +
 		dotColor("Bash") + "." + reset +
+		"D:]" + reset + // dim close bracket
 		"\n" + // newline breaks the streak before the header
 		"U:" + userHdrBody + reset + " D:T1" + reset + "\n" +
 		"x\n"
+	if out != want {
+		t.Errorf("got:\n%q\nwant:\n%q", out, want)
+	}
+}
+
+func TestDotsRideAgentTurn(t *testing.T) {
+	// In dots mode the tool dots ride the end of the agent's text line (one space
+	// join), so short tool streaks don't cost a whole extra line before the marker.
+	out := renderRecords("dots", 0, false,
+		Record{Kind: KindAssistant, Ts: "T1", Body: "reading files"},
+		Record{Kind: KindToolUse, Name: "Read"},
+		Record{Kind: KindToolUse, Name: "Read"},
+		Record{Kind: KindAssistant, Ts: "T2", Body: "done"},
+	)
+	want := "C:" + claudeHdrBody + reset + " D:T1" + reset + "\n" +
+		"reading files " + "D:[" + reset +
+		dotColor("Read") + "." + reset + dotColor("Read") + "." + reset +
+		"D:]" + reset + "\n" +
+		"D:  ⋯ T2" + reset + "\n" +
+		"done\n"
+	if out != want {
+		t.Errorf("got:\n%q\nwant:\n%q", out, want)
+	}
+}
+
+func TestDotsAfterEmptyBodyStartFresh(t *testing.T) {
+	// No body text to ride → the bracketed streak begins the line, no leading space.
+	out := renderRecords("dots", 0, false,
+		Record{Kind: KindAssistant, Ts: "T1", Body: ""},
+		Record{Kind: KindToolUse, Name: "Read"},
+	)
+	want := "C:" + claudeHdrBody + reset + " D:T1" + reset + "\n" +
+		"D:[" + reset + dotColor("Read") + "." + reset + "D:]" + reset + "\n"
+	if out != want {
+		t.Errorf("got:\n%q\nwant:\n%q", out, want)
+	}
+}
+
+func TestDotsDoNotRideUserTurn(t *testing.T) {
+	// A tool call after a user turn (e.g. a text-less assistant turn emits no body)
+	// must start on its own line — never ride/corrupt the user's text.
+	out := renderRecords("dots", 0, false,
+		Record{Kind: KindUser, Ts: "T1", Body: "install it"},
+		Record{Kind: KindToolUse, Name: "Bash"},
+	)
+	want := "U:" + userHdrBody + reset + " D:T1" + reset + "\n" +
+		"install it\n" +
+		"D:[" + reset + dotColor("Bash") + "." + reset + "D:]" + reset + "\n"
 	if out != want {
 		t.Errorf("got:\n%q\nwant:\n%q", out, want)
 	}

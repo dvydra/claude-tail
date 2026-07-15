@@ -162,6 +162,7 @@ func fetchEntireSessions() ([]entireSession, error) {
 func buildSessionTree(home, pwd string, days int, now int64, forceLocal, cloud bool) sessionTree {
 	local := buildClaudeTree(home, pwd, days, now, claudeLiveCwds())
 	if forceLocal {
+		ensureCurrentDirFolder(&local, pwd, now)
 		return local
 	}
 	var sessions []entireSession
@@ -173,6 +174,21 @@ func buildSessionTree(home, pwd string, days int, now int64, forceLocal, cloud b
 	// mergeEntire with no cloud data still regroups the complete local set by repo
 	// (via each cwd's git remote), so the default is repo-grouped and fast.
 	return mergeEntire(local, sessions, home, days, now)
+}
+
+// ensureCurrentDirFolder guarantees the folder-grouped local tree contains the
+// current directory (even with zero sessions), so it's always visible and can be
+// `n`-ed from the picker. Mtime=now floats the empty group to the top of the
+// non-live folders, where the cursor lands.
+func ensureCurrentDirFolder(t *sessionTree, pwd string, now int64) {
+	slug := claudeSlug(pwd)
+	for i := range t.Folders {
+		if t.Folders[i].Slug == slug {
+			return
+		}
+	}
+	t.Folders = append(t.Folders, treeFolder{Slug: slug, Cwd: pwd, Dir: pwd, Mtime: now})
+	sortFolders(t.Folders)
 }
 
 // mergeEntire regroups the complete local tree by repo and folds in entire's
@@ -258,6 +274,12 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 	}
 
 	curRepo := repoForCwd(local.Pwd, home, repoCache)
+	// Always surface the current directory's group, even with zero sessions, so it
+	// can be `n`-ed straight from the picker. Dir points at the real cwd for `n`.
+	if _, ok := groups[curRepo]; !ok {
+		groups[curRepo] = &treeFolder{Cwd: curRepo, Slug: curRepo, Dir: local.Pwd, Mtime: now}
+		order = append(order, curRepo)
+	}
 	tree := sessionTree{Now: now, Home: home, Pwd: local.Pwd, CurrentGroup: curRepo}
 	for _, repo := range order {
 		g := groups[repo]

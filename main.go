@@ -227,6 +227,7 @@ func run(cfg Config) {
 			return
 		}
 		all := splitLines(d)
+		r.endLine() // close any open dot-streak bracket before wiping state
 		r.reset()
 		io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ reloaded"+reset+"\n\n")
 		for _, l := range all {
@@ -245,6 +246,7 @@ func run(cfg Config) {
 			// Quit: restore the terminal and do the final flush here, on the
 			// sole writer goroutine (130 for Ctrl-C/SIGINT, 0 for q/Ctrl-D/SIGTERM).
 			restoreTTY()
+			r.endLine() // terminate a deferred body/dots line so exit lands on a fresh row
 			out.Flush()
 			fmt.Fprintln(os.Stderr)
 			os.Exit(code)

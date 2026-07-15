@@ -16,11 +16,15 @@ It ships as an [`entire`](https://docs.entire.io) plugin (`entire tail`) and
 also runs standalone (`entire-tail`).
 
 **This is a Go rewrite of an original bash script** (`entire-tail.bash`, kept as
-a reference oracle). The Go port is validated **byte-identical** (ANSI-stripped)
-to the bash output for Claude/Codex/agy in `dots` and `none` modes. The rewrite
-fixed two things bash couldn't: full truecolor bodies (bash piped `glow`, capped
-at 256 colors) and a multi-second autodetect latency (per-file codex rollout
-scans). See the `CT-2` plan in agent-planner for the full investigation/decision.
+a reference oracle). The Go port started **byte-identical** (ANSI-stripped) to the
+bash output for Claude/Codex/agy in `dots` and `none` modes; it has since
+deliberately diverged (dots ride the agent turn; Claude questions/subagent spawns
+render as cards/markers — see below), so the **committed goldens are the parity
+contract now**, not the bash oracle (`RUN_ORACLE`/`TestEquivalenceVsBash` is
+retired to skips). The rewrite fixed two things bash couldn't: full truecolor
+bodies (bash piped `glow`, capped at 256 colors) and a multi-second autodetect
+latency (per-file codex rollout scans). See the `CT-2` plan in agent-planner for
+the full investigation/decision.
 
 ## Build / test / install
 
@@ -66,7 +70,11 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `cachedEntireSessions`), so the default never blocks on the network — it only
   reads a warm cache. `--local` skips git+cloud (pure folder-grouped crawl).
   `loadClaudeMeta` reads only each session's head (early-out) to keep the crawl
-  cheap regardless of transcript size
+  cheap regardless of transcript size. `buildSessionTree`/`mergeEntire` always
+  surface the **current directory's group even with zero sessions**
+  (`ensureCurrentDirFolder` / the `curRepo` inject, `Dir`=cwd, `Mtime`=now) so it's
+  always visible and `n`-able from the picker; `composeFolderRow` renders an empty
+  group as `▸ path  (no sessions — n to start one)`
 - `picker.go` — picker glue: live-cwd detection (`pgrep`+`lsof`, optional) for
   the `--local` view's live markers, plus `runPicker`/`resolveTreeChoice`. The
   tree is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` /
@@ -107,7 +115,12 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   metadata-only (no build-time dependency)
 - `render.go` — the **rendering state machine** (one path shared by backfill +
   live): tracks previous participant (consecutive same-participant turns collapse
-  to a dim `⋯ ts` marker) and dot-streak state; tool tristate lives here
+  to a dim `⋯ ts` marker) and `lineOpen`/dot-streak state; tool tristate lives here.
+  A body **defers its trailing newline** (`lineOpen`) so a following dots-mode tool
+  streak **rides the end of the agent turn** as a bracketed group (` [.]` → ` [.....]`)
+  instead of a standalone line; the first dot opens the `[`, `endLine()` writes the
+  closing `]` + the owed newline before the next header/marker/block. Backfill and
+  live leave the last line open (streaming); the quit path (and preview/focus) flush it
 - `toolresult.go` — parse Claude `toolUseResult` into diffs / output / read-summary
 - `tail.go` — follow loop (byte-offset resume for claude/codex; whole-file
   re-read + `step_index` dedup for agy)
@@ -134,11 +147,13 @@ needs to change.
 
 ## Things that are load-bearing (don't "clean up" without care)
 
-- **Byte-for-byte bash parity** is a tested contract. The box-header dash counts
-  (`render.go` `userHdrBody`/`claudeHdrBody`), blank-line squeezing, and dot
-  coloring all match the bash oracle on purpose. Changing rendered bytes can
-  break `equiv_test.go` / the goldens in `testdata/*.golden`. Regenerate goldens
-  deliberately, never blindly.
+- **The committed goldens are the rendering contract** (`testdata/*.golden`, via
+  `TestGolden`). The box-header dash counts (`render.go`
+  `userHdrBody`/`claudeHdrBody`), blank-line squeezing, and dot coloring are all
+  load-bearing. Changing rendered bytes changes the goldens — regenerate them
+  deliberately (`UPDATE_GOLDEN=1 go test -run TestGolden ./...`) and eyeball the
+  diff, never blindly. (Bash byte-parity is no longer the contract — dots ride the
+  agent turn, so the Go output intentionally diverges; see the divergence note.)
 - **Tool rendering is a tristate** (`toolStyleKind`: `full`/`dots`/`hidden`),
   stored as an `atomic.Int32` so the keyboard goroutine can flip it live without
   racing the render goroutine. Same for the collapse threshold. The live loop is
@@ -148,14 +163,25 @@ needs to change.
   truncates to 120 runes — that's deliberate: long/badly-indented commands stay
   one predictable line instead of wrapping into scrollback garbage. Command
   output under `⎿` is shown in **full** (no truncation — "full means full").
+- **Dots ride the agent turn (intentional divergence).** In `dots` mode the tool
+  dots attach to the end of the agent's text line as a bracketed group (` [.]`
+  growing to ` [.....]`) rather than a standalone line below it — short streaks no
+  longer cost a whole extra row before the `⋯` marker. Mechanism: `body()` defers
+  its final newline (`lineOpen`); the first dot of a streak opens a dim `[` (with a
+  one-space join to an open body line; a fresh streak on an empty body starts the
+  line, no leading space); `endLine()` writes the dim closing `]` + the owed newline
+  before the next header/marker/block. The `*_dots` goldens were regenerated for
+  this. Buffered renderers that `TrimRight` their output (`preview.go`, `focus.go`)
+  must call `endLine()` after their emit loop or the trailing `]` is lost.
 - **Subagent spawns + questions render Claude-only, and intentionally diverge
   from the bash oracle.** `AskUserQuestion` renders as a bold bordered card (+ a
   one-shot bell, live only, deduped per question id via `seenQuestions`) and
   `Agent`/`Task` as a `⏺ ▸ agent:` marker — replacing the old markdown question
-  the oracle emits. The `claude_dots`/`claude_lines` goldens were regenerated for
-  this deliberately; `RUN_ORACLE=1` will now differ on those events (the default
-  gate is goldens + units, oracle is opt-in). Both are always shown regardless of
-  tool style — they're orchestration, not routine tool calls.
+  the oracle emits. Both are always shown regardless of tool style — they're
+  orchestration, not routine tool calls. Together with the dots divergence above,
+  the Go renderer no longer matches the bash oracle in any mode, so
+  `TestEquivalenceVsBash` (`RUN_ORACLE=1`) is retired to skips; the goldens +
+  units are the gate.
 - **Word wrap is off** (`glamour.WithWordWrap(0)`): each paragraph is one logical
   line the terminal soft-wraps, so resizing reflows on the next render. Don't
   re-enable wrap.
