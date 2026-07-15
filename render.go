@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/muesli/termenv"
@@ -314,80 +313,34 @@ func (r *Renderer) toolUse(name, summary string) {
 	}
 }
 
-// Question-card colors (fixed amber, prominent on dark themes).
+// Question colors (fixed amber, prominent on dark themes).
 const (
-	qBorderANSI = "\x1b[38;2;240;190;90m"
-	qTitleANSI  = "\x1b[1m\x1b[38;2;240;190;90m"
-	qTitle      = "⁉ WAITING FOR YOUR ANSWER"
-	qMaxInner   = 76 // max card content width (chars); longer lines are truncated
+	qTitleANSI = "\x1b[1m\x1b[38;2;240;190;90m"
+	qTitle     = "⁉ WAITING FOR YOUR ANSWER"
 )
 
-// questionCard draws a bold bordered card for one or more pending questions.
-// Width is content-driven (no terminal-width dependency) so it works when
-// rendering to a pipe; over-long option lines are truncated with an ellipsis.
+// questionCard renders one or more pending questions as a prominent — but
+// un-boxed, un-truncated — block: an amber-bold title, each question's (amber-bold)
+// head, then its numbered options in full. No borders and no width math, so
+// nothing is ever clipped; long lines just soft-wrap in the terminal like any
+// other body.
 func questionCard(qs []QuestionItem) string {
-	var content []string
+	var b strings.Builder
+	b.WriteString(qTitleANSI + qTitle + reset + "\n")
 	for i, q := range qs {
 		if i > 0 {
-			content = append(content, "")
+			b.WriteString("\n") // blank line between questions
 		}
 		head := q.Question
 		if q.Header != "" {
 			head = q.Header + ": " + q.Question
 		}
-		content = append(content, head)
+		b.WriteString(qTitleANSI + head + reset + "\n")
 		for j, o := range q.Options {
-			content = append(content, fmt.Sprintf("  %d. %s", j+1, o))
+			fmt.Fprintf(&b, "  %d. %s\n", j+1, o)
 		}
 	}
-
-	// Card body width W (chars between the "│ " and " │"): widest content line,
-	// but at least wide enough for the title, capped at qMaxInner.
-	W := runeLen(qTitle) + 4
-	for _, c := range content {
-		if w := runeLen(c); w > W {
-			W = w
-		}
-	}
-	if W > qMaxInner {
-		W = qMaxInner
-	}
-
-	var b strings.Builder
-	// Top border: ╭─ <title> <dashes> ╮  — spans W+2 chars between the corners.
-	tail := W + 2 - 2 - runeLen(qTitle) - 1 // "─ " + title + " " + dashes
-	if tail < 0 {
-		tail = 0
-	}
-	b.WriteString(qBorderANSI + "╭─ " + reset + qTitleANSI + qTitle + reset + " " +
-		qBorderANSI + strings.Repeat("─", tail) + "╮" + reset + "\n")
-	for _, c := range content {
-		b.WriteString(qBorderANSI + "│" + reset + " " + runePad(runeTrunc(c, W), W) + " " + qBorderANSI + "│" + reset + "\n")
-	}
-	b.WriteString(qBorderANSI + "╰" + strings.Repeat("─", W+2) + "╯" + reset + "\n")
 	return b.String()
-}
-
-func runeLen(s string) int { return utf8.RuneCountInString(s) }
-
-// runeTrunc caps s to n runes, adding an ellipsis when it cuts.
-func runeTrunc(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	if n <= 1 {
-		return "…"
-	}
-	rs := []rune(s)
-	return string(rs[:n-1]) + "…"
-}
-
-// runePad right-pads s with spaces to n runes (assumes s already ≤ n runes).
-func runePad(s string, n int) string {
-	if p := n - utf8.RuneCountInString(s); p > 0 {
-		return s + strings.Repeat(" ", p)
-	}
-	return s
 }
 
 // Diff colors (fixed, readable on dark themes): green add, red remove.
