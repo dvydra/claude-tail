@@ -38,24 +38,22 @@ func TestAgentSpawnMarker(t *testing.T) {
 }
 
 func TestQuestionCardLayout(t *testing.T) {
+	longOpt := "Design for both, build CLI-shaped now — spec the endpoint shape (repoId, cursor) and ship exactly what the watch needs today, nothing wider"
 	rec := Record{Kind: KindQuestion, Ts: "T1", QID: "q1", Questions: []QuestionItem{
-		{Header: "Scope", Question: "Which approach?", Options: []string{"Fast — quick", "Careful"}},
+		{Header: "Scope", Question: "Which approach?", Options: []string{longOpt, "Careful"}},
 	}}
 	out := renderRecords("dots", 0, false, rec)
 	plain := stripANSI(out)
-	for _, want := range []string{"⁉ WAITING FOR YOUR ANSWER", "Scope: Which approach?", "1. Fast — quick", "2. Careful"} {
+	// Title, head, and options render in full.
+	for _, want := range []string{"⁉ WAITING FOR YOUR ANSWER", "Scope: Which approach?", "1. " + longOpt, "2. Careful"} {
 		if !strings.Contains(plain, want) {
-			t.Errorf("card missing %q in:\n%s", want, plain)
+			t.Errorf("question block missing %q in:\n%s", want, plain)
 		}
 	}
-	// Every border row is the same visible width (box stays aligned).
-	var widths []int
-	for _, ln := range strings.Split(strings.TrimRight(plain, "\n"), "\n") {
-		widths = append(widths, len([]rune(ln)))
-	}
-	for i, w := range widths {
-		if w != widths[0] {
-			t.Errorf("row %d width %d != %d\n%s", i, w, widths[0], plain)
+	// No box drawing and no truncation ellipsis — plain, full-width text.
+	for _, banned := range []string{"│", "╭", "╮", "╰", "╯", "…"} {
+		if strings.Contains(plain, banned) {
+			t.Errorf("question block should not contain %q:\n%s", banned, plain)
 		}
 	}
 }

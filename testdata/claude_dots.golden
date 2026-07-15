@@ -12,11 +12,10 @@ func main() {}
 
 Done.
 ⏺ ▸ agent: Investigate the flaky test (general-purpose)
-╭─ ⁉ WAITING FOR YOUR ANSWER ───╮
-│ Scope: Which approach?        │
-│   1. Fast — quick but rough   │
-│   2. Careful                  │
-╰───────────────────────────────╯
+⁉ WAITING FOR YOUR ANSWER
+Scope: Which approach?
+  1. Fast — quick but rough
+  2. Careful
 ─── ▶ USER ─────────────────────────────── 2026-01-02 15:04:12
 chose Careful
   ⋯ 2026-01-02 15:04:13
