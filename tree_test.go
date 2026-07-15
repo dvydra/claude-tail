@@ -443,6 +443,14 @@ func TestRenderListFormat(t *testing.T) {
 	}
 }
 
+func TestComposeFolderRowEmpty(t *testing.T) {
+	// The injected current-dir group (no sessions) shows a fixed ▸ and an n hint.
+	row := composeFolderRow(treeFolder{Cwd: "/home/me/here", Dir: "/home/me/here"}, "/home/me", 1000)
+	if !strings.Contains(row, "~/here") || !strings.Contains(row, "no sessions") || !strings.Contains(row, "n to start") {
+		t.Errorf("empty folder row = %q", row)
+	}
+}
+
 func TestRenderTreeFrame(t *testing.T) {
 	ui := treeUI{Tree: sampleTree(), Width: 100, Height: 20}
 	ui.Rows = flattenRows(ui.Tree, "")

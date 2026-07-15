@@ -37,6 +37,35 @@ func folderByCwd(tr sessionTree, cwd string) *treeFolder {
 	return nil
 }
 
+func TestEnsureCurrentDirFolder(t *testing.T) {
+	// Absent → injected with Dir=pwd and no sessions, so it can be `n`-ed.
+	tr := sessionTree{Folders: []treeFolder{{Cwd: "/other", Slug: claudeSlug("/other"), Mtime: 100}}}
+	ensureCurrentDirFolder(&tr, "/work/empty", 555)
+	f := folderByCwd(tr, "/work/empty")
+	if f == nil || f.Dir != "/work/empty" || len(f.Sessions) != 0 {
+		t.Fatalf("current dir not injected: %+v", tr.Folders)
+	}
+	// Already present → not duplicated.
+	before := len(tr.Folders)
+	ensureCurrentDirFolder(&tr, "/work/empty", 999)
+	if len(tr.Folders) != before {
+		t.Errorf("duplicate injection: %d folders", len(tr.Folders))
+	}
+}
+
+func TestMergeEntireShowsCurrentDir(t *testing.T) {
+	// Even with no local sessions and no cloud data, the current directory's group
+	// is present (and is the CurrentGroup the cursor starts on) so it can be `n`-ed.
+	tree := mergeEntire(sessionTree{Pwd: "/work/here"}, nil, "/home/me", 0, 1000)
+	f := folderByCwd(tree, "/work/here")
+	if f == nil || f.Dir != "/work/here" {
+		t.Fatalf("current dir group missing: %+v", tree.Folders)
+	}
+	if tree.CurrentGroup != "/work/here" {
+		t.Errorf("CurrentGroup = %q, want /work/here", tree.CurrentGroup)
+	}
+}
+
 func TestMergeEntire(t *testing.T) {
 	now := parseEntireTime("2026-07-10T01:00:00Z")
 	// Local base: two sessions in one folder — 'a' is tracked by entire, 'u' isn't.

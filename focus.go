@@ -147,6 +147,7 @@ func renderChannel(ch subagentChannel, home string, theme Theme) []string {
 			rr.emit(rec)
 		}
 	}
+	rr.endLine() // close a trailing dot-streak bracket / deferred newline
 	out := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	if len(out) == 1 && out[0] == "" {
 		return []string{"  (nothing to show yet)"}

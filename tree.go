@@ -663,6 +663,11 @@ func liveBadge(n int) string {
 }
 
 func composeFolderRow(f treeFolder, home string, now int64) string {
+	if len(f.Sessions) == 0 {
+		// The always-shown current directory with no sessions yet — a fixed ▸ (there's
+		// nothing to expand) and a hint that `n` starts one here.
+		return fmt.Sprintf("▸ %s  (no sessions — n to start one)", tildify(f.Cwd, home))
+	}
 	arrow := "▸"
 	if f.Expanded {
 		arrow = "▾"

@@ -54,6 +54,7 @@ func renderFixture(t *testing.T, fc fixtureCase, loc *time.Location) string {
 			r.emit(rec)
 		}
 	}
+	r.endLine() // settle the deferred trailing newline (as backfill/quit do)
 	return b.String()
 }
 
@@ -85,8 +86,14 @@ func TestGolden(t *testing.T) {
 // TestEquivalenceVsBash renders each fixture through both the bash oracle and
 // the Go renderer and asserts the ANSI-stripped output matches. Gated on the
 // oracle + its deps (jq/glow) being present; skipped otherwise (e.g. in CI).
-// Only dots/none are compared — lines-mode tool summaries differ intentionally
-// (bash mangles them through markdown; Go prints them literally).
+//
+// The Go renderer now intentionally diverges from bash in every mode, so there
+// is nothing left to byte-compare — the harness is kept only for manual A/B use:
+//   - lines: tool summaries differ (bash mangles them through markdown).
+//   - dots:  tool dots ride the end of the agent turn instead of a standalone
+//     line, and (Claude) questions/subagent spawns render as cards/markers.
+//
+// The goldens (regenerated deliberately) are the parity contract now.
 func TestEquivalenceVsBash(t *testing.T) {
 	if os.Getenv("RUN_ORACLE") != "1" {
 		t.Skip("set RUN_ORACLE=1 to run the bash-oracle parity test (spawns bash+glow)")
@@ -102,10 +109,11 @@ func TestEquivalenceVsBash(t *testing.T) {
 	}
 
 	for _, fc := range fixtureCases {
-		if fc.toolStyle == "lines" {
-			continue // intentional divergence
-		}
 		t.Run(fc.name, func(t *testing.T) {
+			// Every mode now diverges intentionally (see the doc comment); no fixture
+			// is byte-comparable against the oracle anymore. The comparison below is
+			// kept for manual A/B inspection of Go vs the bash reference.
+			t.Skip("retired: Go renderer intentionally diverges from the bash oracle in every mode")
 			goOut := stripANSI(renderFixture(t, fc, time.Local))
 			bashOut := stripANSI(string(runOracleBackfill(t, oracle, fc, 5*time.Second)))
 			if bashOut != goOut {
