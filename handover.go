@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -21,7 +25,8 @@ type handoverItem struct {
 	SessionID    string
 	Repo         string // owner/repo, else ~path
 	Cwd          string
-	Title        string // snippet
+	Branch       string
+	Title        string // cleaned snippet
 	Live         bool
 	LastActivity int64
 	Tokens       int64
@@ -36,7 +41,8 @@ func localMidnight(now int64, loc *time.Location) int64 {
 }
 
 // flattenToday collapses a session tree to a flat list of local Claude sessions
-// with activity at/after midnight and an on-disk transcript (needed to enrich).
+// with activity at/after midnight and an on-disk transcript (needed to enrich),
+// sorted live-first then most-recent-first so the priority sessions lead.
 func flattenToday(t sessionTree, midnight int64, home string) []handoverItem {
 	cache := map[string]string{}
 	var out []handoverItem
@@ -50,7 +56,8 @@ func flattenToday(t sessionTree, midnight int64, home string) []handoverItem {
 				SessionID:    s.ID,
 				Repo:         repoForCwd(cwd, home, cache),
 				Cwd:          cwd,
-				Title:        s.Snippet,
+				Branch:       s.Branch,
+				Title:        cleanTitle(s.Snippet),
 				Live:         s.Live,
 				LastActivity: s.Mtime,
 				Tokens:       s.Tokens,
@@ -58,7 +65,52 @@ func flattenToday(t sessionTree, midnight int64, home string) []handoverItem {
 			})
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Live != out[j].Live {
+			return out[i].Live // live sessions first
+		}
+		return out[i].LastActivity > out[j].LastActivity
+	})
 	return out
+}
+
+var (
+	reCmdName  = regexp.MustCompile(`<command-name>\s*/?([^<]+?)\s*</command-name>`)
+	reAngleTag = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+)
+
+const caveatBoilerplate = "Caveat: The messages below were generated"
+
+// cleanTitle turns a raw session snippet into a human title for the picker:
+// a slash-command session ("<command-name>progress</command-name> …") becomes
+// "/progress"; command-output / resumed wrappers (local-command-caveat) have no
+// real prompt, so they return "" (the picker shows a placeholder, `i` to preview);
+// anything else is stripped of angle-bracket wrapper tags and whitespace-collapsed.
+func cleanTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if m := reCmdName.FindStringSubmatch(s); m != nil {
+		return "/" + strings.TrimPrefix(strings.TrimSpace(m[1]), "/")
+	}
+	if strings.Contains(s, "local-command-caveat") || strings.Contains(s, caveatBoilerplate) {
+		return ""
+	}
+	s = strings.Join(strings.Fields(reAngleTag.ReplaceAllString(s, " ")), " ")
+	if len(s) < 4 {
+		return ""
+	}
+	return s
+}
+
+// defaultTags selects live sessions by default (their own doc) and excludes ended
+// ones — live work is the priority; opt ended sessions back in with x/1-9.
+func defaultTags(items []handoverItem) []handoverTag {
+	tags := make([]handoverTag, len(items))
+	for i, it := range items {
+		if !it.Live {
+			tags[i] = tagExcluded
+		}
+	}
+	return tags
 }
 
 // ── manifest ──────────────────────────────────────────────────────────────────
@@ -174,7 +226,6 @@ func todaysSessions(home string, now int64, loc *time.Location) []handoverItem {
 
 func runHandover(cfg Config) {
 	home := firstNonEmpty(os.Getenv("HOME"), mustHome())
-	pwd := firstNonEmpty(os.Getenv("PWD"), mustGetwd())
 	now := time.Now().Unix()
 	loc := time.Local
 
@@ -186,7 +237,8 @@ func runHandover(cfg Config) {
 
 	var groups []handoverGroup
 	if ttyUsable() {
-		g, ok := runHandoverPicker(items)
+		theme := mustLoadTheme(cfg)
+		g, ok := runHandoverPicker(items, home, theme, now)
 		if !ok {
 			fmt.Fprintln(os.Stderr, "entire-tail: handover aborted.")
 			return
@@ -194,10 +246,10 @@ func runHandover(cfg Config) {
 		groups = g
 	} else {
 		printHandoverList(items)
-		if !confirmYN(fmt.Sprintf("Write handover docs for these %d sessions?", len(items))) {
+		if !confirmYN(fmt.Sprintf("Write handover docs for these %d sessions (live only)?", len(items))) {
 			return
 		}
-		groups = buildGroups(items, allIndependent(len(items)))
+		groups = buildGroups(items, defaultTags(items))
 	}
 	if len(groups) == 0 {
 		fmt.Fprintln(os.Stderr, "entire-tail: nothing selected.")
@@ -212,30 +264,34 @@ func runHandover(cfg Config) {
 		die("cannot write manifest: " + err.Error())
 	}
 
-	if itermAvailable() {
-		if err := osaRun(handoverScript(pwd, path)); err != nil {
-			fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
-			printHandoverCmd(path)
-		}
-		return
+	total := 0
+	for _, g := range groups {
+		total += len(g.Sessions)
 	}
-	printHandoverCmd(path)
+	fmt.Fprintf(os.Stderr, "entire-tail: %d group(s), %d session(s) → %s\n", len(groups), total, vaultDir)
+
+	// Hand off to claude in-place (works in any terminal — zellij/tmux/iTerm).
+	// Exec only returns on failure, in which case fall back to printing the command.
+	if err := launchClaude(path); err != nil {
+		fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+		printHandoverCmd(path)
+	}
 }
 
 func handoverPrompt(manifestPath string) string {
 	return "Use the handover-sessions skill to write today's handover docs. Manifest JSON: " + manifestPath
 }
 
-// handoverScript opens a fresh iTerm window running an interactive claude with the
-// handover prompt preloaded, cd'd to cwd.
-func handoverScript(cwd, manifestPath string) string {
-	a := "cd " + shQuote(cwd) + " && claude " + shQuote(handoverPrompt(manifestPath))
-	return fmt.Sprintf(`tell application "iTerm2"
-	create window with default profile
-	tell current window
-		tell current session to write text "%s"
-	end tell
-end tell`, asEscape(a))
+// launchClaude replaces this process with an interactive claude seeded with the
+// handover prompt, so the docs are written in the terminal the user ran the
+// picker in. syscall.Exec returns only on error.
+func launchClaude(manifestPath string) error {
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		return fmt.Errorf("claude not found on PATH")
+	}
+	fmt.Fprintln(os.Stderr, "entire-tail: launching claude to write the handover docs…")
+	return syscall.Exec(bin, []string{"claude", handoverPrompt(manifestPath)}, os.Environ())
 }
 
 func printHandoverCmd(manifestPath string) {

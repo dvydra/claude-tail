@@ -21,14 +21,16 @@ const (
 )
 
 type handoverPickUI struct {
-	Items  []handoverItem
-	Tags   []handoverTag // parallel to Items
-	Cursor int
-	Top    int
-	Width  int
-	Height int
-	Done   bool // Enter → proceed with the current assignment
-	Quit   bool // q/Esc → abort
+	Items      []handoverItem
+	Tags       []handoverTag // parallel to Items
+	Cursor     int
+	Top        int
+	Width      int
+	Height     int
+	Now        int64
+	Done       bool // Enter → proceed with the current assignment
+	Quit       bool // q/Esc → abort
+	PreviewReq bool // i/p → show the highlighted session's info view
 }
 
 // handoverGroup is one output doc: the sessions the user grouped together.
@@ -63,6 +65,8 @@ func updateHandoverPick(ui handoverPickUI, k treeKey, r rune) handoverPickUI {
 			ui.setTag(tagIndependent)
 		case r == '-':
 			ui.setTag(tagExcluded)
+		case r == 'i' || r == 'I' || r == 'p' || r == 'P':
+			ui.PreviewReq = true
 		case r == 'j':
 			ui.Cursor++
 		case r == 'k':
@@ -146,7 +150,27 @@ func rowTag(tag handoverTag) string {
 }
 
 func handoverHeader() string {
-	return "  HANDOVER — today's sessions   1-9 group · x separate · - skip · ⏎ write · q abort"
+	return "  HANDOVER — today   1-9 group · x separate · - skip · i preview · ⏎ write · q abort"
+}
+
+// composeHandoverRow is the per-session row: group tag, live/ended marker,
+// short id, repo, age, tokens, branch, and the cleaned title (placeholder when
+// there's no real prompt to show — press i to preview).
+func composeHandoverRow(it handoverItem, tag handoverTag, now int64) string {
+	mark := "○"
+	if it.Live {
+		mark = "●"
+	}
+	branch := ""
+	if it.Branch != "" {
+		branch = "[" + it.Branch + "] "
+	}
+	title := it.Title
+	if title == "" {
+		title = "(no prompt — i to preview)"
+	}
+	return fmt.Sprintf("%s %s %-8s %-24s %-7s %6s  %s%s",
+		rowTag(tag), mark, shortID(it.SessionID), it.Repo, relAge(it.LastActivity, now), formatTokens(it.Tokens), branch, title)
 }
 
 func renderHandoverPick(ui handoverPickUI) string {
@@ -161,18 +185,8 @@ func renderHandoverPick(ui handoverPickUI) string {
 		if i < len(ui.Tags) {
 			tag = ui.Tags[i]
 		}
-		text := fmt.Sprintf("%s %-8s %-24s %6s  %s",
-			rowTag(tag), shortID(it.SessionID), it.Repo, formatTokens(it.Tokens), it.Title)
-		prefix := "  "
-		if i == ui.Cursor {
-			prefix = "❯ "
-		}
-		line := truncateRunes(prefix+text, ui.Width)
-		if i == ui.Cursor {
-			b.WriteString("\x1b[7m" + line + reset + "\x1b[K\n")
-		} else {
-			b.WriteString(line + "\x1b[K\n")
-		}
+		tier := classifyTier(it.LastActivity, ui.Now, it.Live)
+		b.WriteString(styleRow(composeHandoverRow(it, tag, ui.Now), tier, i == ui.Cursor, ui.Width) + "\x1b[K\n")
 		shown++
 	}
 	for ; shown < ui.Height; shown++ {
@@ -186,7 +200,8 @@ func renderHandoverPick(ui handoverPickUI) string {
 
 // runHandoverPicker runs the interactive grouping picker over items and returns
 // the collapsed groups, or ok=false if the user aborted / no tty was available.
-func runHandoverPicker(items []handoverItem) ([]handoverGroup, bool) {
+// Live sessions start selected (their own doc); ended ones start excluded.
+func runHandoverPicker(items []handoverItem, home string, theme Theme, now int64) ([]handoverGroup, bool) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return nil, false
@@ -202,7 +217,7 @@ func runHandoverPicker(items []handoverItem) ([]handoverGroup, bool) {
 	}
 	defer io.WriteString(tty, "\x1b[?25h\x1b[?1049l")
 
-	ui := handoverPickUI{Items: items, Tags: allIndependent(len(items))}
+	ui := handoverPickUI{Items: items, Tags: defaultTags(items), Now: now}
 	buf := make([]byte, 16)
 	for {
 		w, h := termSize(tty)
@@ -220,6 +235,18 @@ func runHandoverPicker(items []handoverItem) ([]handoverGroup, bool) {
 		ui = updateHandoverPick(ui, k, r)
 		if ui.Quit {
 			return nil, false
+		}
+		if ui.PreviewReq {
+			ui.PreviewReq = false
+			if ui.Cursor >= 0 && ui.Cursor < len(ui.Items) {
+				it := ui.Items[ui.Cursor]
+				showInfo(tty, treeSession{
+					Path: it.Path, ID: it.SessionID, Snippet: it.Title,
+					Repo: it.Repo, Branch: it.Branch, Mtime: it.LastActivity,
+					Tokens: it.Tokens, Live: it.Live,
+				}, home, theme)
+			}
+			continue
 		}
 		if ui.Done {
 			return buildGroups(ui.Items, ui.Tags), true
