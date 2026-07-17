@@ -34,6 +34,9 @@ func main() {
 	case ActionList:
 		runList(cfg)
 		return
+	case ActionHandover:
+		runHandover(cfg)
+		return
 	}
 
 	run(cfg)

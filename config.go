@@ -33,7 +33,8 @@ const (
 	ActionHelp
 	ActionVersion
 	ActionListThemes
-	ActionList // static session-tree dump (--list)
+	ActionList     // static session-tree dump (--list)
+	ActionHandover // `entire-tail handover`: generate session handover docs
 )
 
 // firstNonEmpty returns the first non-empty value (matching bash ${A:-${B:-c}},
@@ -88,6 +89,10 @@ func normalizePickWord(s string) string {
 // parseCLI applies env defaults then walks args, with flags overriding env.
 func parseCLI(args []string, getenv func(string) string) (Config, Action, error) {
 	c := defaultConfig(getenv)
+
+	if len(args) > 0 && args[0] == "handover" {
+		return c, ActionHandover, nil
+	}
 
 	needValue := func(i int, flag string) (string, error) {
 		if i+1 >= len(args) || args[i+1] == "" {
