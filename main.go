@@ -487,6 +487,17 @@ Ctrl-D or Ctrl-C.
 USAGE:
   entire-tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]
   entire tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]   # as an entire plugin
+  entire-tail handover                                     # write today's handover docs
+
+SUBCOMMANDS:
+  handover                  Enumerate today's Claude sessions, group them in a
+                            picker (1-9 group · x separate · - skip · ⏎ write),
+                            then launch an interactive claude that enriches each
+                            group with live Linear/GitHub/Entire state and writes
+                            one Obsidian handover doc per group (via the
+                            handover-sessions skill). Docs go to
+                            $ENTIRE_TAIL_HANDOVER_VAULT/Handover/YYYY-MM-DD/
+                            (default: the iCloud Obsidian vault).
 
 ARGUMENTS:
   [ARGS...]                 With no args on an interactive terminal, opens the
@@ -621,6 +632,8 @@ ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_COLLAPSE      Same as --collapse (or 'off' to disable).
   ENTIRE_TAIL_PICK          'always'/'never'/'auto' — same as --pick/--no-pick.
   ENTIRE_TAIL_DAYS          Same as --days (session-tree window).
+  ENTIRE_TAIL_HANDOVER_VAULT  Obsidian vault root for handover docs (default:
+                            the iCloud Obsidian Documents folder).
   GLOW_STYLE                Same as --style.
 
   CLAUDE_TAIL_* variants of the above are honored for back-compat.
