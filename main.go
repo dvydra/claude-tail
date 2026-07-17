@@ -496,7 +496,7 @@ SUBCOMMANDS:
                             group with live Linear/GitHub/Entire state and writes
                             one Obsidian handover doc per group (via the
                             handover-sessions skill). Docs go to
-                            $ENTIRE_TAIL_HANDOVER_VAULT/Handover/YYYY-MM-DD/
+                            $ENTIRE_TAIL_HANDOVER_VAULT/Entire/Handover/YYYY-MM-DD/
                             (default: the iCloud Obsidian vault).
 
 ARGUMENTS:

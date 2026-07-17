@@ -151,7 +151,7 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   at `~/.claude/skills/handover-sessions/`, vendored copy in `docs/`) reads the
   transcripts, live-fetches Linear (MCP) / GitHub (`gh`) / Entire (`entire trail
   show`) state, reconciles mismatches, and writes one Obsidian doc per group to
-  `$ENTIRE_TAIL_HANDOVER_VAULT/Handover/YYYY-MM-DD/` (default: the iCloud vault).
+  `$ENTIRE_TAIL_HANDOVER_VAULT/Entire/Handover/YYYY-MM-DD/` (default: the iCloud vault).
   Pure parts (`localMidnight`, `flattenToday`, `manifestSessionFrom`,
   `buildManifest`, `handoverVaultDir`) are unit-tested.
 - `handover_picker.go` — the grouping-picker: a flat list of today's sessions the

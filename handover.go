@@ -144,12 +144,13 @@ type handoverManifest struct {
 
 const defaultHandoverVault = "/Users/dvydra/Library/Mobile Documents/iCloud~md~obsidian/Documents"
 
-// handoverVaultDir resolves the dated output directory: <root>/Handover/YYYY-MM-DD,
-// where root is $ENTIRE_TAIL_HANDOVER_VAULT or the iCloud Obsidian default.
+// handoverVaultDir resolves the dated output directory:
+// <root>/Entire/Handover/YYYY-MM-DD, where root is $ENTIRE_TAIL_HANDOVER_VAULT or
+// the iCloud Obsidian default (docs live under the vault's Entire/ folder).
 func handoverVaultDir(getenv func(string) string, now int64, loc *time.Location) string {
 	root := firstNonEmpty(getenv("ENTIRE_TAIL_HANDOVER_VAULT"), defaultHandoverVault)
 	date := time.Unix(now, 0).In(loc).Format("2006-01-02")
-	return filepath.Join(root, "Handover", date)
+	return filepath.Join(root, "Entire", "Handover", date)
 }
 
 // Doc/example URLs use conventional placeholder atoms that the link regex can't

@@ -352,7 +352,7 @@ picker:
 On confirm it launches an interactive `claude` (a fresh iTerm window) that, for
 each group, reads the transcripts, **live-fetches current state** — Linear issues
 (MCP), GitHub PRs (`gh`), Entire Trails (`entire trail show`) — and writes one
-Markdown doc per group to `Handover/YYYY-MM-DD/` in the vault. Each doc carries a
+Markdown doc per group to `Entire/Handover/YYYY-MM-DD/` in the vault. Each doc carries a
 summary and where you left it, the session ids (with `claude --resume`), the
 associated Entire sessions / Trails / PRs / Linear issues with their **current**
 state, any ADRs or artifacts created, and — where states disagree (PR merged but

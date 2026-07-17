@@ -144,7 +144,7 @@ func TestHandoverVaultDirDefaultAndEnv(t *testing.T) {
 	loc := time.FixedZone("AEST", 10*3600)
 	now := time.Date(2026, 7, 17, 9, 0, 0, 0, loc).Unix()
 	def := handoverVaultDir(func(string) string { return "" }, now, loc)
-	if def != "/Users/dvydra/Library/Mobile Documents/iCloud~md~obsidian/Documents/Handover/2026-07-17" {
+	if def != "/Users/dvydra/Library/Mobile Documents/iCloud~md~obsidian/Documents/Entire/Handover/2026-07-17" {
 		t.Fatalf("default = %q", def)
 	}
 	env := handoverVaultDir(func(k string) string {
@@ -153,7 +153,7 @@ func TestHandoverVaultDirDefaultAndEnv(t *testing.T) {
 		}
 		return ""
 	}, now, loc)
-	if env != "/tmp/v/Handover/2026-07-17" {
+	if env != "/tmp/v/Entire/Handover/2026-07-17" {
 		t.Fatalf("env = %q", env)
 	}
 }
