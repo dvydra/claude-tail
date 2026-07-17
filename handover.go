@@ -152,6 +152,23 @@ func handoverVaultDir(getenv func(string) string, now int64, loc *time.Location)
 	return filepath.Join(root, "Handover", date)
 }
 
+// Doc/example URLs use conventional placeholder atoms that the link regex can't
+// tell from real ones, so a transcript quoting docs (e.g.
+// https://entire.io/gh/org/repo/trails/N/) would otherwise leak into the manifest.
+var (
+	placeholderOwners = map[string]bool{"org": true, "owner": true, "o": true, "example": true, "acme": true, "myorg": true, "your-org": true}
+	placeholderRepos  = map[string]bool{"repo": true, "r": true, "example": true, "name": true, "myrepo": true, "your-repo": true}
+	placeholderIDs    = map[string]bool{"n": true, "id": true, "number": true, "x": true, "abc": true, "xxx": true}
+)
+
+// placeholderLink reports whether a scanned link is a documentation placeholder
+// (org/repo/N and friends) rather than a real trail/PR reference.
+func placeholderLink(ln sessionLink) bool {
+	return placeholderOwners[strings.ToLower(ln.Owner)] ||
+		placeholderRepos[strings.ToLower(ln.Repo)] ||
+		placeholderIDs[strings.ToLower(ln.ID)]
+}
+
 // manifestSessionFrom builds a manifest session from an item + its extracted
 // links (trails and PRs split by kind). Pure — links are injected.
 func manifestSessionFrom(it handoverItem, links []sessionLink) manifestSession {
@@ -161,6 +178,9 @@ func manifestSessionFrom(it handoverItem, links []sessionLink) manifestSession {
 	}
 	trails, prs := []string{}, []string{}
 	for _, ln := range links {
+		if placeholderLink(ln) {
+			continue // an example/doc URL like .../org/repo/trails/N/, not a real ref
+		}
 		if ln.Kind == "trail" {
 			trails = append(trails, ln.URL)
 		} else {

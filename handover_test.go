@@ -110,6 +110,22 @@ func TestManifestSessionFrom(t *testing.T) {
 	}
 }
 
+func TestManifestSessionFromDropsPlaceholders(t *testing.T) {
+	it := handoverItem{SessionID: "a", Path: "/p"}
+	links := []sessionLink{
+		{Kind: "trail", Owner: "org", Repo: "repo", ID: "N", URL: "https://entire.io/gh/org/repo/trails/N/"},
+		{Kind: "trail", Owner: "entirehq", Repo: "entiredb", ID: "812", URL: "https://entire.io/gh/entirehq/entiredb/trails/812/"},
+		{Kind: "PR", Owner: "owner", Repo: "repo", ID: "1", URL: "https://github.com/owner/repo/pull/1"},
+	}
+	ms := manifestSessionFrom(it, links)
+	if len(ms.TrailUrls) != 1 || ms.TrailUrls[0] != "https://entire.io/gh/entirehq/entiredb/trails/812/" {
+		t.Fatalf("trails = %v (should drop the org/repo/N placeholder)", ms.TrailUrls)
+	}
+	if len(ms.PrUrls) != 0 {
+		t.Fatalf("prs = %v (should drop the owner/repo placeholder)", ms.PrUrls)
+	}
+}
+
 func TestBuildManifestGroupsThrough(t *testing.T) {
 	groups := []handoverGroup{
 		{GroupID: "g1", Sessions: []handoverItem{{SessionID: "a", Path: "/p/a"}, {SessionID: "b", Path: "/p/b"}}},
