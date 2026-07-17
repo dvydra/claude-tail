@@ -37,12 +37,26 @@ Each session: `sessionId`, `repo`, `cwd`, `title`, `state` (live|ended),
 
 Write **exactly one Markdown file per `groups[]` entry** — the user already chose
 the grouping in the picker. **Never split or merge groups.** Write each file to
-the manifest's `vaultHandoverDir` (create the dir if missing), named
-`<repo-basename>--<work-slug>.md` where:
+the manifest's `vaultHandoverDir` (create the dir if missing), named:
 
-- `repo-basename` = the last path segment of the group's `repo` (e.g. `entiredb`).
-- `work-slug` = kebab-case of a short title for the work; for a multi-session
-  group, derive one slug from the combined work.
+```
+<date>--<repo-basename>--<slug>.md
+```
+
+- `<date>` = the manifest's top-level `date` (YYYY-MM-DD).
+- `<repo-basename>` = the last path segment of the group's `repo` (e.g. `entiredb`).
+- `<slug>` = a **descriptive** kebab-case summary of *what the work was about* —
+  3–6 real words drawn from the task/goal after reading the transcript. For a
+  multi-session group, name the overall thread.
+
+**The slug must describe the work.** NEVER use — as the slug or part of it — a
+session id or short id, a bare work-type word (`adr`, `work`, `session`,
+`handover`, `wip`, `misc`), a slash-command name, or the raw title tags.
+
+- Good: `2026-07-17--entiredb--decouple-ci-core-boundary.md`,
+  `2026-07-17--infra--aurora-acu-vs-cpu-monitors.md`
+- Bad: `entiredb--adr-5435e68d.md` (session id + generic word),
+  `entiredb--work.md`, `2026-07-17--entiredb--5435e68d.md`
 
 Overwrite an existing file for the same work (handover is safe to re-run).
 
