@@ -141,6 +141,24 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   which signals the render goroutine to run the focus overlay and parks until it
   returns. Returns the tty fd so the overlay reuses it (single reader)
 - `jqutil.go` — tiny JSON-value-to-string helpers (replaces shelling out to `jq`)
+- `handover.go` — the `entire-tail handover` subcommand: `todaysSessions`
+  enumerates this machine's Claude sessions active since local midnight
+  (`flattenToday` over a 2-day `buildClaudeTree` crawl), the user groups them,
+  then it writes a JSON manifest (`buildManifest`, group-oriented so the skill
+  does zero grouping judgement — link seeds come from `extractLinks`) and launches
+  an interactive `claude` (`handoverScript`, a fresh iTerm window) preloaded to
+  invoke the **`handover-sessions` skill** at the manifest path. The skill (installed
+  at `~/.claude/skills/handover-sessions/`, vendored copy in `docs/`) reads the
+  transcripts, live-fetches Linear (MCP) / GitHub (`gh`) / Entire (`entire trail
+  show`) state, reconciles mismatches, and writes one Obsidian doc per group to
+  `$ENTIRE_TAIL_HANDOVER_VAULT/Entire/Handover/YYYY-MM-DD/` (default: the iCloud vault).
+  Pure parts (`localMidnight`, `flattenToday`, `manifestSessionFrom`,
+  `buildManifest`, `handoverVaultDir`) are unit-tested.
+- `handover_picker.go` — the grouping-picker: a flat list of today's sessions the
+  user tags into groups (`1`-`9` merge, `x` separate/default, `-` skip, ⏎ write,
+  `q` abort). Pure `updateHandoverPick` reducer + `renderHandoverPick` + the
+  `buildGroups` collapse, split from the tty driver `runHandoverPicker` — same
+  reduce/render/driver split as `tree.go`.
 
 Adding a new agent = write a `normalize` + a discovery function. Nothing else
 needs to change.

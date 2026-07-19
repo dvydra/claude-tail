@@ -324,6 +324,45 @@ recency breaks ties. Each row shows the **matching snippet** so you can see why
 it hit. `Enter`/`t` resume or tail the result like any tree row. Results are
 capped at the top 50 (a ubiquitous term otherwise matches everything).
 
+## Handover docs
+
+`entire-tail handover` turns a day's work into per-project handover notes in your
+Obsidian vault — so tomorrow (or a teammate) can pick up any thread without
+re-reading the transcripts.
+
+```sh
+entire-tail handover
+```
+
+It enumerates every Claude session with activity **today** and opens a grouping
+picker:
+
+```
+[x] 656c39a3  entirehq/entiredb        184k  COR-562 CRDB cutover dry-run
+[2] a1b2c3d4  entirehq/entiredb         42k  flaky CI on aurora monitors
+[2] e5f6a7b8  entirehq/entiredb         31k  more CI: queue-wait alert
+[ ] 9f62efce  entirehq/entiredb          8k  scratch / throwaway
+```
+
+- **`1`–`9`** tag a session into a group — sessions sharing a digit become **one**
+  doc (e.g. tag all your CI sessions `2`).
+- **`x`** (default) keeps a session on its own doc; **`-`** skips it; **⏎** writes;
+  **`q`** aborts.
+
+On confirm it launches an interactive `claude` (a fresh iTerm window) that, for
+each group, reads the transcripts, **live-fetches current state** — Linear issues
+(MCP), GitHub PRs (`gh`), Entire Trails (`entire trail show`) — and writes one
+Markdown doc per group to `Entire/Handover/YYYY-MM-DD/` in the vault. Each doc carries a
+summary and where you left it, the session ids (with `claude --resume`), the
+associated Entire sessions / Trails / PRs / Linear issues with their **current**
+state, any ADRs or artifacts created, and — where states disagree (PR merged but
+issue still open, Trail open but PR closed, …) — **recommended reconciliations**.
+
+The writing is done by the **`handover-sessions` skill** (installed under
+`~/.claude/skills/`; a reference copy lives in `docs/`), so you can tune the
+prompt without rebuilding the binary. Set `ENTIRE_TAIL_HANDOVER_VAULT` to point at
+a different vault root (default: the iCloud Obsidian Documents folder).
+
 ## Tool calls
 
 By default, each tool call collapses to a **single colored dot**, and the streak
