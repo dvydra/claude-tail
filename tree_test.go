@@ -58,7 +58,7 @@ func TestLoadClaudeMeta(t *testing.T) {
 		`{"type":"ai-title","aiTitle":"the title"}`,
 		user, asst,
 	}, 100)
-	snip, branch, msgs, cwd := loadClaudeMeta(p)
+	snip, branch, msgs, cwd, _, _ := loadClaudeMeta(p)
 	if snip != "THE SUMMARY" {
 		t.Errorf("snippet = %q, want summary", snip)
 	}
@@ -74,14 +74,96 @@ func TestLoadClaudeMeta(t *testing.T) {
 
 	// no summary → ai-title.
 	p = writeSession(t, dir, "b", []string{`{"type":"ai-title","aiTitle":"just a title"}`, user}, 100)
-	if snip, _, _, _ := loadClaudeMeta(p); snip != "just a title" {
+	if snip, _, _, _, _, _ := loadClaudeMeta(p); snip != "just a title" {
 		t.Errorf("snippet = %q, want ai-title", snip)
 	}
 
 	// no summary/title → first user prompt.
 	p = writeSession(t, dir, "c", []string{user, asst}, 100)
-	if snip, _, _, _ := loadClaudeMeta(p); snip != "first prompt here" {
+	if snip, _, _, _, _, _ := loadClaudeMeta(p); snip != "first prompt here" {
 		t.Errorf("snippet = %q, want first prompt", snip)
+	}
+
+	// the newest last-prompt (current message) wins over summary/title/first prompt,
+	// even though it lives at the tail and an earlier last-prompt is stale.
+	p = writeSession(t, dir, "d", []string{
+		`{"type":"summary","summary":"THE SUMMARY"}`,
+		`{"type":"ai-title","aiTitle":"the title"}`,
+		`{"type":"last-prompt","lastPrompt":"stale opening prompt"}`,
+		user, asst,
+		`{"type":"last-prompt","lastPrompt":"what I asked most recently"}`,
+	}, 100)
+	if snip, _, _, _, _, _ := loadClaudeMeta(p); snip != "what I asked most recently" {
+		t.Errorf("snippet = %q, want newest last-prompt", snip)
+	}
+
+	// ai-title is reached as a fallback even when the first user event (which sets
+	// cwd/branch) precedes it — the early-out must not stop on firstUser alone.
+	p = writeSession(t, dir, "e", []string{user, asst, `{"type":"ai-title","aiTitle":"late title"}`}, 100)
+	if snip, _, _, _, _, _ := loadClaudeMeta(p); snip != "late title" {
+		t.Errorf("snippet = %q, want late title (early-out must not skip it)", snip)
+	}
+
+	// branch reflects where the session ENDED, not where it started — a session
+	// can hop branches (e.g. main → a worktree), so the tail branch wins.
+	p = writeSession(t, dir, "f", []string{
+		`{"type":"user","cwd":"/tmp/proj","gitBranch":"main","message":{"content":"start"}}`,
+		`{"type":"assistant","cwd":"/tmp/proj","gitBranch":"main","message":{"content":[{"type":"text","text":"ok"}]}}`,
+		`{"type":"user","cwd":"/tmp/proj","gitBranch":"feature/wt","message":{"content":"end"}}`,
+	}, 100)
+	if _, br, _, _, _, _ := loadClaudeMeta(p); br != "feature/wt" {
+		t.Errorf("branch = %q, want end branch feature/wt", br)
+	}
+
+	// the newest pr-link (number + url) is picked up from the tail, even when a
+	// stale earlier one exists and more chatter follows the PR.
+	p = writeSession(t, dir, "g", []string{
+		user,
+		`{"type":"pr-link","prNumber":21,"prUrl":"https://github.com/o/r/pull/21"}`,
+		asst,
+		`{"type":"pr-link","prNumber":22,"prUrl":"https://github.com/o/r/pull/22"}`,
+		`{"type":"last-prompt","lastPrompt":"after the PR"}`,
+	}, 100)
+	if _, _, _, _, prNum, prURL := loadClaudeMeta(p); prNum != 22 || prURL != "https://github.com/o/r/pull/22" {
+		t.Errorf("pr = %d %q, want 22 + pull/22 url", prNum, prURL)
+	}
+}
+
+func TestPrCellAndRowSurvivesTruncation(t *testing.T) {
+	// No PR → the column is still reserved (all spaces) so branches line up.
+	if got := prCell(treeSession{}); got != strings.Repeat(" ", prColWidth) {
+		t.Errorf("prCell(no PR) = %q, want %d spaces", got, prColWidth)
+	}
+	// With a URL → an OSC-8 hyperlink wrapping #22, right-aligned in the column.
+	s := treeSession{ID: "aaaa1111", Mtime: 900, Snippet: "do the thing", PrNumber: 22, PrURL: "https://github.com/o/r/pull/22"}
+	cell := prCell(s)
+	if want := osc8(s.PrURL, "#22"); !strings.Contains(cell, want) {
+		t.Errorf("prCell = %q, want it to contain the OSC-8 link %q", cell, want)
+	}
+	if vis := len([]rune(stripANSI(cell))); vis != prColWidth {
+		t.Errorf("prCell visible width = %d, want %d (right-aligned)", vis, prColWidth)
+	}
+	if !strings.HasPrefix(stripANSI(cell), "   #22") {
+		t.Errorf("prCell should right-align: visible %q", stripANSI(cell))
+	}
+	// The PR cell sits before the branch in the row.
+	row := stripANSI(composeSessionRow(treeSession{PrNumber: 22, PrURL: s.PrURL, Branch: "feat/x", Snippet: "x"}, 1000))
+	if strings.Index(row, "#22") >= strings.Index(row, "[feat/x]") {
+		t.Errorf("PR number should precede the branch: %q", row)
+	}
+
+	// styleRow truncates with an OSC-8-aware truncator: the hyperlink's escape
+	// sequence must survive intact (both its opening and closing OSC-8 markers
+	// present), never sliced mid-escape. Width 40 cuts into the snippet, well
+	// after the link.
+	styled := styleRow(composeSessionRow(s, 1000), tierRecent, false, 40)
+	openMark := "\x1b]8;;" + s.PrURL + "\x1b\\"
+	closeMark := "\x1b]8;;\x1b\\"
+	if !strings.Contains(styled, openMark) || !strings.Contains(styled, closeMark) {
+		t.Errorf("truncated row lost an intact OSC-8 hyperlink:\n%q", styled)
+	}
+	if vis := len([]rune(stripANSI(styled))); vis > 40 {
+		t.Errorf("visible width = %d, want <= 40", vis)
 	}
 }
 
@@ -334,17 +416,18 @@ func TestUpdateTreeTailInPlace(t *testing.T) {
 		t.Errorf("'t' should tail in-place: chosen=%q workspace=%v", ui.Chosen, ui.Workspace)
 	}
 
-	// Enter on a folder header expands it, doesn't select.
-	ui2 := treeUI{Tree: sampleTree(), Height: 20}
-	ui2.Tree.Folders[0].Expanded = false
-	ui2.Rows = flattenRows(ui2.Tree, "")
-	ui2.Cursor = 0 // folder header
-	ui2 = updateTree(ui2, kEnter, 0)
-	if ui2.Chosen != "" || ui2.Workspace {
-		t.Errorf("Enter on folder should expand, not select: chosen=%q", ui2.Chosen)
+	// Enter on a folder header starts a fresh session workspace (same as `n`).
+	ui2 := sampleTree()
+	ui2.Folders[0].Dir = "/work/alpha"
+	uiA := treeUI{Tree: ui2, Height: 20}
+	uiA.Rows = flattenRows(uiA.Tree, "")
+	uiA.Cursor = 0 // folder header
+	uiA = updateTree(uiA, kEnter, 0)
+	if uiA.Chosen != "" || uiA.Workspace {
+		t.Errorf("Enter on folder should not select a session: chosen=%q", uiA.Chosen)
 	}
-	if !ui2.Tree.Folders[0].Expanded {
-		t.Error("Enter on collapsed folder should expand it")
+	if !uiA.NewWorkspace || uiA.NewWorkspaceDir != "/work/alpha" {
+		t.Errorf("Enter on folder → new=%v dir=%q, want /work/alpha", uiA.NewWorkspace, uiA.NewWorkspaceDir)
 	}
 }
 

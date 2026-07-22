@@ -32,7 +32,7 @@ func localRepoDirs(home string) map[string]string {
 			if f == "" {
 				continue
 			}
-			_, _, _, cwd := loadClaudeMeta(f)
+			_, _, _, cwd, _, _ := loadClaudeMeta(f)
 			if cwd == "" {
 				continue
 			}
