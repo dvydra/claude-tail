@@ -132,6 +132,39 @@ func run(cfg Config) {
 	}
 	agent := Agent(agentStr)
 
+	loc := time.Local
+	// One signal handler + code channel are shared across the whole picker↔tail
+	// loop. tailSession follows one session and, on Ctrl-X, RETURNS so we re-enter
+	// the tree picker to choose another (tailed in this same pane). Quit
+	// (q/Ctrl-D/Ctrl-C) exits from inside tailSession. The tree is Claude-only, so
+	// Ctrl-X is a no-op on codex/agy sessions and runPicker below just exits if no
+	// Claude tree is in scope.
+	codeCh := make(chan int, 3) // signal + keyboard quit; never block a sender
+	installSignals(codeCh)      // SIGINT → 130, SIGTERM → 0
+	for {
+		tailSession(cfg, agent, session, home, pwd, scanner, theme, loc, codeCh)
+		// tailSession only returns on Ctrl-X — pop back to the tree picker.
+		days, derr := resolveDays(cfg.Days, 7)
+		if derr != nil {
+			die(derr.Error())
+		}
+		path, ag, ok := runPicker([]Agent{AgentClaude}, home, pwd, days, cfg.Local, cfg.Cloud, theme)
+		if !ok {
+			os.Exit(0) // no tty / no Claude tree in scope — nothing to go back to
+		}
+		session, agent = path, ag
+	}
+}
+
+// tailSession renders one session: a backfill of trailing history, then a live
+// follow loop. One select loop on this goroutine owns ALL stdout writes — polling
+// for new lines, reloading, and the final flush. The signal/keyboard goroutines
+// only report on channels (a quit code, a reload/back-to-tree/focus request);
+// they never touch the writer, so there's no data race and no torn output.
+//
+// It os.Exit()s on quit (q/Ctrl-D/Ctrl-C, via the shared codeCh) and RETURNS on
+// Ctrl-X ("back to tree"), leaving run() to re-enter the picker.
+func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *codexScanner, theme Theme, loc *time.Location, codeCh chan int) {
 	if note := cwdMismatchNote(agent, session, home, pwd, scanner); note != "" {
 		fmt.Fprintln(os.Stderr, "entire-tail: "+note)
 	}
@@ -156,7 +189,6 @@ func run(cfg Config) {
 		die(err.Error())
 	}
 
-	loc := time.Local
 	printBanner(cfg, agent, session, backfillFrom, total, collapse)
 
 	out := bufio.NewWriter(os.Stdout)
@@ -175,20 +207,15 @@ func run(cfg Config) {
 	}
 	out.Flush()
 
-	// ── phase 2: live follow until Ctrl-C / Ctrl-D ──
-	//
-	// One select loop on the render goroutine owns ALL stdout writes — polling
-	// for new lines, reloading, and the final flush. The signal/keyboard
-	// goroutines only report on channels (a quit code, or a reload request);
-	// they never touch the writer, so there's no data race and no torn output.
+	// ── phase 2: live follow until Ctrl-C / Ctrl-D / Ctrl-X ──
 	r.live = true
-	codeCh := make(chan int, 3)        // signal + keyboard quit; never block a sender
 	reloadCh := make(chan struct{}, 1) // keyboard 'r'; coalesced (buffered 1)
+	treeCh := make(chan struct{}, 1)   // keyboard Ctrl-X; back to the tree picker
 	focusCh := make(chan struct{}, 1)  // keyboard '→'; the render goroutine runs the overlay
 	resumeCh := make(chan struct{})    // handed back to unpark the keyboard after the overlay
-	installSignals(codeCh)             // SIGINT → 130, SIGTERM → 0
-	restoreTTY, kbTTY := startKeyboard(r, codeCh, reloadCh, focusCh, resumeCh)
-	defer restoreTTY() // panic safety; the normal path restores explicitly below
+	treeEnabled := agent == AgentClaude
+	restoreTTY, kbTTY := startKeyboard(r, treeEnabled, codeCh, reloadCh, treeCh, focusCh, resumeCh)
+	defer restoreTTY() // panic safety; the normal paths restore explicitly below
 
 	emit := func(line []byte) {
 		for _, rec := range normalize(agent, line, loc) {
@@ -253,6 +280,14 @@ func run(cfg Config) {
 			out.Flush()
 			fmt.Fprintln(os.Stderr)
 			os.Exit(code)
+		case <-treeCh:
+			// Ctrl-X: restore the tty so the tree picker (which opens its own
+			// /dev/tty reader) is the sole reader, flush, and return to run() to
+			// re-enter the picker. The keyboard goroutine has already stopped.
+			restoreTTY()
+			r.endLine()
+			out.Flush()
+			return
 		case <-reloadCh:
 			reload()
 			out.Flush()
@@ -378,7 +413,11 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		fmt.Fprintln(w, "  collapse: off")
 	}
 	if isCharDevice(os.Stdin) {
-		fmt.Fprintln(w, "  keys:     t=cycle tools  c=toggle collapse  →=focus subagents  r=reload  q/Ctrl-D=quit")
+		back := ""
+		if agent == AgentClaude {
+			back = "Ctrl-X=back to tree  "
+		}
+		fmt.Fprintln(w, "  keys:     t=cycle tools  c=toggle collapse  →=focus subagents  r=reload  "+back+"q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
@@ -618,6 +657,11 @@ LIVE KEYS (while following, on an interactive terminal):
   r                         Reload: re-render the whole current transcript with
                             the current settings — applies t/c retrospectively
                             by appending a fresh copy to the scrollback.
+  Ctrl-X                    Back to the tree: pop out of the live tail and
+                            re-open the session tree picker (Claude sessions
+                            only). Pick another session with t to tail it in
+                            this same pane, or Enter/n for a workspace. q in the
+                            tree quits entire-tail.
   q, Ctrl-D, Ctrl-C         Quit.
 
   t/c affect events rendered from now on; press r to re-render the history with

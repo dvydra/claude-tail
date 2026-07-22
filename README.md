@@ -104,6 +104,7 @@ events show as they stream:
 | `c`            | toggle collapsing of long user pastes                         |
 | `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
 | `r`            | reload — re-render the whole transcript with current settings |
+| Ctrl-X         | **back to the tree** — pop out of the live tail into the session tree picker (Claude only); pick another with `t` to tail it in this same pane, or `Enter`/`n` for a workspace |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 
 `t`/`c` declutter the view on the fly — handy when an agent goes on a long

@@ -18,11 +18,13 @@ const (
 	keyToggleCollapse
 	keyReload
 	keyQuit
+	keyBackToTree
 )
 
 // keyActionFor maps a raw input byte to an action. Ctrl-C is left to the signal
 // handler (ISIG stays enabled in cbreak mode), so it isn't handled here; Ctrl-D
-// (0x04) arrives as a byte once canonical mode is off.
+// (0x04) and Ctrl-X (0x18) arrive as bytes once canonical mode is off (neither is
+// a signal-generating control char, so cbreak passes them straight through).
 func keyActionFor(b byte) keyAction {
 	switch b {
 	case 't', 'T':
@@ -33,6 +35,8 @@ func keyActionFor(b byte) keyAction {
 		return keyReload
 	case 'q', 'Q', 0x04:
 		return keyQuit
+	case 0x18: // Ctrl-X
+		return keyBackToTree
 	}
 	return keyNone
 }
@@ -48,7 +52,13 @@ func keyActionFor(b byte) keyAction {
 // when there's no usable tty). The focus overlay reuses this SAME fd — while it
 // runs, the keyboard goroutine is parked on resumeCh, so there's a single tty
 // reader at all times (two fds on the same tty race for input).
-func startKeyboard(r *Renderer, codeCh chan<- int, reloadCh chan<- struct{}, focusCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
+//
+// When treeEnabled is true, Ctrl-X signals treeCh and the goroutine RETURNS
+// (stops reading), so the tree picker that follows is the sole reader of the tty;
+// the caller's live loop restores the tty and re-enters the picker. When false
+// (non-Claude session / no tree in scope), Ctrl-X is ignored — the tree is
+// Claude-only, so there's nothing to go back to.
+func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh chan<- struct{}, treeCh chan<- struct{}, focusCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
 	if !isCharDevice(os.Stdin) {
 		return func() {}, nil
 	}
@@ -98,6 +108,14 @@ func startKeyboard(r *Renderer, codeCh chan<- int, reloadCh chan<- struct{}, foc
 			case keyQuit:
 				codeCh <- 0
 				return
+			case keyBackToTree:
+				// Only meaningful for a Claude session on a tty (the tree is
+				// Claude-only). Signal the live loop and STOP reading so the
+				// picker's tty reader is the sole one, then return.
+				if treeEnabled {
+					treeCh <- struct{}{}
+					return
+				}
 			case keyCycleTools:
 				fmt.Fprintln(os.Stderr, "entire-tail: "+r.cycleTools()+" (press r to re-render history)")
 			case keyToggleCollapse:
