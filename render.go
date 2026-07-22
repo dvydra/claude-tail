@@ -458,6 +458,18 @@ func (r *Renderer) endLine() {
 	}
 }
 
+// abortLine closes an open dots bracket but DEFERS the trailing newline — used
+// when handing the primary screen to the tree picker's alt-screen on Ctrl-X.
+// endLine's newline would scroll a blank line into the primary buffer just before
+// the swap (visible when the picker restores it); the owed newline is written
+// after the picker returns instead, ahead of the next session's banner.
+func (r *Renderer) abortLine() {
+	if r.lineOpen && r.inDotStreak {
+		io.WriteString(r.w, r.theme.DimANSI+"]"+reset)
+		r.inDotStreak = false
+	}
+}
+
 func isBlank(s string) bool {
 	return strings.TrimSpace(s) == ""
 }
