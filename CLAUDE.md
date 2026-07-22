@@ -139,7 +139,10 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
 - `theme.go` / `config.go` / `main.go` — themes, flags+env, wiring
 - `keyboard.go` — live single-key toggles via cbreak (`t`/`c`/`r`/`q`), plus `→`
   which signals the render goroutine to run the focus overlay and parks until it
-  returns. Returns the tty fd so the overlay reuses it (single reader)
+  returns, and `Ctrl-X` (0x18) which signals `treeCh` and STOPS reading so
+  `tailSession` returns and `run`'s picker↔tail loop re-enters the tree
+  (Claude-only, gated by `treeEnabled`; a no-op on codex/agy). Returns the tty fd
+  so the overlay reuses it (single reader)
 - `jqutil.go` — tiny JSON-value-to-string helpers (replaces shelling out to `jq`)
 - `handover.go` — the `entire-tail handover` subcommand: `todaysSessions`
   enumerates this machine's Claude sessions active since local midnight
