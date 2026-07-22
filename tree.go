@@ -40,6 +40,10 @@ type treeSession struct {
 	Live    bool   // a running claude process holds this session's folder
 	cwd     string // recovered .cwd (build-only; folder carries the display copy)
 
+	// The PR this session opened (newest `pr-link` event); 0/"" when none.
+	PrNumber int
+	PrURL    string
+
 	// entire cloud metadata (0/empty for untracked local sessions) — for the token
 	// column and the summary card.
 	Tokens int64  // spend: input + output + cache-write tokens
@@ -69,12 +73,15 @@ type sessionTree struct {
 
 // claudeMetaEvent is the subset of a Claude event we read to summarize a session.
 type claudeMetaEvent struct {
-	Type      string         `json:"type"`
-	Summary   string         `json:"summary"`
-	AiTitle   string         `json:"aiTitle"`
-	Cwd       string         `json:"cwd"`
-	GitBranch string         `json:"gitBranch"`
-	Message   *claudeMessage `json:"message"`
+	Type       string         `json:"type"`
+	Summary    string         `json:"summary"`
+	AiTitle    string         `json:"aiTitle"`
+	LastPrompt string         `json:"lastPrompt"`
+	PrNumber   int            `json:"prNumber"`
+	PrURL      string         `json:"prUrl"`
+	Cwd        string         `json:"cwd"`
+	GitBranch  string         `json:"gitBranch"`
+	Message    *claudeMessage `json:"message"`
 }
 
 // ── build ─────────────────────────────────────────────────────────────────
@@ -162,19 +169,21 @@ func sessionFromMeta(m fileMeta) treeSession {
 		ID:    strings.TrimSuffix(filepath.Base(m.path), ".jsonl"),
 		Mtime: m.mtime,
 	}
-	s.Snippet, s.Branch, s.Msgs, s.cwd = loadClaudeMeta(m.path)
+	s.Snippet, s.Branch, s.Msgs, s.cwd, s.PrNumber, s.PrURL = loadClaudeMeta(m.path)
 	return s
 }
 
 // loadClaudeMeta extracts a display snippet, git branch, and cwd from a Claude
-// session. Snippet precedence: the session summary, then its ai-title, then its
-// first user prompt — all of which live in the opening events, so this reads only
-// the file's head (bounded, with an early-out) rather than the whole transcript.
-// That keeps a full-tree build cheap no matter how large individual sessions are.
-func loadClaudeMeta(path string) (snippet, branch string, msgs int, cwd string) {
+// session. Snippet precedence: the current message (the newest `last-prompt`),
+// then the session summary, its ai-title, and finally its first user prompt.
+// The title/branch/cwd/first-prompt all live in the opening events (a bounded,
+// early-out head scan); the current message lives at the tail, read via a single
+// bounded ReadAt on the same handle. Both reads are O(window), not O(file), so a
+// full-tree build stays cheap no matter how large individual transcripts are.
+func loadClaudeMeta(path string) (snippet, branch string, msgs int, cwd string, prNumber int, prURL string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", 0, ""
+		return "", "", 0, "", 0, ""
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -212,12 +221,80 @@ func loadClaudeMeta(path string) (snippet, branch string, msgs int, cwd string) 
 				firstUser = claudeUserText(ev.Message)
 			}
 		}
-		// Early-out once we have everything the row needs.
-		if cwd != "" && branch != "" && firstNonEmpty(summary, aiTitle, firstUser) != "" {
+		// Early-out once we have the identifying fields AND a real title. The
+		// first user event (which sets cwd/branch) usually precedes the ai-title
+		// event, so we must NOT stop on firstUser alone or the title is skipped.
+		if cwd != "" && branch != "" && (summary != "" || aiTitle != "") {
 			break
 		}
 	}
-	return collapsePreview(firstNonEmpty(summary, aiTitle, firstUser)), branch, msgs, cwd
+	// From the tail: the current message (newest `last-prompt`), the branch the
+	// session ended on (a session can hop branches — e.g. main → a worktree — so
+	// the head's first branch is misleading), and the PR it opened. Tail branch
+	// wins when present.
+	current, tailBranch, prNumber, prURL := tailMeta(f)
+	if tailBranch != "" {
+		branch = tailBranch
+	}
+	return collapsePreview(firstNonEmpty(current, summary, aiTitle, firstUser)), branch, msgs, cwd, prNumber, prURL
+}
+
+// tailMeta reads a bounded tail window and walks it backward to recover the
+// end-of-session facts a row shows: `current` is the newest `last-prompt` (Claude
+// appends one per submission, so the last is what's in flight now); `branch` is
+// the gitBranch of the newest user/assistant event (the branch the session ended
+// on); `prNumber`/`prURL` are the newest `pr-link`. The ReadAt is independent of
+// the head scanner's offset and the walk is O(window). A cheap bytes.Contains
+// pre-filter skips lines that can't carry a still-wanted field, so the common
+// bulk (assistant/tool events) is never JSON-parsed. A partial first line (the
+// window rarely starts on a boundary) just fails to parse and is skipped. Any
+// field is left zero if the window doesn't contain it — the caller then falls
+// back to the head-scan title/first-prompt/branch.
+func tailMeta(f *os.File) (current, branch string, prNumber int, prURL string) {
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return "", "", 0, ""
+	}
+	const window = 128 * 1024
+	start := int64(0)
+	if fi.Size() > window {
+		start = fi.Size() - window
+	}
+	buf := make([]byte, fi.Size()-start)
+	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+		return "", "", 0, ""
+	}
+	lines := bytes.Split(buf, []byte{'\n'})
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 {
+			continue
+		}
+		needCurrent, needBranch, needPR := current == "", branch == "", prNumber == 0
+		if !needCurrent && !needBranch && !needPR {
+			break
+		}
+		// Only parse a line if it can still supply something we're looking for.
+		if !(needCurrent && bytes.Contains(line, []byte(`"last-prompt"`))) &&
+			!(needBranch && bytes.Contains(line, []byte(`"gitBranch"`))) &&
+			!(needPR && bytes.Contains(line, []byte(`"pr-link"`))) {
+			continue
+		}
+		var ev claudeMetaEvent
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		if needCurrent && ev.Type == "last-prompt" && ev.LastPrompt != "" {
+			current = ev.LastPrompt
+		}
+		if needBranch && (ev.Type == "user" || ev.Type == "assistant") && ev.GitBranch != "" {
+			branch = ev.GitBranch
+		}
+		if needPR && ev.Type == "pr-link" && ev.PrNumber > 0 {
+			prNumber, prURL = ev.PrNumber, ev.PrURL
+		}
+	}
+	return current, branch, prNumber, prURL
 }
 
 // claudeUserText pulls plain text from a user message (a bare string, or the
@@ -478,11 +555,7 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 		case ' ':
 			ui.Cursor += ui.pageStep() // pager convention: space = page down
 		case 'n', 'N':
-			// Fresh session workspace in the highlighted folder's dir (else $PWD).
-			ui.NewWorkspace = true
-			if row, ok := ui.current(); ok {
-				ui.NewWorkspaceDir = ui.Tree.Folders[row.Folder].Dir
-			}
+			ui.startNewWorkspace()
 		case 'i', 'I':
 			if s, ok := ui.currentSession(); ok {
 				ui.Sel, ui.SummaryReq = s, true
@@ -537,11 +610,19 @@ func (ui *treeUI) activate() {
 		return
 	}
 	if row.Session == -1 {
-		ui.Tree.Folders[row.Folder].Expanded = !ui.Tree.Folders[row.Folder].Expanded
-		ui.Rows = flattenRows(ui.Tree, ui.Filter)
+		ui.startNewWorkspace() // Enter on a folder → fresh session workspace (same as `n`)
 		return
 	}
 	ui.selectSession(true) // Enter on a session → open the iTerm workspace
+}
+
+// startNewWorkspace requests a fresh session workspace in the highlighted
+// folder's dir (else $PWD). Bound to both `n` and Enter-on-a-folder.
+func (ui *treeUI) startNewWorkspace() {
+	ui.NewWorkspace = true
+	if row, ok := ui.current(); ok {
+		ui.NewWorkspaceDir = ui.Tree.Folders[row.Folder].Dir
+	}
 }
 
 // selectSession records the session under the cursor as the choice, ending the
@@ -675,6 +756,28 @@ func composeFolderRow(f treeFolder, home string, now int64) string {
 	return fmt.Sprintf("%s %s  (%d)  %s%s", arrow, tildify(f.Cwd, home), len(f.Sessions), relAge(f.Mtime, now), liveBadge(f.Live))
 }
 
+// prColWidth is the fixed width of the PR column: `#` + up to five digits.
+const prColWidth = 6
+
+// prCell renders the session's PR as a right-aligned, fixed-width `#22` cell that
+// sits ahead of the branch so branches line up in a column. The number is wrapped
+// as an OSC-8 hyperlink when a URL is known (clickable in supporting terminals,
+// plain text everywhere else). A session with no PR still reserves the column
+// (all spaces) so its branch aligns with PR'd rows. Padding is on the visible
+// text, not the escape-laden string, so alignment is correct.
+func prCell(s treeSession) string {
+	if s.PrNumber <= 0 {
+		return strings.Repeat(" ", prColWidth)
+	}
+	num := "#" + strconv.Itoa(s.PrNumber)
+	pad := max(prColWidth-len([]rune(num)), 0)
+	label := num
+	if s.PrURL != "" {
+		label = osc8(s.PrURL, num)
+	}
+	return strings.Repeat(" ", pad) + label
+}
+
 func composeSessionRow(s treeSession, now int64) string {
 	bullet := "○"
 	if s.Live {
@@ -684,7 +787,9 @@ func composeSessionRow(s treeSession, now int64) string {
 	if s.Branch != "" {
 		branch = "[" + s.Branch + "] "
 	}
-	return fmt.Sprintf("    %s %-8s  %-7s %6s  %s%s", bullet, shortID(s.ID), relAge(s.Mtime, now), formatTokens(s.Tokens), branch, s.Snippet)
+	// Age is %-8s so the longest label ("just now") still pads to a fixed column —
+	// a %-7s would let "just now" overflow and push everything right by one.
+	return fmt.Sprintf("    %s %-8s  %-8s  %s  %s%s", bullet, shortID(s.ID), relAge(s.Mtime, now), prCell(s), branch, s.Snippet)
 }
 
 // styleRow applies the cursor marker, recency color, and width truncation.
@@ -695,7 +800,9 @@ func styleRow(text string, tier recencyTier, cursor bool, width int) string {
 	}
 	line := prefix + text
 	if width > 0 {
-		line = truncateRunes(line, width)
+		// truncVisible (not truncateRunes) so an embedded OSC-8 PR hyperlink is
+		// passed through uncounted rather than sliced mid-escape.
+		line = truncVisible(line, width)
 	}
 	color := tierColor(tier)
 	if cursor {
@@ -770,7 +877,7 @@ func renderList(w io.Writer, t sessionTree, color bool) {
 			if s.Branch != "" {
 				branch = "[" + s.Branch + "] "
 			}
-			line := fmt.Sprintf("  %-8s  %-8s %6s  %s%s", shortID(s.ID), relAge(s.Mtime, t.Now), formatTokens(s.Tokens), branch, s.Snippet)
+			line := fmt.Sprintf("  %-8s  %-8s  %s  %s%s", shortID(s.ID), relAge(s.Mtime, t.Now), prCell(s), branch, s.Snippet)
 			writeColored(w, line, classifyTier(s.Mtime, t.Now, s.Live), color)
 		}
 	}

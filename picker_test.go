@@ -74,10 +74,15 @@ func TestCollapsePreview(t *testing.T) {
 			t.Errorf("collapsePreview(%q) = %q, want %q", in, got, want)
 		}
 	}
-	// Truncation to 60 runes (57 + ellipsis).
-	long := collapsePreview(strings.Repeat("x", 80))
-	if r := []rune(long); len(r) != 58 || string(r[57]) != "…" {
-		t.Errorf("expected 57 chars + ellipsis, got %d runes: %q", len(r), long)
+	// Short/medium text passes through untouched (the row is clipped to the real
+	// terminal width, so the description fills whatever space is to the right).
+	if got := collapsePreview(strings.Repeat("x", 80)); got != strings.Repeat("x", 80) {
+		t.Errorf("80 runes should pass through, got %d runes", len([]rune(got)))
+	}
+	// A very long line is still capped (bounds memory + the un-truncated --list).
+	long := collapsePreview(strings.Repeat("x", 300))
+	if r := []rune(long); len(r) != 200 || string(r[199]) != "…" {
+		t.Errorf("expected 199 chars + ellipsis, got %d runes", len(r))
 	}
 }
 

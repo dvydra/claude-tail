@@ -250,15 +250,8 @@ func summaryCardLines(s treeSession, ai aiSummary, haveAI bool, links []sessionL
 	if s.Model != "" {
 		add("  model      %s", s.Model)
 	}
-	var usage []string
-	if s.Tokens > 0 {
-		usage = append(usage, formatTokens(s.Tokens)+" tokens")
-	}
 	if s.Msgs > 0 {
-		usage = append(usage, fmt.Sprintf("%d checkpoints", s.Msgs))
-	}
-	if len(usage) > 0 {
-		add("  usage      %s", strings.Join(usage, " · "))
+		add("  checkpoints %d", s.Msgs)
 	}
 	if s.Mtime > 0 {
 		add("  activity   %s", relAge(s.Mtime, now))

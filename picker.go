@@ -257,8 +257,11 @@ func collapsePreview(text string) string {
 	text = strings.NewReplacer("\n", " ", "\t", " ").Replace(text)
 	text = prevSpaceRe.ReplaceAllString(text, " ")
 	text = strings.TrimSpace(text)
-	if r := []rune(text); len(r) > 60 {
-		return string(r[:57]) + "…"
+	// Keep a generous cap (bounds memory + the un-truncated `--list` dump) but far
+	// wider than any snippet column — the TUI clips the row to the real terminal
+	// width, so a long description fills whatever space is to the right.
+	if r := []rune(text); len(r) > 200 {
+		return string(r[:199]) + "…"
 	}
 	return text
 }
