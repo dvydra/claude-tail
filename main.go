@@ -153,6 +153,11 @@ func run(cfg Config) {
 			os.Exit(0) // no tty / no Claude tree in scope — nothing to go back to
 		}
 		session, agent = path, ag
+		// The picker's alt-screen has closed, restoring the primary cursor to the
+		// end of the previous tail's deferred (unterminated) line. Terminate it now
+		// so the next session's banner starts on a fresh row — the newline abortLine
+		// withheld on Ctrl-X, moved here where the flip already happened.
+		fmt.Fprintln(os.Stdout)
 	}
 }
 
@@ -284,8 +289,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// Ctrl-X: restore the tty so the tree picker (which opens its own
 			// /dev/tty reader) is the sole reader, flush, and return to run() to
 			// re-enter the picker. The keyboard goroutine has already stopped.
+			// abortLine (not endLine) leaves the trailing newline unwritten so the
+			// flip to the picker's alt-screen doesn't leave a blank line behind;
+			// run() writes it before the next session's banner.
 			restoreTTY()
-			r.endLine()
+			r.abortLine()
 			out.Flush()
 			return
 		case <-reloadCh:
