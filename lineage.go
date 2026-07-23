@@ -5,8 +5,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// sessionIDRe matches a UUID-shaped session id (8-4-4-4-12 hex). Claude session
+// ids are v4 UUIDs and newSessionID mints the same shape.
+var sessionIDRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// validSessionID reports whether id is UUID-shaped. It gates ids that get joined
+// into a <id>.jsonl path (--follow-session, the pinned workspace's resume id):
+// rejecting anything else keeps a crafted id like "../../etc/x" — which
+// filepath.Join would clean into an escape from the project dir — out.
+func validSessionID(id string) bool {
+	return sessionIDRe.MatchString(id)
+}
 
 // lineage.go follows a Claude session across a fork. Claude Code mints a NEW
 // session id (a new <id>.jsonl in the same project dir) when it re-enters a

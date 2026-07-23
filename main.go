@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const version = "0.22.0"
+const version = "0.23.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -63,6 +63,9 @@ func run(cfg Config) {
 		// The workspace pins a session id (claude --session-id) and hands it to us,
 		// so we follow exactly that file — waiting for it to appear, immune to any
 		// other Claude running in the same repo. Forks are then followed by lineage.
+		if !validSessionID(cfg.FollowSession) {
+			die("invalid --follow-session id (want a UUID): " + cfg.FollowSession)
+		}
 		session = waitForSessionFile(home, pwd, cfg.FollowSession)
 		if agentStr == "auto" {
 			agentStr = string(AgentClaude)

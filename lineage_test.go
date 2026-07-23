@@ -44,6 +44,33 @@ func TestForkPointerClear(t *testing.T) {
 	}
 }
 
+func TestValidSessionID(t *testing.T) {
+	valid := []string{
+		"8a853bad-54f1-4abc-a8e9-3a7a609c7dcf",
+		"baa1307f-ca7f-4965-92fe-344736d907c6",
+		"BAA1307F-CA7F-4965-92FE-344736D907C6", // upper-case hex is fine
+	}
+	for _, id := range valid {
+		if !validSessionID(id) {
+			t.Errorf("validSessionID(%q) = false, want true", id)
+		}
+	}
+	invalid := []string{
+		"",
+		"../../../../etc/passwd",
+		"..",
+		"8a853bad",                                // too short
+		"8a853bad-54f1-4abc-a8e9-3a7a609c7dcf/x",  // path separator
+		"8a853bad-54f1-4abc-a8e9-3a7a609c7dcf.bak", // trailing junk
+		"zzzzzzzz-54f1-4abc-a8e9-3a7a609c7dcf",    // non-hex
+	}
+	for _, id := range invalid {
+		if validSessionID(id) {
+			t.Errorf("validSessionID(%q) = true, want false", id)
+		}
+	}
+}
+
 func TestLineageChild(t *testing.T) {
 	dir := t.TempDir()
 	cur := filepath.Join(dir, "f4d95ea2.jsonl")

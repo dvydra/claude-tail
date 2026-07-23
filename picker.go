@@ -153,7 +153,7 @@ func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 			fmt.Fprintln(os.Stderr, "entire-tail: session "+shortID(c.ID)+" isn't on this machine and its repo isn't checked out here — nothing to tail.")
 			os.Exit(0)
 		}
-		if c.Result == treeWorkspace && itermAvailable() && itermSinglePane() {
+		if c.Result == treeWorkspace && itermAvailable() && itermSinglePane() && validSessionID(c.ID) {
 			if err := launchWorkspace(sessionCwd(c.Path), c.ID); err != nil {
 				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 				return c.Path, true // launch failed → tail in-place instead
