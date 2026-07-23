@@ -146,7 +146,20 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `/clear` is followed for free by this same path** — verified live, it mints a
   new `<id>.jsonl` whose `worktreeSession.sessionId` is the pre-clear session
   (same field as a worktree re-enter), so `forkPointer`/`lineageChild` adopt it
-  with no `/clear`-specific code (`TestForkPointerClear`)
+  with no `/clear`-specific code (`TestForkPointerClear`). The live divider only
+  names the flip in *this* window; **`--mark-continuation`** (opt-in, off by
+  default — entire-tail is otherwise strictly read-only on transcripts) also
+  leaves the pointer on disk: `markContinuation` appends a Claude-Code-native
+  `system`/`informational` record to the now-stopped file, so reopening that
+  session in Claude Code shows `entire-tail · session continued in <new-id>`.
+  Only the STOPPED side is written — the child is live (Claude is mid-write) and
+  already carries the backward `worktreeSession` pointer. The record type is one
+  Claude Code renders in the transcript UI but never replays to the model, so it
+  shows on resume without steering Claude; it chains off the last uuid-bearing
+  record (parentUuid, so it renders as the thread leaf), copies that record's
+  cwd/version/gitBranch/sessionId, is idempotent (skips if the tail already
+  names `<new-id>`), and is best-effort (any failure is a silent no-op — a failed
+  annotation must never disrupt the tail). `TestMarkContinuation`
 - `subagents.go` — discovers a Claude session's subagent transcripts
   (`<transcript>/<sessionId>/subagents/agent-*.jsonl` + `.meta.json`), ordered by
   spawn time, with best-effort running/done + duration from each file's timespan.

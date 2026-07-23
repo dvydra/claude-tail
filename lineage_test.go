@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,10 +61,10 @@ func TestValidSessionID(t *testing.T) {
 		"",
 		"../../../../etc/passwd",
 		"..",
-		"8a853bad",                                // too short
-		"8a853bad-54f1-4abc-a8e9-3a7a609c7dcf/x",  // path separator
+		"8a853bad",                               // too short
+		"8a853bad-54f1-4abc-a8e9-3a7a609c7dcf/x", // path separator
 		"8a853bad-54f1-4abc-a8e9-3a7a609c7dcf.bak", // trailing junk
-		"zzzzzzzz-54f1-4abc-a8e9-3a7a609c7dcf",    // non-hex
+		"zzzzzzzz-54f1-4abc-a8e9-3a7a609c7dcf",     // non-hex
 	}
 	for _, id := range invalid {
 		if validSessionID(id) {
@@ -101,6 +103,66 @@ func TestLineageChild(t *testing.T) {
 	if p, _ := lineageChild(dir, child, lineage); p != "" {
 		t.Fatalf("lineageChild adopted a stranger's fork: %q", p)
 	}
+}
+
+func TestMarkContinuation(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "f4d95ea2-1111-4111-8111-111111111111.jsonl")
+	// A real-shaped stopped session whose LAST line lacks a uuid (a
+	// file-history-snapshot): the marker must chain off the last uuid-bearing
+	// record above it, not orphan itself on a null parent.
+	body := `{"type":"user","message":{"role":"user","content":"hi"},"uuid":"aaaa1111-2222-4333-8444-555566667777","sessionId":"f4d95ea2-1111-4111-8111-111111111111","cwd":"/x/y","version":"2.1.211","gitBranch":"main"}` + "\n" +
+		`{"type":"file-history-snapshot","messageId":"m1"}` + "\n"
+	if err := os.WriteFile(old, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newID := "9ed9607a-8888-4999-8aaa-bbbbccccdddd"
+
+	markContinuation(old, newID)
+
+	lines := strings.Split(strings.TrimRight(readFileString(t, old), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want 3 lines after marking, got %d:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(lines[2]), &rec); err != nil {
+		t.Fatalf("marker line is not valid JSON: %v", err)
+	}
+	// Renders in Claude Code's transcript but is never replayed to the model.
+	if rec["type"] != "system" || rec["subtype"] != "informational" {
+		t.Errorf("marker type/subtype = %v/%v, want system/informational", rec["type"], rec["subtype"])
+	}
+	if c, _ := rec["content"].(string); !strings.Contains(c, newID) {
+		t.Errorf("marker content %q does not name the new id %q", c, newID)
+	}
+	// Chains off the last record so it renders as the thread's leaf on resume.
+	if rec["parentUuid"] != "aaaa1111-2222-4333-8444-555566667777" {
+		t.Errorf("parentUuid = %v, want the last record's uuid", rec["parentUuid"])
+	}
+	// Copies the session's context fields so the record matches its siblings.
+	for k, want := range map[string]string{"sessionId": "f4d95ea2-1111-4111-8111-111111111111", "cwd": "/x/y", "version": "2.1.211", "gitBranch": "main"} {
+		if rec[k] != want {
+			t.Errorf("marker %s = %v, want %q", k, rec[k], want)
+		}
+	}
+
+	// Idempotent: a second flip to the same child adds nothing.
+	markContinuation(old, newID)
+	if lines := strings.Split(strings.TrimRight(readFileString(t, old), "\n"), "\n"); len(lines) != 3 {
+		t.Fatalf("second markContinuation stacked a duplicate: %d lines", len(lines))
+	}
+
+	// Best-effort: a missing file is a silent no-op, never a panic.
+	markContinuation(filepath.Join(dir, "does-not-exist.jsonl"), newID)
+}
+
+func readFileString(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func TestLineageChildEmptyFileIgnored(t *testing.T) {

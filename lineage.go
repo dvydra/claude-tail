@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // sessionIDRe matches a UUID-shaped session id (8-4-4-4-12 hex). Claude session
@@ -80,6 +81,98 @@ func readHead(path string, n int) []byte {
 	buf := make([]byte, n)
 	m, _ := io.ReadFull(f, buf) // short files return ErrUnexpectedEOF; m is still valid
 	return buf[:m]
+}
+
+// readTail returns up to the last n bytes of path (fewer if the file is
+// shorter). The first line of the returned slice may be partial when the file
+// exceeds n — callers that parse per-line JSON skip it as unparseable.
+func readTail(path string, n int) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	start := int64(0)
+	if fi.Size() > int64(n) {
+		start = fi.Size() - int64(n)
+	}
+	buf := make([]byte, fi.Size()-start)
+	m, _ := f.ReadAt(buf, start)
+	return buf[:m]
+}
+
+// continuationMarker is the content prefix entire-tail writes into a stopped
+// session file at a lineage flip. It is namespaced so a reader (and Claude on
+// resume) reads it as an external annotation, never an instruction, and so a
+// later run can recognize its own prior marker for idempotency.
+const continuationMarker = "entire-tail · session continued in "
+
+// markContinuation appends a Claude-Code-native system/informational record to a
+// stopped session file (oldPath), noting the session id it continued into
+// (newID). On disk the old file just stops with no forward pointer; this leaves
+// one. Claude Code renders system/informational records as dim transcript lines
+// and does NOT replay them to the model, so the pointer shows on resume without
+// steering Claude. Only the stopped side is touched — the forked child is live
+// (Claude is writing it) and already records the backward worktreeSession
+// pointer.
+//
+// Best-effort: every failure path is a silent no-op, because a failed annotation
+// must never disrupt the tail. Idempotent: skips when the tail already holds a
+// marker for newID, so repeated runs don't stack duplicates.
+func markContinuation(oldPath, newID string) {
+	tail := readTail(oldPath, headScanBytes)
+	if len(tail) == 0 || strings.Contains(string(tail), continuationMarker+newID) {
+		return
+	}
+	// Chain off — and copy context from — the last complete record that carries a
+	// uuid, so the marker attaches as that leaf's child and renders on resume
+	// (Claude Code walks parentUuid; a null parent would orphan it). Trailing
+	// records like file-history-snapshot lack a uuid, so skip them.
+	var last map[string]any
+	for _, line := range splitLines(tail) {
+		var m map[string]any
+		if json.Unmarshal(line, &m) != nil {
+			continue
+		}
+		if id, ok := m["uuid"].(string); ok && id != "" {
+			last = m
+		}
+	}
+	if last == nil {
+		return
+	}
+	rec := map[string]any{
+		"parentUuid":  last["uuid"],
+		"isSidechain": false,
+		"type":        "system",
+		"subtype":     "informational",
+		"content":     continuationMarker + newID,
+		"isMeta":      false,
+		"level":       "info",
+		"timestamp":   time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+		"uuid":        newSessionID(),
+		"userType":    "external",
+	}
+	// Carry the session's own context fields so the record matches its siblings.
+	for _, k := range []string{"sessionId", "cwd", "version", "gitBranch"} {
+		if v, ok := last[k]; ok {
+			rec[k] = v
+		}
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(oldPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
 }
 
 // lineageChild scans dir for a sibling session file (other than curPath) that

@@ -309,8 +309,16 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		// "…continuing from" heads the new one. Both are <id>.jsonl basenames in
 		// the same project dir.
 		oldID := sessionIDFromPath(cur)
+		oldPath := cur
 		lineage[nid] = true
 		cur = np
+		// Opt-in: leave a forward pointer in the now-stopped file too, so the
+		// continuation is findable when that session is reopened in Claude Code
+		// (not just in this live window). cur has already moved on, so the tail
+		// never re-reads the appended line.
+		if cfg.MarkContinuation {
+			markContinuation(oldPath, nid)
+		}
 		r.endLine() // close any open dot-streak bracket before wiping state
 		io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ continued in "+nid+reset+"\n")
 		r.reset()
@@ -732,6 +740,14 @@ OPTIONS:
                             appear), then follow worktree forks by lineage. The
                             workspace pairs it with 'claude --session-id ID' so
                             the tail can't latch onto the wrong concurrent session.
+      --mark-continuation   At a Claude lineage flip (worktree fork or /clear),
+                            also write a forward-pointer note into the now-stopped
+                            session file, so the continuation is findable when
+                            that session is reopened in Claude Code — not just in
+                            this live window. Off by default (entire-tail is
+                            otherwise read-only). Uses Claude Code's own
+                            transcript-only 'informational' record, so it shows on
+                            resume without steering Claude.
   -w, --workspace           Alias for the default: force the session tree. Its
                             Enter opens the iTerm workspace (macOS + iTerm2).
   -l, --list-themes         List available themes (with descriptions) and exit.
@@ -769,6 +785,7 @@ ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_COLLAPSE      Same as --collapse (or 'off' to disable).
   ENTIRE_TAIL_PICK          'always'/'never'/'auto' — same as --pick/--no-pick.
   ENTIRE_TAIL_DAYS          Same as --days (session-tree window).
+  ENTIRE_TAIL_MARK_CONTINUATION  Truthy (1/true/yes/on) = --mark-continuation.
   ENTIRE_TAIL_HANDOVER_VAULT  Obsidian vault root for handover docs (default:
                             the iCloud Obsidian Documents folder).
   GLOW_STYLE                Same as --style.
