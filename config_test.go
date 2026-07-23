@@ -63,6 +63,23 @@ func TestParseCLIEqualsForm(t *testing.T) {
 	}
 }
 
+func TestParseCLIFollowSession(t *testing.T) {
+	c, _, err := parseCLI([]string{"--follow-session", "abc-123"}, envFunc(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FollowSession != "abc-123" {
+		t.Errorf("FollowSession = %q, want abc-123", c.FollowSession)
+	}
+	c2, _, _ := parseCLI([]string{"--follow-session=xyz-789"}, envFunc(nil))
+	if c2.FollowSession != "xyz-789" {
+		t.Errorf("equals-form FollowSession = %q, want xyz-789", c2.FollowSession)
+	}
+	if _, _, err := parseCLI([]string{"--follow-session"}, envFunc(nil)); err == nil {
+		t.Error("--follow-session with no value should error")
+	}
+}
+
 func TestParseCLINegationFlags(t *testing.T) {
 	c, _, _ := parseCLI([]string{"--no-backfill", "--no-collapse", "--no-pick", "--no-compact-tools"}, envFunc(nil))
 	if c.Backfill != "0" || c.Collapse != "0" || c.Pick != "never" || c.ToolStyle != "lines" {

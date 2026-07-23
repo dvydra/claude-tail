@@ -154,7 +154,7 @@ func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 			os.Exit(0)
 		}
 		if c.Result == treeWorkspace && itermAvailable() && itermSinglePane() {
-			if err := launchWorkspace(sessionCwd(c.Path), c.ID, c.Path); err != nil {
+			if err := launchWorkspace(sessionCwd(c.Path), c.ID); err != nil {
 				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 				return c.Path, true // launch failed → tail in-place instead
 			}

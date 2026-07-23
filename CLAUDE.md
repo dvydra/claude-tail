@@ -86,7 +86,12 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   one is already split, since there's nothing to tail in place). Pure `workspaceScript`
   builder split from the `osaRun` executor so quoting/layout are unit-tested
   without launching iTerm. The queued-claude trick: the command is written to
-  the current pane's tty and runs once entire-tail exits
+  the current pane's tty and runs once entire-tail exits. Both panes **pin a
+  shared session id** — fresh: `claude --session-id <id>` + `entire-tail
+  --follow-session <id>`; resume: `claude --resume <id>` + `--follow-session
+  <id>` — so the tail latches onto exactly that session even with other Claude
+  sessions live in the same repo (replaces the racy `--wait-new` newest-file
+  heuristic; `newSessionID` mints a v4 UUID via crypto/rand)
 - `search.go` — `--search`: content search across local transcripts (ripgrep,
   literal) + `entire checkpoint search` (semantic session results), merged by
   session id and ranked (`searchHit.score`: exact local match dominates, entire
@@ -124,6 +129,21 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
 - `toolresult.go` — parse Claude `toolUseResult` into diffs / output / read-summary
 - `tail.go` — follow loop (byte-offset resume for claude/codex; whole-file
   re-read + `step_index` dedup for agy)
+- `lineage.go` — **follows a Claude session across a worktree fork.** Claude Code
+  mints a NEW session id (new `<id>.jsonl`, same project dir) on a worktree
+  re-enter; the fresh file's `worktree-state` record carries the id it forked
+  FROM (`worktreeSession.sessionId`). Without this, a tail latched on the old
+  file freezes at the fork (the "drift-noise orphaning"). `tailSession` keeps a
+  **lineage set** and, once the current file goes quiet (`rolloverIdleTicks`),
+  adopts a sibling whose `forkPointer` is in that set (`lineageChild`) — matching
+  the explicit pointer, NOT "newest file", so a concurrent unrelated Claude in
+  the same repo is never adopted. Rollover prints a `⟳ new session` divider and
+  streams the child from its start. `cur` (mutable) replaces the immutable
+  `session` param inside the live loop's poll/reload/rollover closures. **A
+  `/clear` is followed for free by this same path** — verified live, it mints a
+  new `<id>.jsonl` whose `worktreeSession.sessionId` is the pre-clear session
+  (same field as a worktree re-enter), so `forkPointer`/`lineageChild` adopt it
+  with no `/clear`-specific code (`TestForkPointerClear`)
 - `subagents.go` — discovers a Claude session's subagent transcripts
   (`<transcript>/<sessionId>/subagents/agent-*.jsonl` + `.meta.json`), ordered by
   spawn time, with best-effort running/done + duration from each file's timespan.

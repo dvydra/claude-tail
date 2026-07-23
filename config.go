@@ -9,20 +9,21 @@ import (
 // Config holds the resolved (env + flags) settings as raw strings; typed
 // validation happens in main once the session is known.
 type Config struct {
-	Positional []string // bare args: one session file to tail, else (joined) a search query
-	Agent      string   // auto|claude|codex|agy
-	Theme      string
-	Backfill   string
-	GlowStyle  string
-	ToolStyle  string // none|dots|lines
-	Collapse   string
-	Pick       string // auto|always|never
-	Days       string // window for the session tree (empty = per-mode default)
-	List       bool   // --list: static ls-style dump instead of the TUI
-	Local      bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
-	Cloud      bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
-	Search     string // --search: content-search sessions, ranked by relevance
-	WaitNew    bool   // --wait-new: block until a new Claude session appears in $PWD, then tail it
+	Positional    []string // bare args: one session file to tail, else (joined) a search query
+	Agent         string   // auto|claude|codex|agy
+	Theme         string
+	Backfill      string
+	GlowStyle     string
+	ToolStyle     string // none|dots|lines
+	Collapse      string
+	Pick          string // auto|always|never
+	Days          string // window for the session tree (empty = per-mode default)
+	List          bool   // --list: static ls-style dump instead of the TUI
+	Local         bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
+	Cloud         bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
+	Search        string // --search: content-search sessions, ranked by relevance
+	WaitNew       bool   // --wait-new: block until a new Claude session appears in $PWD, then tail it
+	FollowSession string // --follow-session <id>: tail exactly $PWD's <id>.jsonl (waiting for it), following forks
 }
 
 // Action is what the parsed CLI asks for beyond a normal run.
@@ -185,6 +186,15 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.Cloud = true
 		case a == "--wait-new":
 			c.WaitNew = true
+		case a == "--follow-session":
+			v, err := needValue(i, a)
+			if err != nil {
+				return c, ActionRun, err
+			}
+			c.FollowSession = v
+			i++
+		case strings.HasPrefix(a, "--follow-session="):
+			c.FollowSession = strings.TrimPrefix(a, "--follow-session=")
 		case a == "-S" || a == "--search":
 			v, err := needValue(i, a)
 			if err != nil {
