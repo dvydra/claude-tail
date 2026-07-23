@@ -137,8 +137,11 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   **lineage set** and, once the current file goes quiet (`rolloverIdleTicks`),
   adopts a sibling whose `forkPointer` is in that set (`lineageChild`) — matching
   the explicit pointer, NOT "newest file", so a concurrent unrelated Claude in
-  the same repo is never adopted. Rollover prints a `⟳ new session` divider and
-  streams the child from its start. `cur` (mutable) replaces the immutable
+  the same repo is never adopted. Rollover prints a two-line boundary naming both
+  ids — `⟳ continued in <new-id>` (tail of the old session) then `⟳ …continuing
+  from <old-id>` (head of the new) — because on disk the old file just stops with
+  no forward pointer, so the printed ids are the only way to find the
+  continuation; then streams the child from its start. `cur` (mutable) replaces the immutable
   `session` param inside the live loop's poll/reload/rollover closures. **A
   `/clear` is followed for free by this same path** — verified live, it mints a
   new `<id>.jsonl` whose `worktreeSession.sessionId` is the pre-clear session

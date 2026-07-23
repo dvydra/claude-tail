@@ -303,11 +303,18 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		if np == "" {
 			return false
 		}
+		// Name both ends of the flip. On disk the old file just stops with no
+		// forward pointer, so without the ids printed here the continuation is
+		// impossible to locate. "continued in" is the tail of the old session;
+		// "…continuing from" heads the new one. Both are <id>.jsonl basenames in
+		// the same project dir.
+		oldID := sessionIDFromPath(cur)
 		lineage[nid] = true
 		cur = np
 		r.endLine() // close any open dot-streak bracket before wiping state
+		io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ continued in "+nid+reset+"\n")
 		r.reset()
-		io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ new session"+reset+"\n\n")
+		io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ …continuing from "+oldID+reset+"\n\n")
 		offset = 0
 		agyLastSize, agyLastMtime = -1, -1
 		return true
