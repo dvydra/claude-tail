@@ -364,7 +364,28 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		}
 		np, nid := lineageChild(projectDir, cur, lineage)
 		if np == "" {
-			return false
+			// No NEW-id fork in this dir. Maybe a worktree cwd switch moved this
+			// session's whole transcript to a different project dir (same id, new
+			// dir). Follow it, KEEPING our byte offset — the moved file shares our
+			// content prefix, so appendStep resumes from there (and self-heals if it
+			// ever shrank). No r.reset(): it's the same session, stream it seamlessly.
+			rp := relocatedSession(claudeProjectsDir(home), sessionIDFromPath(cur), cur)
+			if rp == "" {
+				return false
+			}
+			// Only adopt once the relocated file has caught up to at least our byte
+			// offset. A candidate still mid-write (size < offset) would trip
+			// appendStep's truncation reset and re-render the whole prefix; skip it
+			// and re-check on the next idle tick instead.
+			if fi, err := os.Stat(rp); err != nil || fi.Size() < offset {
+				return false
+			}
+			r.endLine() // close any open dot-streak bracket before the note
+			io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ following session into "+filepath.Base(filepath.Dir(rp))+reset+"\n\n")
+			cur = rp
+			projectDir = filepath.Dir(rp)
+			agyLastSize, agyLastMtime = -1, -1
+			return true
 		}
 		// Name both ends of the flip. On disk the old file just stops with no
 		// forward pointer, so without the ids printed here the continuation is
