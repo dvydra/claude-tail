@@ -224,6 +224,24 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `q` abort). Pure `updateHandoverPick` reducer + `renderHandoverPick` + the
   `buildGroups` collapse, split from the tty driver `runHandoverPicker` — same
   reduce/render/driver split as `tree.go`.
+- `pending.go` — the marker protocol and model (Claude-only): when Claude blocks
+  on a question or permission prompt, the opt-in hooks write a per-session marker
+  file to `~/.claude/entire-tail/pending/<session_id>.json` the instant it appears,
+  before Claude's deferred transcript flush. The live tail loop stats that marker
+  each tick and renders the prompt early via `claudeParseQuestions`; a `contentKey`
+  dedup suppresses the duplicate card when the real JSONL record finally arrives.
+  Marker payload is the hook's tool_input verbatim — either a `{questions:[...]}` 
+  object (for `AskUserQuestion`) or a `{tool_name, tool_input}` pair (for 
+  `PermissionRequest`).
+- `hookinstall.go` — opt-in installation of the pending-prompt hooks in
+  `~/.claude/settings.json`, idempotent merge/unmerge, and the first-run offer
+  gate. `shouldOfferHookInstall` predicts whether to ask (Claude-only, fresh
+  session, interactive, no explicit flag/session id). The offer is remembered in
+  `~/.claude/entire-tail/hook-choice` so it fires exactly once per user.
+- `hooks/entire-tail-pending.sh` — the vendored hook script (embedded in the
+  binary). Wired via `PreToolUse` / `PostToolUse` matchers on `AskUserQuestion`,
+  plus bare `PermissionRequest` / `PermissionDenied` hooks. Writes/removes marker
+  files atomically; safely handles half-written files and missing session ids.
 
 Adding a new agent = write a `normalize` + a discovery function. Nothing else
 needs to change.
@@ -265,6 +283,18 @@ needs to change.
   the Go renderer no longer matches the bash oracle in any mode, so
   `TestEquivalenceVsBash` (`RUN_ORACLE=1`) is retired to skips; the goldens +
   units are the gate.
+- **Instant pending-prompt alert dedup** — the marker-file render path and the
+  eventual JSONL card both compute the SAME `contentKey` (questions via
+  `claudeParseQuestions`→`questionsContentKey`, permissions via sha256) so the
+  JSONL card suppresses itself once the marker already showed it. Both derive the
+  key independently from their respective payloads, which differ slightly (marker
+  lacks `tool_use_id`, JSONL may have it), so a raw-byte hash would never match.
+- **This is the first feature that writes global config** (`~/.claude/settings.json`),
+  opt-in and reversible. `shouldOfferHookInstall` gates the offer so it fires
+  only on a fresh interactive Claude run with no explicit flags; `--no-hook-install`
+  suppresses it, and the choice is remembered in `~/.claude/entire-tail/hook-choice`
+  so the user is never nagged again. The hook script itself is embedded in the
+  binary and installed atomically.
 - **Word wrap is off** (`glamour.WithWordWrap(0)`): each paragraph is one logical
   line the terminal soft-wraps, so resizing reflows on the next render. Don't
   re-enable wrap.

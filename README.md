@@ -174,6 +174,26 @@ you've looked away:
 ╰────────────────────────────────────────────────────────╯
 ```
 
+### Instant alert on permission requests (opt-in)
+
+Claude Code blocks on permission requests *before* appending them to your
+transcript, so a plain tail stays dark until you answer — you might miss that
+the session is waiting. entire-tail can surface these instantly via **opt-in
+hooks** that write a marker file the moment a prompt appears:
+
+```sh
+entire-tail install-hooks       # Install the hooks into ~/.claude/settings.json
+entire-tail uninstall-hooks     # Remove them (reversible)
+```
+
+The hooks are **entirely optional** — install them only if you want the instant
+alert. They edit `~/.claude/settings.json` (backed up automatically) and spawn a
+single small bash script per event. Pass `--no-hook-install` to suppress the
+one-time first-run offer. The alert surfaces the same question/permission cards
+as the deferred JSONL — dedup prevents doubling once the real record arrives.
+
+This feature is **Claude-only** and has no effect on Codex or Antigravity.
+
 ## The session tree (default)
 
 Can't remember which session that was? Just run `entire tail` — with no session
