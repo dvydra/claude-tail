@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"regexp"
@@ -94,6 +96,12 @@ type Renderer struct {
 	// seenQuestions dedups the question bell so a card that's re-rendered (reload,
 	// or a poll that re-reads the same line) rings at most once per question id.
 	seenQuestions map[string]bool
+
+	// pendingShown holds content keys of questions already rendered from a live
+	// marker (the pre-answer alert). The eventual JSONL card for the same
+	// question is suppressed so the user sees exactly one card. Cleared by
+	// reset() so a full re-render (r / rollover) shows JSONL cards normally.
+	pendingShown map[string]bool
 }
 
 func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse int) (*Renderer, error) {
@@ -160,6 +168,7 @@ func newRendererWith(w io.Writer, theme Theme, toolStyle string, collapse int, r
 		userHdr:         theme.UserANSI + userHdrBody + reset,
 		claudeHdr:       theme.ClaudeANSI + claudeHdrBody + reset,
 		seenQuestions:   map[string]bool{},
+		pendingShown:    map[string]bool{},
 	}
 	r.toolStyle.Store(int32(parseToolStyle(toolStyle)))
 	r.collapse.Store(int32(collapse))
@@ -188,6 +197,7 @@ func (r *Renderer) reset() {
 	r.lastKind = ""
 	r.inDotStreak = false
 	r.lineOpen = false
+	clear(r.pendingShown)
 }
 
 // toggleCollapse flips long-user-paste collapsing on/off (future events only).
@@ -238,10 +248,52 @@ func (r *Renderer) agentSpawn(desc, atype string) {
 	io.WriteString(r.w, line+"\n")
 }
 
+// questionsContentKey is a stable hash of a question set's rendered content, so
+// a pre-answer marker card and the eventual JSONL card dedup against each other
+// regardless of tool_use ids.
+func questionsContentKey(qs []QuestionItem) string {
+	h := sha256.New()
+	for _, q := range qs {
+		io.WriteString(h, q.Header+"\x00"+q.Question+"\x00")
+		for _, o := range q.Options {
+			io.WriteString(h, o+"\x1f")
+		}
+		io.WriteString(h, "\x1e")
+	}
+	return hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+// pendingQuestion renders a question card from a live marker (before the JSONL
+// flush), always ringing the bell, and records its content key so the eventual
+// JSONL card is suppressed. Runs on the render goroutine like every other emit.
+func (r *Renderer) pendingQuestion(qs []QuestionItem) {
+	r.endLine()
+	io.WriteString(r.w, "\a")
+	io.WriteString(r.w, questionCard(qs))
+	r.pendingShown[questionsContentKey(qs)] = true
+}
+
+// pendingPermission renders a one-line "waiting on a permission prompt" notice
+// from a live marker, with the bell. There's no JSONL counterpart to dedup — a
+// granted permission just becomes a normal tool render later.
+func (r *Renderer) pendingPermission(summary string) {
+	r.endLine()
+	io.WriteString(r.w, "\a")
+	io.WriteString(r.w, r.theme.DimANSI+"⏳ waiting: "+summary+reset+"\n")
+}
+
 // question renders a pending AskUserQuestion as a bold bordered card, and — live
 // only, once per question id — rings the terminal bell so a waiting prompt is
-// noticed even when the user isn't looking at the pane.
+// noticed even when the user isn't looking at the pane. If a live marker
+// already rendered this exact question (pendingQuestion), the JSONL card is
+// suppressed — the user already saw it — and the key is consumed one-shot so a
+// later full re-render (reload) shows the card normally again.
 func (r *Renderer) question(rec Record) {
+	key := questionsContentKey(rec.Questions)
+	if r.pendingShown[key] {
+		delete(r.pendingShown, key)
+		return
+	}
 	r.endLine()
 	if r.live && rec.QID != "" && !r.seenQuestions[rec.QID] {
 		io.WriteString(r.w, "\a")

@@ -25,6 +25,7 @@ type Config struct {
 	WaitNew          bool   // --wait-new: block until a new Claude session appears in $PWD, then tail it
 	FollowSession    string // --follow-session <id>: tail exactly $PWD's <id>.jsonl (waiting for it), following forks
 	MarkContinuation bool   // --mark-continuation: at a Claude lineage flip, write a forward-pointer record into the stopped file
+	NoHookInstall    bool   // --no-hook-install: suppress the first-run pending-hook offer
 }
 
 // Action is what the parsed CLI asks for beyond a normal run.
@@ -35,8 +36,10 @@ const (
 	ActionHelp
 	ActionVersion
 	ActionListThemes
-	ActionList     // static session-tree dump (--list)
-	ActionHandover // `entire-tail handover`: generate session handover docs
+	ActionList           // static session-tree dump (--list)
+	ActionHandover       // `entire-tail handover`: generate session handover docs
+	ActionInstallHooks   // `entire-tail install-hooks`
+	ActionUninstallHooks // `entire-tail uninstall-hooks`
 )
 
 // envTrue reports whether an env var holds a truthy value (1/true/yes/on),
@@ -105,6 +108,12 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 
 	if len(args) > 0 && args[0] == "handover" {
 		return c, ActionHandover, nil
+	}
+	if len(args) > 0 && args[0] == "install-hooks" {
+		return c, ActionInstallHooks, nil
+	}
+	if len(args) > 0 && args[0] == "uninstall-hooks" {
+		return c, ActionUninstallHooks, nil
 	}
 
 	needValue := func(i int, flag string) (string, error) {
@@ -211,6 +220,8 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.MarkContinuation = true
 		case a == "--no-mark-continuation":
 			c.MarkContinuation = false
+		case a == "--no-hook-install":
+			c.NoHookInstall = true
 		case a == "-S" || a == "--search":
 			v, err := needValue(i, a)
 			if err != nil {

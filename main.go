@@ -37,6 +37,18 @@ func main() {
 	case ActionHandover:
 		runHandover(cfg)
 		return
+	case ActionInstallHooks:
+		if err := installHooks(firstNonEmpty(os.Getenv("HOME"), mustHome())); err != nil {
+			die("install-hooks: " + err.Error())
+		}
+		fmt.Println("entire-tail: hooks installed. Restart Claude Code (or open /hooks once) to load them.")
+		return
+	case ActionUninstallHooks:
+		if err := uninstallHooks(firstNonEmpty(os.Getenv("HOME"), mustHome())); err != nil {
+			die("uninstall-hooks: " + err.Error())
+		}
+		fmt.Println("entire-tail: hooks removed.")
+		return
 	}
 
 	run(cfg)
@@ -113,10 +125,12 @@ func run(cfg Config) {
 	// tab? Tail exactly its session, skipping the tree. Matched by iTerm tab so a
 	// claude elsewhere is never grabbed; self-disables off iTerm or when the tab
 	// holds zero/many claudes. Explicit -p/--pick (always) opts out.
+	adopted := false
 	if session == "" && cfg.Pick != "always" && (agentStr == "auto" || agentStr == "claude") {
 		if p, cwd := adoptPaneSession(home, os.Getenv); p != "" {
 			fmt.Fprintln(os.Stderr, "entire-tail: adopted the claude session in this iTerm tab")
 			session = p
+			adopted = true
 			if cwd != "" {
 				pwd = cwd // watch the adopted agent's repo, not ours
 			}
@@ -124,6 +138,19 @@ func run(cfg Config) {
 				agentStr = string(AgentClaude)
 			}
 		}
+	}
+
+	if session == "" && shouldOfferHookInstall(hookOfferInputs{
+		isTTY:            ttyUsable(),
+		adopted:          adopted,
+		alreadyInstalled: hookInstalledFor(home),
+		choiceRecorded:   hookChoiceRecorded(home),
+		noHookInstall:    cfg.NoHookInstall,
+		followSession:    cfg.FollowSession != "",
+		noPick:           cfg.Pick == "never",
+		isClaude:         agentStr == "auto" || agentStr == "claude",
+	}) {
+		offerHookInstall(home, bufio.NewReader(os.Stdin))
 	}
 
 	switch {
@@ -367,6 +394,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	idle := 0 // consecutive ticks the current Claude file hasn't grown
+	// Live pending-prompt watch (Claude only, and only when the hook is
+	// installed — i.e. the markers dir exists). lastMarkerKey dedups so a marker
+	// lingering across ticks renders exactly once.
+	pendingWatch := agent == AgentClaude && isDir(pendingDir(home))
+	lastMarkerKey := ""
 	for {
 		select {
 		case code := <-codeCh:
@@ -417,6 +449,19 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					}
 					idle = 0
 				}
+			}
+			if pendingWatch {
+				m, ok := readPendingMarker(home, sessionIDFromPath(cur))
+				render, key := pendingAction(lastMarkerKey, m, ok)
+				if render {
+					switch m.Kind {
+					case "question":
+						r.pendingQuestion(claudeParseQuestions(m.Payload))
+					case "permission":
+						r.pendingPermission(permissionSummary(m))
+					}
+				}
+				lastMarkerKey = key
 			}
 			out.Flush()
 		}
