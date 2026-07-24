@@ -9,20 +9,22 @@ import (
 // Config holds the resolved (env + flags) settings as raw strings; typed
 // validation happens in main once the session is known.
 type Config struct {
-	Positional []string // bare args: one session file to tail, else (joined) a search query
-	Agent      string   // auto|claude|codex|agy
-	Theme      string
-	Backfill   string
-	GlowStyle  string
-	ToolStyle  string // none|dots|lines
-	Collapse   string
-	Pick       string // auto|always|never
-	Days       string // window for the session tree (empty = per-mode default)
-	List       bool   // --list: static ls-style dump instead of the TUI
-	Local      bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
-	Cloud      bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
-	Search     string // --search: content-search sessions, ranked by relevance
-	WaitNew    bool   // --wait-new: block until a new Claude session appears in $PWD, then tail it
+	Positional       []string // bare args: one session file to tail, else (joined) a search query
+	Agent            string   // auto|claude|codex|agy
+	Theme            string
+	Backfill         string
+	GlowStyle        string
+	ToolStyle        string // none|dots|lines
+	Collapse         string
+	Pick             string // auto|always|never
+	Days             string // window for the session tree (empty = per-mode default)
+	List             bool   // --list: static ls-style dump instead of the TUI
+	Local            bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
+	Cloud            bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
+	Search           string // --search: content-search sessions, ranked by relevance
+	WaitNew          bool   // --wait-new: block until a new Claude session appears in $PWD, then tail it
+	FollowSession    string // --follow-session <id>: tail exactly $PWD's <id>.jsonl (waiting for it), following forks
+	MarkContinuation bool   // --mark-continuation: at a Claude lineage flip, write a forward-pointer record into the stopped file
 }
 
 // Action is what the parsed CLI asks for beyond a normal run.
@@ -36,6 +38,16 @@ const (
 	ActionList     // static session-tree dump (--list)
 	ActionHandover // `entire-tail handover`: generate session handover docs
 )
+
+// envTrue reports whether an env var holds a truthy value (1/true/yes/on),
+// case-insensitively. Empty or anything else is false.
+func envTrue(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
 
 // firstNonEmpty returns the first non-empty value (matching bash ${A:-${B:-c}},
 // which treats an empty env var as unset).
@@ -52,14 +64,15 @@ func firstNonEmpty(vals ...string) string {
 // CLAUDE_TAIL_* is honored as a back-compat fallback where the bash version did.
 func defaultConfig(getenv func(string) string) Config {
 	c := Config{
-		Agent:     firstNonEmpty(getenv("ENTIRE_TAIL_AGENT"), "auto"),
-		Theme:     firstNonEmpty(getenv("ENTIRE_TAIL_THEME"), getenv("CLAUDE_TAIL_THEME"), "tokyo-night"),
-		Backfill:  firstNonEmpty(getenv("ENTIRE_TAIL_BACKFILL"), getenv("CLAUDE_TAIL_BACKFILL"), "all"),
-		GlowStyle: getenv("GLOW_STYLE"),
-		ToolStyle: firstNonEmpty(getenv("ENTIRE_TAIL_TOOL_STYLE"), getenv("CLAUDE_TAIL_TOOL_STYLE"), "dots"),
-		Collapse:  firstNonEmpty(getenv("ENTIRE_TAIL_COLLAPSE"), "5"),
-		Pick:      firstNonEmpty(getenv("ENTIRE_TAIL_PICK"), "auto"),
-		Days:      getenv("ENTIRE_TAIL_DAYS"),
+		Agent:            firstNonEmpty(getenv("ENTIRE_TAIL_AGENT"), "auto"),
+		Theme:            firstNonEmpty(getenv("ENTIRE_TAIL_THEME"), getenv("CLAUDE_TAIL_THEME"), "tokyo-night"),
+		Backfill:         firstNonEmpty(getenv("ENTIRE_TAIL_BACKFILL"), getenv("CLAUDE_TAIL_BACKFILL"), "all"),
+		GlowStyle:        getenv("GLOW_STYLE"),
+		ToolStyle:        firstNonEmpty(getenv("ENTIRE_TAIL_TOOL_STYLE"), getenv("CLAUDE_TAIL_TOOL_STYLE"), "dots"),
+		Collapse:         firstNonEmpty(getenv("ENTIRE_TAIL_COLLAPSE"), "5"),
+		Pick:             firstNonEmpty(getenv("ENTIRE_TAIL_PICK"), "auto"),
+		Days:             getenv("ENTIRE_TAIL_DAYS"),
+		MarkContinuation: envTrue(getenv("ENTIRE_TAIL_MARK_CONTINUATION")),
 	}
 	c.Collapse = normalizeCollapseWord(c.Collapse)
 	c.Pick = normalizePickWord(c.Pick)
@@ -185,6 +198,19 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.Cloud = true
 		case a == "--wait-new":
 			c.WaitNew = true
+		case a == "--follow-session":
+			v, err := needValue(i, a)
+			if err != nil {
+				return c, ActionRun, err
+			}
+			c.FollowSession = v
+			i++
+		case strings.HasPrefix(a, "--follow-session="):
+			c.FollowSession = strings.TrimPrefix(a, "--follow-session=")
+		case a == "--mark-continuation":
+			c.MarkContinuation = true
+		case a == "--no-mark-continuation":
+			c.MarkContinuation = false
 		case a == "-S" || a == "--search":
 			v, err := needValue(i, a)
 			if err != nil {

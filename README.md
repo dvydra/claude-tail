@@ -562,6 +562,34 @@ renderer.
   truncate-in-place), so the follower re-reads the file on each change and
   dedups by `step_index` (seeded from the backfill snapshot).
 
+### Following a Claude session across a fork
+
+Claude Code mints a **new** `<id>.jsonl` (same project dir) when it re-enters a
+worktree or when you `/clear` — the old file just stops. A plain tail would
+freeze there. entire-tail instead keeps a *lineage* of the session ids it owns
+and, once the current file falls quiet, adopts the sibling whose
+`worktreeSession.sessionId` fork-pointer is in that lineage (matching the
+explicit pointer, never "newest file", so a concurrent unrelated Claude in the
+same repo is never picked up). At the flip it prints a two-line boundary naming
+both ends so you can find either file on disk:
+
+```
+⟳ continued in <new-id>        ← tail of the old session
+⟳ …continuing from <old-id>    ← head of the new session
+```
+
+That boundary lives only in the live window. Pass **`--mark-continuation`**
+(off by default — entire-tail is otherwise strictly read-only on transcripts) to
+*also* leave the forward pointer on disk: it appends one Claude-Code-native
+`system`/`informational` record to the now-stopped file, so reopening that
+session in Claude Code (`claude --resume <old-id>`) shows
+`entire-tail · session continued in <new-id>`. It's the kind of record Claude
+Code renders in the transcript but never feeds back to the model, so it's a
+breadcrumb for you, not an instruction to Claude. Only the stopped file is
+touched (the child is live and already records its own backward pointer), the
+write is idempotent, and any failure is a silent no-op. Enable it persistently
+with `ENTIRE_TAIL_MARK_CONTINUATION=1`.
+
 ## Tested against golden files
 
 `go test` runs a golden-file suite (`testdata/*.golden`) over synthetic fixtures

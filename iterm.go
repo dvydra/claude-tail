@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,16 @@ import (
 	"strconv"
 	"strings"
 )
+
+// newSessionID mints a random v4 UUID for `claude --session-id`. crypto/rand
+// makes a collision with an existing session file effectively impossible.
+func newSessionID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
 
 // iterm.go drives iTerm2 via AppleScript (osascript, always present on macOS) to
 // lay out the workspace: pick a session in the tree, and the current window
@@ -78,17 +89,17 @@ func osaRun(script string) error {
 //	A │ B    A = claude, B = entire-tail (full-height right column),
 //	C │ B    C = a plain shell.
 //
-// All three cd into cwd. B sleeps briefly so the fresh Claude session file
-// exists before entire-tail auto-discovers it.
-func launchWorkspace(cwd, resumeID, sessionFile string) error {
-	return osaRun(workspaceScript(cwd, resumeID, sessionFile, selfPath()))
+// All three cd into cwd. B follows the resumed session by id (--follow-session),
+// so a later worktree fork is followed too.
+func launchWorkspace(cwd, resumeID string) error {
+	return osaRun(workspaceScript(cwd, resumeID, selfPath()))
 }
 
 // launchNewWorkspace opens the 3-pane workspace for a FRESH Claude session in
-// cwd (the tree's `n` key): A = a new `claude`, B = entire-tail following it,
-// C = a shell.
+// cwd (the tree's `n` key): A = a new `claude` with a pinned session id, B =
+// entire-tail following exactly that id, C = a shell.
 func launchNewWorkspace(cwd string) error {
-	return osaRun(newWorkspaceScript(cwd, selfPath()))
+	return osaRun(newWorkspaceScript(cwd, selfPath(), newSessionID()))
 }
 
 // newWorkspaceScript lays out a fresh-session workspace. Unlike the resume
@@ -97,12 +108,16 @@ func launchNewWorkspace(cwd string) error {
 // current window when it's a single pane, else opens a NEW window rather than
 // carving up an existing split.
 //
-//	A = claude (new)   B = entire-tail --wait-new (blocks until A's new session
-//	C = shell              file appears, then tails exactly it)
-func newWorkspaceScript(cwd, self string) string {
+//	A = claude --session-id <id>   B = entire-tail --follow-session <id>
+//	C = shell                          (waits for A's file, then follows it +forks)
+//
+// Pinning a shared id (rather than --wait-new racing the newest file) means B
+// latches onto exactly A's session even when other Claude sessions are live in
+// the same repo.
+func newWorkspaceScript(cwd, self, sessionID string) string {
 	cd := "cd " + shQuote(cwd)
-	a := cd + " && claude"
-	b := cd + " && " + shQuote(self) + " --wait-new"
+	a := cd + " && claude --session-id " + shQuote(sessionID)
+	b := cd + " && " + shQuote(self) + " --follow-session " + shQuote(sessionID)
 	c := cd
 	return fmt.Sprintf(`tell application "iTerm2"
 	if (count of sessions of current tab of current window) > 1 then
@@ -125,17 +140,18 @@ end tell`, asEscape(a), asEscape(b), asEscape(c))
 // workspaceScript builds the AppleScript for the 3-pane workspace:
 //
 //	A │ B    A = claude --resume <id>
-//	--+ B    B = entire-tail <sessionFile>
+//	--+ B    B = entire-tail --follow-session <id>
 //	C │ B    C = shell
 //
 // It reuses the CURRENT window (the caller only invokes this when the window is a
 // single pane — see itermSinglePane): the pane running the picker becomes A, and
 // A's command is queued to its tty and runs the moment entire-tail exits. All
-// three panes cd into the picked session's folder.
-func workspaceScript(cwd, resumeID, sessionFile, self string) string {
+// three panes cd into the picked session's folder. B follows by id (not the file
+// path) so a worktree fork of the resumed session is followed too.
+func workspaceScript(cwd, resumeID, self string) string {
 	cd := "cd " + shQuote(cwd)
 	a := cd + " && claude --resume " + shQuote(resumeID)
-	b := cd + " && " + shQuote(self) + " " + shQuote(sessionFile)
+	b := cd + " && " + shQuote(self) + " --follow-session " + shQuote(resumeID)
 	c := cd
 	return fmt.Sprintf(`tell application "iTerm2"
 	tell current window

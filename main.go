@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const version = "0.22.0"
+const version = "0.23.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -59,7 +59,18 @@ func run(cfg Config) {
 	resolved := false
 	session := ""
 
-	if cfg.WaitNew {
+	if cfg.FollowSession != "" {
+		// The workspace pins a session id (claude --session-id) and hands it to us,
+		// so we follow exactly that file — waiting for it to appear, immune to any
+		// other Claude running in the same repo. Forks are then followed by lineage.
+		if !validSessionID(cfg.FollowSession) {
+			die("invalid --follow-session id (want a UUID): " + cfg.FollowSession)
+		}
+		session = waitForSessionFile(home, pwd, cfg.FollowSession)
+		if agentStr == "auto" {
+			agentStr = string(AgentClaude)
+		}
+	} else if cfg.WaitNew {
 		// The `n` workspace launches this alongside a fresh `claude`: block until a
 		// session that didn't exist at launch appears in $PWD, then tail exactly it
 		// (no racing the newest-file heuristic).
@@ -227,6 +238,13 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			r.emit(rec)
 		}
 	}
+	// cur is the file currently being followed — it starts at `session` but rolls
+	// over to a Claude worktree-fork child (see rollover below), so poll/reload
+	// read cur, not the immutable `session` param. lineage is the set of session
+	// ids we own; only a sibling forked from one of them is ever adopted.
+	cur := session
+	projectDir := filepath.Dir(cur)
+	lineage := map[string]bool{sessionIDFromPath(cur): true}
 	offset := liveOffset(data)
 	agyKeep := newAgyDedup(maxStepIndex(lines))
 	var agyLastSize, agyLastMtime int64 = -1, -1
@@ -234,7 +252,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		if agent == AgentAgy {
 			// agy rewrites the whole file each step; only re-read (and re-scan
 			// for new step_index) when it actually changes.
-			fi, err := os.Stat(session)
+			fi, err := os.Stat(cur)
 			if err != nil {
 				return
 			}
@@ -243,7 +261,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				return
 			}
 			agyLastSize, agyLastMtime = sz, mt
-			if d, err := os.ReadFile(session); err == nil {
+			if d, err := os.ReadFile(cur); err == nil {
 				for _, l := range splitLines(d) {
 					if agyKeep(l) {
 						emit(l)
@@ -251,13 +269,13 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				}
 			}
 		} else {
-			offset = appendStep(session, offset, emit)
+			offset = appendStep(cur, offset, emit)
 		}
 	}
 	// reload re-renders the entire current transcript with the live settings
 	// (the `r` key) — the streaming-native way to apply t/c retrospectively.
 	reload := func() {
-		d, err := os.ReadFile(session)
+		d, err := os.ReadFile(cur)
 		if err != nil {
 			return
 		}
@@ -272,9 +290,47 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		agyKeep = newAgyDedup(maxStepIndex(all))
 		agyLastSize, agyLastMtime = -1, -1 // force a re-stat next tick
 	}
+	// rollover follows the session across a Claude worktree fork. When the
+	// current file has gone quiet and a sibling in the same project dir forked
+	// from our lineage, switch to it and stream from its start (fork children are
+	// short at the moment they appear). Claude-only: worktree-state pointers are a
+	// Claude construct, and agy/codex don't rotate session ids mid-run.
+	rollover := func() bool {
+		if agent != AgentClaude {
+			return false
+		}
+		np, nid := lineageChild(projectDir, cur, lineage)
+		if np == "" {
+			return false
+		}
+		// Name both ends of the flip. On disk the old file just stops with no
+		// forward pointer, so without the ids printed here the continuation is
+		// impossible to locate. "continued in" is the tail of the old session;
+		// "…continuing from" heads the new one. Both are <id>.jsonl basenames in
+		// the same project dir.
+		oldID := sessionIDFromPath(cur)
+		oldPath := cur
+		lineage[nid] = true
+		cur = np
+		// Opt-in: leave a forward pointer in the now-stopped file too, so the
+		// continuation is findable when that session is reopened in Claude Code
+		// (not just in this live window). cur has already moved on, so the tail
+		// never re-reads the appended line.
+		if cfg.MarkContinuation {
+			markContinuation(oldPath, nid)
+		}
+		r.endLine() // close any open dot-streak bracket before wiping state
+		io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ continued in "+nid+reset+"\n")
+		r.reset()
+		io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ …continuing from "+oldID+reset+"\n\n")
+		offset = 0
+		agyLastSize, agyLastMtime = -1, -1
+		return true
+	}
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	idle := 0 // consecutive ticks the current Claude file hasn't grown
 	for {
 		select {
 		case code := <-codeCh:
@@ -305,10 +361,24 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// unpark it. Only Claude sessions have subagents; runFocus no-ops
 			// (with a hint) otherwise.
 			out.Flush()
-			runFocus(kbTTY, session, home, theme)
+			runFocus(kbTTY, cur, home, theme)
 			resumeCh <- struct{}{}
 		case <-ticker.C:
+			before := offset
 			poll()
+			// A quiet Claude file may mean it forked. After rolloverIdleTicks with
+			// no growth, look for a lineage child and, on adoption, immediately
+			// stream its content. offset only advances for Claude (agy gates out).
+			if agent == AgentClaude {
+				if offset != before {
+					idle = 0
+				} else if idle++; idle >= rolloverIdleTicks {
+					if rollover() {
+						poll()
+					}
+					idle = 0
+				}
+			}
 			out.Flush()
 		}
 	}
@@ -333,6 +403,25 @@ func waitForNewSession(home, pwd string) string {
 			if fi, err := os.Stat(f); err == nil && fi.Size() > 0 {
 				return f // the session the new `claude` just created
 			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// waitForSessionFile blocks until pwd's project dir holds <id>.jsonl with
+// content, then returns its path. Used by the pinned workspace: `claude
+// --session-id <id>` and `entire-tail --follow-session <id>` share the id, so
+// entire-tail latches onto exactly that file no matter how many other Claude
+// sessions are live in the same repo.
+func waitForSessionFile(home, pwd, id string) string {
+	path := filepath.Join(claudeProjectsDir(home), claudeSlug(pwd), id+".jsonl")
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+		return path
+	}
+	fmt.Fprintf(os.Stderr, "entire-tail: waiting for Claude session %s in %s … (Ctrl-C to cancel)\n", id, pwd)
+	for {
+		if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+			return path
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -647,6 +736,18 @@ OPTIONS:
                             then tail exactly it. The picker's 'n' workspace uses
                             this so the tail latches onto the session the fresh
                             'claude' creates, instead of racing an older one.
+      --follow-session ID   Follow exactly $PWD's <ID>.jsonl (waiting for it to
+                            appear), then follow worktree forks by lineage. The
+                            workspace pairs it with 'claude --session-id ID' so
+                            the tail can't latch onto the wrong concurrent session.
+      --mark-continuation   At a Claude lineage flip (worktree fork or /clear),
+                            also write a forward-pointer note into the now-stopped
+                            session file, so the continuation is findable when
+                            that session is reopened in Claude Code — not just in
+                            this live window. Off by default (entire-tail is
+                            otherwise read-only). Uses Claude Code's own
+                            transcript-only 'informational' record, so it shows on
+                            resume without steering Claude.
   -w, --workspace           Alias for the default: force the session tree. Its
                             Enter opens the iTerm workspace (macOS + iTerm2).
   -l, --list-themes         List available themes (with descriptions) and exit.
@@ -684,6 +785,7 @@ ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_COLLAPSE      Same as --collapse (or 'off' to disable).
   ENTIRE_TAIL_PICK          'always'/'never'/'auto' — same as --pick/--no-pick.
   ENTIRE_TAIL_DAYS          Same as --days (session-tree window).
+  ENTIRE_TAIL_MARK_CONTINUATION  Truthy (1/true/yes/on) = --mark-continuation.
   ENTIRE_TAIL_HANDOVER_VAULT  Obsidian vault root for handover docs (default:
                             the iCloud Obsidian Documents folder).
   GLOW_STYLE                Same as --style.

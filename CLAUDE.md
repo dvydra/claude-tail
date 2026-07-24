@@ -86,7 +86,12 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   one is already split, since there's nothing to tail in place). Pure `workspaceScript`
   builder split from the `osaRun` executor so quoting/layout are unit-tested
   without launching iTerm. The queued-claude trick: the command is written to
-  the current pane's tty and runs once entire-tail exits
+  the current pane's tty and runs once entire-tail exits. Both panes **pin a
+  shared session id** — fresh: `claude --session-id <id>` + `entire-tail
+  --follow-session <id>`; resume: `claude --resume <id>` + `--follow-session
+  <id>` — so the tail latches onto exactly that session even with other Claude
+  sessions live in the same repo (replaces the racy `--wait-new` newest-file
+  heuristic; `newSessionID` mints a v4 UUID via crypto/rand)
 - `search.go` — `--search`: content search across local transcripts (ripgrep,
   literal) + `entire checkpoint search` (semantic session results), merged by
   session id and ranked (`searchHit.score`: exact local match dominates, entire
@@ -124,6 +129,37 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
 - `toolresult.go` — parse Claude `toolUseResult` into diffs / output / read-summary
 - `tail.go` — follow loop (byte-offset resume for claude/codex; whole-file
   re-read + `step_index` dedup for agy)
+- `lineage.go` — **follows a Claude session across a worktree fork.** Claude Code
+  mints a NEW session id (new `<id>.jsonl`, same project dir) on a worktree
+  re-enter; the fresh file's `worktree-state` record carries the id it forked
+  FROM (`worktreeSession.sessionId`). Without this, a tail latched on the old
+  file freezes at the fork (the "drift-noise orphaning"). `tailSession` keeps a
+  **lineage set** and, once the current file goes quiet (`rolloverIdleTicks`),
+  adopts a sibling whose `forkPointer` is in that set (`lineageChild`) — matching
+  the explicit pointer, NOT "newest file", so a concurrent unrelated Claude in
+  the same repo is never adopted. Rollover prints a two-line boundary naming both
+  ids — `⟳ continued in <new-id>` (tail of the old session) then `⟳ …continuing
+  from <old-id>` (head of the new) — because on disk the old file just stops with
+  no forward pointer, so the printed ids are the only way to find the
+  continuation; then streams the child from its start. `cur` (mutable) replaces the immutable
+  `session` param inside the live loop's poll/reload/rollover closures. **A
+  `/clear` is followed for free by this same path** — verified live, it mints a
+  new `<id>.jsonl` whose `worktreeSession.sessionId` is the pre-clear session
+  (same field as a worktree re-enter), so `forkPointer`/`lineageChild` adopt it
+  with no `/clear`-specific code (`TestForkPointerClear`). The live divider only
+  names the flip in *this* window; **`--mark-continuation`** (opt-in, off by
+  default — entire-tail is otherwise strictly read-only on transcripts) also
+  leaves the pointer on disk: `markContinuation` appends a Claude-Code-native
+  `system`/`informational` record to the now-stopped file, so reopening that
+  session in Claude Code shows `entire-tail · session continued in <new-id>`.
+  Only the STOPPED side is written — the child is live (Claude is mid-write) and
+  already carries the backward `worktreeSession` pointer. The record type is one
+  Claude Code renders in the transcript UI but never replays to the model, so it
+  shows on resume without steering Claude; it chains off the last uuid-bearing
+  record (parentUuid, so it renders as the thread leaf), copies that record's
+  cwd/version/gitBranch/sessionId, is idempotent (skips if the tail already
+  names `<new-id>`), and is best-effort (any failure is a silent no-op — a failed
+  annotation must never disrupt the tail). `TestMarkContinuation`
 - `subagents.go` — discovers a Claude session's subagent transcripts
   (`<transcript>/<sessionId>/subagents/agent-*.jsonl` + `.meta.json`), ordered by
   spawn time, with best-effort running/done + duration from each file's timespan.
