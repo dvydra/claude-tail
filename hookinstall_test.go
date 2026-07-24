@@ -63,3 +63,30 @@ func TestUnmergeHooksRemovesOnlyOurs(t *testing.T) {
 }
 
 func countOccur(b []byte, sub string) int { return strings.Count(string(b), sub) }
+
+func TestShouldOfferHookInstall(t *testing.T) {
+	base := hookOfferInputs{isTTY: true, isClaude: true}
+	if !shouldOfferHookInstall(base) {
+		t.Fatal("clean interactive Claude run should offer")
+	}
+	cases := []struct {
+		name  string
+		mut   func(*hookOfferInputs)
+	}{
+		{"not tty", func(i *hookOfferInputs) { i.isTTY = false }},
+		{"adopted", func(i *hookOfferInputs) { i.adopted = true }},
+		{"already installed", func(i *hookOfferInputs) { i.alreadyInstalled = true }},
+		{"choice recorded", func(i *hookOfferInputs) { i.choiceRecorded = true }},
+		{"--no-hook-install", func(i *hookOfferInputs) { i.noHookInstall = true }},
+		{"--follow-session", func(i *hookOfferInputs) { i.followSession = true }},
+		{"--no-pick", func(i *hookOfferInputs) { i.noPick = true }},
+		{"not claude", func(i *hookOfferInputs) { i.isClaude = false }},
+	}
+	for _, c := range cases {
+		in := base
+		c.mut(&in)
+		if shouldOfferHookInstall(in) {
+			t.Errorf("%s: must NOT offer", c.name)
+		}
+	}
+}

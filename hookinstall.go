@@ -184,3 +184,33 @@ func groupRefsScript(group any, scriptPath string) bool {
 	}
 	return false
 }
+
+// hookOfferInputs are the pure inputs to the first-run offer decision.
+type hookOfferInputs struct {
+	isTTY            bool
+	adopted          bool
+	alreadyInstalled bool
+	choiceRecorded   bool
+	noHookInstall    bool
+	followSession    bool
+	noPick           bool
+	isClaude         bool
+}
+
+// shouldOfferHookInstall reports whether the one-time "add the live-question
+// hook?" prompt should appear. It fires ONLY on a clean interactive Claude run
+// where the user hasn't already decided and no context makes a prompt wrong
+// (piped/automated/workspace-pane/adopted). This keeps entire-tail's read-only
+// charter: it never silently writes global config, and never nags.
+func shouldOfferHookInstall(g hookOfferInputs) bool {
+	if !g.isTTY || !g.isClaude {
+		return false
+	}
+	if g.adopted || g.followSession || g.noPick {
+		return false // workspace pane / automated latch — never interrupt
+	}
+	if g.alreadyInstalled || g.choiceRecorded || g.noHookInstall {
+		return false
+	}
+	return true
+}
