@@ -123,6 +123,7 @@ events show as they stream:
 | key            | effect                                                        |
 |----------------|---------------------------------------------------------------|
 | `t`            | cycle tool-call rendering: **full → dots → hidden**           |
+| `T`            | cycle the color **theme** — steps through the bundled themes and re-renders the whole transcript in the new theme |
 | `c`            | toggle collapsing of long user pastes                         |
 | `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
 | `r`            | reload — re-render the whole transcript with current settings |
@@ -137,6 +138,13 @@ them to the **history**, press **`r`**: it re-renders the whole current
 transcript with the live settings, appending a fresh copy to the scrollback. So
 the usual flow is "cycle to full with `t`, then `r` to redraw everything as
 rich diffs." A one-line `keys:` legend prints in the startup banner.
+
+`T` (shift-`t`) cycles the color theme. Unlike `t`/`c`, it re-renders the whole
+transcript itself — glamour body colors already in the scrollback can't be
+recolored in place, so it appends a fresh copy in the new theme (a `⟳ theme:
+<name>` divider marks it). It steps through the bundled themes in order (same
+set as `--list-themes` / the `-t` flag), wrapping around; a `-s/--style` body
+override is not carried into the cycle.
 
 ## Subagents & pending questions (Claude)
 

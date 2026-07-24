@@ -402,3 +402,45 @@ func TestTruncateRunes(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestApplyTheme(t *testing.T) {
+	t1, err := loadTheme("tokyo-night", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t2, err := loadTheme("dracula", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	r, err := newRenderer(&b, t1, "dots", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.theme.Name != "tokyo-night" || !strings.HasPrefix(r.userHdr, t1.UserANSI) {
+		t.Fatalf("initial theme not applied: name=%q userHdr=%q", r.theme.Name, r.userHdr)
+	}
+
+	if err := r.applyTheme(t2); err != nil {
+		t.Fatalf("applyTheme: %v", err)
+	}
+	if r.theme.Name != "dracula" {
+		t.Errorf("theme.Name = %q, want dracula", r.theme.Name)
+	}
+	if !strings.HasPrefix(r.userHdr, t2.UserANSI) || !strings.HasPrefix(r.claudeHdr, t2.ClaudeANSI) {
+		t.Errorf("headers not recomputed for new theme: userHdr=%q claudeHdr=%q", r.userHdr, r.claudeHdr)
+	}
+	// The rebuilt render function still produces styled output.
+	if _, err := r.render("**bold**"); err != nil {
+		t.Errorf("render after applyTheme: %v", err)
+	}
+
+	// A rebuild failure leaves the current theme untouched.
+	bad := Theme{Name: "bad", StyleJSON: []byte("{not valid json")}
+	if err := r.applyTheme(bad); err == nil {
+		t.Error("applyTheme with invalid style JSON should error")
+	}
+	if r.theme.Name != "dracula" {
+		t.Errorf("failed applyTheme mutated theme: got %q, want dracula", r.theme.Name)
+	}
+}

@@ -5,7 +5,7 @@ import "testing"
 func TestKeyActionFor(t *testing.T) {
 	cases := map[byte]keyAction{
 		't':  keyCycleTools,
-		'T':  keyCycleTools,
+		'T':  keyCycleTheme, // shift-t cycles the theme (lowercase t stays tools)
 		'c':  keyToggleCollapse,
 		'C':  keyToggleCollapse,
 		'r':  keyReload,

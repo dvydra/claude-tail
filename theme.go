@@ -68,6 +68,26 @@ func themeExists(name string) bool {
 	return err == nil
 }
 
+// nextTheme resolves the bundled theme after cur in the sorted theme list,
+// wrapping around at the end (the `T`-key cycle). A style override is
+// deliberately NOT threaded through: cycling switches among the bundled themes'
+// full looks, so a --style body override doesn't pin every theme to one style.
+// An unknown current name starts the cycle at the first theme.
+func nextTheme(cur string) (Theme, error) {
+	infos := listThemeInfos()
+	if len(infos) == 0 {
+		return Theme{}, fmt.Errorf("no bundled themes")
+	}
+	idx := -1
+	for i, in := range infos {
+		if in.Name == cur {
+			idx = i
+			break
+		}
+	}
+	return loadTheme(infos[(idx+1)%len(infos)].Name, "")
+}
+
 // unescapeANSI turns the backslash escapes used in the bash $'...' palette
 // literals into real bytes — only the forms the theme files actually use.
 func unescapeANSI(s string) string {
