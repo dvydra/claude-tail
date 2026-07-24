@@ -24,6 +24,12 @@ case "$mode" in
     mv -f "$tmp" "$marker"
     ;;
   perm-set)
+    # AskUserQuestion already gets a richer question card from its Pre/Post
+    # hooks; a permission notice for it is redundant noise and would clobber the
+    # question marker (both write the same <sid>.json). Skip it — perm markers
+    # are for genuine tool-permission prompts (Bash, etc.).
+    tool="$(printf '%s' "$in" | jq -r '.tool_name // empty')"
+    [ "$tool" = "AskUserQuestion" ] && exit 0
     mkdir -p "$dir"
     tmp="$(mktemp "${marker}.XXXXXX")"
     printf '%s' "$in" | jq -c '{kind:"permission", payload:{tool_name:.tool_name, tool_input:.tool_input}, tool_use_id:(.tool_use_id // null), ts:(now|floor)}' > "$tmp"
