@@ -58,6 +58,93 @@ func TestQuestionCardLayout(t *testing.T) {
 	}
 }
 
+func TestPendingQuestionRingsBellAndShowsCard(t *testing.T) {
+	var b strings.Builder
+	r := newRendererWith(&b, testTheme(), "dots", 0, identityRender)
+	r.live = true
+
+	qs := []QuestionItem{{Header: "Drink", Question: "Tea or coffee?", Options: []string{"Tea", "Coffee"}}}
+	r.pendingQuestion(qs)
+	r.endLine()
+
+	out := b.String()
+	if !strings.Contains(out, "\a") {
+		t.Fatal("pendingQuestion must ring the bell")
+	}
+	plain := stripANSI(out)
+	for _, want := range []string{"⁉ WAITING FOR YOUR ANSWER", "Drink: Tea or coffee?", "1. Tea", "2. Coffee"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("pending question card missing %q in:\n%s", want, plain)
+		}
+	}
+}
+
+func TestPendingQuestionSuppressesLaterJSONLCard(t *testing.T) {
+	var b strings.Builder
+	r := newRendererWith(&b, testTheme(), "dots", 0, identityRender)
+	r.live = true
+
+	qs := []QuestionItem{{Header: "Drink", Question: "Tea or coffee?", Options: []string{"Tea", "Coffee"}}}
+
+	// Marker fires first (pre-answer).
+	r.pendingQuestion(qs)
+	afterMarker := b.String()
+	if !strings.Contains(afterMarker, "Tea or coffee?") {
+		t.Fatal("marker must render the card")
+	}
+	if !strings.Contains(afterMarker, "\a") {
+		t.Fatal("marker must ring the bell")
+	}
+
+	// The eventual JSONL record for the SAME question must NOT render a 2nd card.
+	b.Reset()
+	r.emit(Record{Kind: KindQuestion, QID: "toolu_x", Questions: qs})
+	if strings.Contains(b.String(), "Tea or coffee?") {
+		t.Fatal("JSONL card must be suppressed after the marker showed it")
+	}
+}
+
+func TestPendingQuestionCardEqualsJSONLCard(t *testing.T) {
+	qs := []QuestionItem{{Header: "Drink", Question: "Tea or coffee?", Options: []string{"Tea", "Coffee"}}}
+
+	var b strings.Builder
+	r := newRendererWith(&b, testTheme(), "dots", 0, identityRender)
+	r.live = true
+	r.pendingQuestion(qs)
+
+	if !strings.Contains(b.String(), questionCard(qs)) {
+		t.Fatal("pendingQuestion must emit the exact same card string as questionCard")
+	}
+}
+
+func TestQuestionKeyMatchesMarkerAndJSONL(t *testing.T) {
+	qs := []QuestionItem{{Header: "H", Question: "Q", Options: []string{"A — d"}}}
+	m, ok := parsePendingMarker([]byte(`{"kind":"question","payload":{"questions":[{"question":"Q","header":"H","options":[{"label":"A","description":"d"}]}]}}`))
+	if !ok {
+		t.Fatal("expected marker to parse")
+	}
+	if contentKey(m) != "question:"+questionsContentKey(qs) {
+		t.Fatal("marker key must equal the JSONL questions key")
+	}
+}
+
+func TestPendingPermissionRendersWaitingLine(t *testing.T) {
+	var b strings.Builder
+	r := newRendererWith(&b, testTheme(), "dots", 0, identityRender)
+	r.live = true
+
+	r.pendingPermission("Bash(git push)")
+	r.endLine()
+
+	out := b.String()
+	if !strings.Contains(out, "\a") {
+		t.Fatal("pendingPermission must ring the bell")
+	}
+	if !strings.Contains(out, "⏳ waiting: Bash(git push)") {
+		t.Errorf("missing waiting line in:\n%s", out)
+	}
+}
+
 func TestQuestionBellFiresOncePerID(t *testing.T) {
 	var b strings.Builder
 	r := newRendererWith(&b, testTheme(), "dots", 0, identityRender)

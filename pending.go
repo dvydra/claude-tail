@@ -46,7 +46,16 @@ func parsePendingMarker(b []byte) (*pendingMarker, bool) {
 // compute the SAME key for the same question, so the JSONL card can be
 // suppressed once the marker already showed it — independent of whether the
 // hook payload carried a tool_use id.
+//
+// Questions are normalized through claudeParseQuestions/questionsContentKey
+// (render.go) rather than hashed as raw bytes: the marker's payload and the
+// JSONL record's tool_input are structurally the same {questions:[...]} shape
+// but are never byte-identical (the JSONL side carries a tool_use id the hook
+// payload doesn't), so a raw-byte hash would never match.
 func contentKey(m *pendingMarker) string {
+	if m.Kind == "question" {
+		return "question:" + questionsContentKey(claudeParseQuestions(m.Payload))
+	}
 	sum := sha256.Sum256(m.Payload)
 	return m.Kind + ":" + hex.EncodeToString(sum[:8])
 }
