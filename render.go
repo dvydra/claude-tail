@@ -292,6 +292,13 @@ func (r *Renderer) question(rec Record) {
 	key := questionsContentKey(rec.Questions)
 	if r.pendingShown[key] {
 		delete(r.pendingShown, key)
+		// A live marker already showed this card AND rang the bell. Record the
+		// QID so a later full re-render (r / T, which clears pendingShown but not
+		// seenQuestions and replays with live=true) redraws the card without
+		// re-ringing the bell for an already-answered prompt.
+		if rec.QID != "" {
+			r.seenQuestions[rec.QID] = true
+		}
 		return
 	}
 	r.endLine()

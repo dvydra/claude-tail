@@ -24,6 +24,31 @@ func renderRecords(toolStyle string, collapse int, live bool, recs ...Record) st
 	return b.String()
 }
 
+// After a live marker shows a question card (and rings the bell), a later full
+// re-render (r / T keys → reset() then replay with live=true) must redraw the
+// card but NOT re-ring the bell for a prompt that was already alerted/answered.
+func TestReloadAfterMarkerDoesNotRebell(t *testing.T) {
+	var buf strings.Builder
+	r := newRendererWith(&buf, testTheme(), "dots", 5, identityRender)
+	r.live = true
+	qs := []QuestionItem{{Header: "Drink", Question: "Tea or coffee?", Options: []string{"Tea", "Coffee"}}}
+
+	r.pendingQuestion(qs)                                        // marker: bell + card
+	r.emit(Record{Kind: KindQuestion, QID: "q1", Questions: qs}) // JSONL: suppressed, records the QID
+	r.reset()                                                    // simulate a reload (clears pendingShown, keeps seenQuestions)
+	buf.Reset()
+	r.emit(Record{Kind: KindQuestion, QID: "q1", Questions: qs}) // reload replay
+	r.endLine()
+
+	out := buf.String()
+	if !strings.Contains(stripANSI(out), "WAITING FOR YOUR ANSWER") {
+		t.Fatalf("reload should re-render the card, got:\n%s", out)
+	}
+	if strings.Contains(out, "\a") {
+		t.Fatal("reload must NOT re-ring the bell for an already-alerted question")
+	}
+}
+
 func TestAgentSpawnMarker(t *testing.T) {
 	// Rendered in every tool style (it's orchestration, not a routine call).
 	for _, style := range []string{"dots", "full", "hidden"} {

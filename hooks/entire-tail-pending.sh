@@ -20,6 +20,7 @@ case "$mode" in
   question-set)
     mkdir -p "$dir"
     tmp="$(mktemp "${marker}.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT   # under set -e, a jq failure would otherwise orphan the temp
     printf '%s' "$in" | jq -c '{kind:"question", payload:.tool_input, tool_use_id:(.tool_use_id // null), ts:(now|floor)}' > "$tmp"
     mv -f "$tmp" "$marker"
     ;;
@@ -32,6 +33,7 @@ case "$mode" in
     [ "$tool" = "AskUserQuestion" ] && exit 0
     mkdir -p "$dir"
     tmp="$(mktemp "${marker}.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT   # under set -e, a jq failure would otherwise orphan the temp
     printf '%s' "$in" | jq -c '{kind:"permission", payload:{tool_name:.tool_name, tool_input:.tool_input}, tool_use_id:(.tool_use_id // null), ts:(now|floor)}' > "$tmp"
     mv -f "$tmp" "$marker"
     ;;
