@@ -79,6 +79,26 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   the `--local` view's live markers, plus `runPicker`/`resolveTreeChoice`. The
   tree is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` /
   piped runs / explicit SESSION_FILE skip it and tail directly
+- `adopt.go` — **auto-adopts the Claude in the sibling iTerm pane.** A bare
+  `entire-tail` (no `--follow-session`/positional/search) run in a pane beside a
+  `claude` tails THAT session with no flags, before falling to the tree. The
+  session id isn't interrogable from a bare `claude` — it's absent from argv,
+  env (no `CLAUDE_*` vars), and open files (the transcript is open-append-closed,
+  never held; verified live) — so we pin the *process* and resolve its file. The
+  process is matched by **iTerm tab**: every terminal carries `ITERM_SESSION_ID`
+  ("wNtNpM:UUID") in its env, readable via `ps eww`; `itermTab` strips it to the
+  `wNtN` window+tab prefix and `siblingPIDs` keeps the `claude`s sharing OUR tab
+  (so one in another tab/window is never grabbed). Adopt only fires when the tab
+  holds **exactly one** claude (`adoptPaneSession`); zero/many → fall through.
+  `resolveClaudeSession` then locates the file: an id on the claude's command
+  line (`scrapeSessionIDArg`: `--session-id`/`--resume`) pins it exactly, else the
+  actively-written `.jsonl` in its cwd's project dir wins (`liveSessionInDir` →
+  `newestClear`, with a brief mtime re-sample `activePick` only when two sessions
+  are near-simultaneous). On adopt, `run` re-bases `pwd` onto the adopted claude's
+  cwd (`lsofCwd`) so the cwd-mismatch note and Ctrl-X tree reflect what's watched.
+  Self-disables off iTerm / without `pgrep`+`lsof`. Pure parsers (`itermTab`,
+  `parsePsEnv`, `scrapeSessionIDArg`, `siblingPIDs`, `newestClear`) are
+  unit-tested; the `ps`/`lsof` shell-outs are the thin IO layer
 - `iterm.go` — macOS/iTerm2 automation via `osascript`: the tree's `Enter`
   opens the 3-pane workspace (`claude --resume` + live tail + shell) in the
   CURRENT window, cd'd to the picked session's folder; `n` opens the same

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const version = "0.23.0"
+const version = "0.24.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -106,6 +106,23 @@ func run(cfg Config) {
 				return
 			}
 			session = p // fall through to tail it via the explicit-session path below
+		}
+	}
+
+	// Auto-adopt: launched bare in a pane beside a single `claude` in this iTerm
+	// tab? Tail exactly its session, skipping the tree. Matched by iTerm tab so a
+	// claude elsewhere is never grabbed; self-disables off iTerm or when the tab
+	// holds zero/many claudes. Explicit -p/--pick (always) opts out.
+	if session == "" && cfg.Pick != "always" && (agentStr == "auto" || agentStr == "claude") {
+		if p, cwd := adoptPaneSession(home, os.Getenv); p != "" {
+			fmt.Fprintln(os.Stderr, "entire-tail: adopted the claude session in this iTerm tab")
+			session = p
+			if cwd != "" {
+				pwd = cwd // watch the adopted agent's repo, not ours
+			}
+			if agentStr == "auto" {
+				agentStr = string(AgentClaude)
+			}
 		}
 	}
 
@@ -636,13 +653,20 @@ SUBCOMMANDS:
                             (default: the iCloud Obsidian vault).
 
 ARGUMENTS:
-  [ARGS...]                 With no args on an interactive terminal, opens the
+  [ARGS...]                 With no args, if exactly one 'claude' is running in
+                            this iTerm tab (i.e. you're in a pane beside it),
+                            entire-tail adopts and tails THAT session — no flags,
+                            no picking. It's matched by iTerm tab, so a claude in
+                            another tab/window is never grabbed; off iTerm, or
+                            with zero/many claudes in the tab, it self-disables.
+                            Failing that, an interactive terminal opens the
                             session tree picker (see --pick); non-interactively
                             or with --no-pick it auto-discovers + tails $PWD's
-                            newest session. A single arg that's an existing file
-                            tails that file. Otherwise the args are a search
-                            query (same as --search) — so 'entire-tail fire
-                            socks' finds the session where that was said.
+                            newest session. Force the tree over adoption with -p.
+                            A single arg that's an existing file tails that file.
+                            Otherwise the args are a search query (same as
+                            --search) — so 'entire-tail fire socks' finds the
+                            session where that was said.
 
 OPTIONS:
   -a, --agent NAME          Which agent's session to tail:
