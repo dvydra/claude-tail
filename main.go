@@ -367,6 +367,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	idle := 0 // consecutive ticks the current Claude file hasn't grown
+	// Live pending-prompt watch (Claude only, and only when the hook is
+	// installed — i.e. the markers dir exists). lastMarkerKey dedups so a marker
+	// lingering across ticks renders exactly once.
+	pendingWatch := agent == AgentClaude && isDir(pendingDir(home))
+	lastMarkerKey := ""
 	for {
 		select {
 		case code := <-codeCh:
@@ -417,6 +422,19 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					}
 					idle = 0
 				}
+			}
+			if pendingWatch {
+				m, ok := readPendingMarker(home, sessionIDFromPath(cur))
+				render, key := pendingAction(lastMarkerKey, m, ok)
+				if render {
+					switch m.Kind {
+					case "question":
+						r.pendingQuestion(claudeParseQuestions(m.Payload))
+					case "permission":
+						r.pendingPermission(permissionSummary(m))
+					}
+				}
+				lastMarkerKey = key
 			}
 			out.Flush()
 		}

@@ -76,6 +76,24 @@ func pendingAction(prevKey string, m *pendingMarker, ok bool) (render bool, newK
 	return true, k
 }
 
+// permissionSummary renders a permission marker's payload as "Tool(preview)"
+// for the one-line pending notice, matching full-mode's Tool(arg) style
+// (adapter_claude.go's claudeToolSummary + render.go's truncateRunes). Falls
+// back to the bare tool name when the input yields no preview (unknown tool,
+// missing/empty tool_input) — never panics, never renders empty parens.
+func permissionSummary(m *pendingMarker) string {
+	var p struct {
+		ToolName  string          `json:"tool_name"`
+		ToolInput json.RawMessage `json:"tool_input"`
+	}
+	_ = json.Unmarshal(m.Payload, &p)
+	arg := claudeToolSummary(p.ToolName, p.ToolInput)
+	if arg == "" {
+		return p.ToolName
+	}
+	return p.ToolName + "(" + truncateRunes(arg, 120) + ")"
+}
+
 func pendingDir(home string) string {
 	return filepath.Join(home, ".claude", "entire-tail", "pending")
 }
