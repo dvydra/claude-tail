@@ -179,7 +179,17 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   record (parentUuid, so it renders as the thread leaf), copies that record's
   cwd/version/gitBranch/sessionId, is idempotent (skips if the tail already
   names `<new-id>`), and is best-effort (any failure is a silent no-op — a failed
-  annotation must never disrupt the tail). `TestMarkContinuation`
+  annotation must never disrupt the tail). `TestMarkContinuation`. A worktree
+  *cwd switch* (the harness `EnterWorktree`/`ExitWorktree`, not a `claude`
+  re-enter) is a different shape: Claude Code keeps the SAME id but moves the
+  whole `<id>.jsonl` into the project dir matching the new cwd. `forkPointer` can't
+  see it (no new id; `worktreeSession.sessionId` is the session's own id), so
+  rollover falls back to `relocatedSession` — the newest same-id file under
+  another project dir, adopted only once its size has caught up to our byte offset
+  (so a mid-write candidate can't trip appendStep's truncation reset). The offset
+  is KEPT across the hop (identical content prefix → stream only the continuation,
+  no re-render); the divider is `⟳ following session into <dir>`
+  (`TestRelocatedSession`)
 - `subagents.go` — discovers a Claude session's subagent transcripts
   (`<transcript>/<sessionId>/subagents/agent-*.jsonl` + `.meta.json`), ordered by
   spawn time, with best-effort running/done + duration from each file's timespan.

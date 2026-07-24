@@ -6,7 +6,51 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestRelocatedSession covers following a session across a worktree cwd switch:
+// the same <id>.jsonl reappears in a different project dir (newer mtime), and
+// relocatedSession adopts it. Complements the new-id fork path (lineageChild).
+func TestRelocatedSession(t *testing.T) {
+	root := t.TempDir()
+	id := "a3079d56-8720-4977-8480-e280e171cc7a"
+	dirA := filepath.Join(root, "-Users-x-repo")
+	dirB := filepath.Join(root, "-Users-x-repo--claude-worktrees-wt")
+	for _, d := range []string{dirA, dirB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fileA := filepath.Join(dirA, id+".jsonl")
+	fileB := filepath.Join(dirB, id+".jsonl")
+	for _, f := range []string{fileA, fileB} {
+		if err := os.WriteFile(f, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	older, newer := time.Unix(1000, 0), time.Unix(2000, 0)
+	_ = os.Chtimes(fileA, older, older)
+	_ = os.Chtimes(fileB, newer, newer)
+
+	// From the older file → adopt the newer same-id file in the other dir.
+	if got := relocatedSession(root, id, fileA); got != fileB {
+		t.Fatalf("from older: want %s, got %q", fileB, got)
+	}
+	// From the newest file → nothing newer elsewhere → no relocation.
+	if got := relocatedSession(root, id, fileB); got != "" {
+		t.Fatalf("from newest: want \"\", got %q", got)
+	}
+	// curPath gone (moved away) → still finds the newest same-id file.
+	gone := filepath.Join(root, "-nonexistent", id+".jsonl")
+	if got := relocatedSession(root, id, gone); got != fileB {
+		t.Fatalf("gone curPath: want %s, got %q", fileB, got)
+	}
+	// A non-UUID id is never globbed.
+	if got := relocatedSession(root, "not-a-uuid", fileA); got != "" {
+		t.Fatalf("invalid id: want \"\", got %q", got)
+	}
+}
 
 func TestSessionIDFromPath(t *testing.T) {
 	got := sessionIDFromPath("/x/y/-Users-dvydra-src/9ed9607a-f1bf.jsonl")

@@ -175,6 +175,37 @@ func markContinuation(oldPath, newID string) {
 	_, _ = f.Write(append(b, '\n'))
 }
 
+// relocatedSession follows this session's transcript across a worktree-induced
+// project-dir change. On EnterWorktree/ExitWorktree the session's cwd switches,
+// and Claude Code moves the WHOLE <id>.jsonl into the project dir matching the
+// new cwd — SAME session id, identical content prefix, just a different
+// directory. A tail latched on the old path then freezes (its file stopped
+// growing / was moved away). When that happens, the same-id file under another
+// project dir in projectsRoot is the continuation. Returns the newest such path
+// (newer than curPath, or any if curPath is gone), else "".
+//
+// This complements forkPointer/lineageChild, which handle a NEW id forked within
+// one project dir (a `claude` worktree re-enter, or /clear); a same-id dir hop is
+// neither, so it needs its own adoption path. The caller keeps its byte offset:
+// the moved file shares our content prefix, so appendStep resumes cleanly (and
+// self-heals via its size<offset reset if the prefix ever differs).
+func relocatedSession(projectsRoot, id, curPath string) string {
+	if !validSessionID(id) {
+		return "" // never glob on an id that isn't a plain UUID
+	}
+	matches, _ := filepath.Glob(filepath.Join(projectsRoot, "*", id+".jsonl"))
+	best, bestMtime := "", fileMtimeNano(curPath) // -1 when curPath is gone → any real file wins
+	for _, m := range matches {
+		if m == curPath {
+			continue
+		}
+		if mt := fileMtimeNano(m); mt > bestMtime {
+			best, bestMtime = m, mt
+		}
+	}
+	return best
+}
+
 // lineageChild scans dir for a sibling session file (other than curPath) that
 // forked from a session in `lineage` and has content, returning its path and
 // id. Empty path means no child yet. Deterministic: filepath.Glob is sorted, so
