@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bufio"
+	_ "embed"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -118,6 +122,98 @@ func hasHookInstalled(settings []byte, scriptPath string) bool {
 		}
 	}
 	return false
+}
+
+//go:embed hooks/entire-tail-pending.sh
+var pendingHookScript []byte
+
+func hookScriptPath(home string) string {
+	return filepath.Join(home, ".claude", "entire-tail", "entire-tail-pending.sh")
+}
+
+func hookChoicePath(home string) string {
+	return filepath.Join(home, ".claude", "entire-tail", "hook-choice")
+}
+
+func hookChoiceRecorded(home string) bool {
+	_, err := os.Stat(hookChoicePath(home))
+	return err == nil
+}
+
+func recordHookChoice(home, choice string) {
+	_ = os.MkdirAll(filepath.Dir(hookChoicePath(home)), 0o755)
+	_ = os.WriteFile(hookChoicePath(home), []byte(choice+"\n"), 0o644)
+}
+
+// installHooks writes the vendored script, creates the markers dir, and merges
+// the hook entries into settings.json (backing the old file up first).
+func installHooks(home string) error {
+	base := filepath.Join(home, ".claude", "entire-tail")
+	if err := os.MkdirAll(filepath.Join(base, "pending"), 0o755); err != nil {
+		return err
+	}
+	sp := hookScriptPath(home)
+	if err := os.WriteFile(sp, pendingHookScript, 0o755); err != nil {
+		return err
+	}
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	cur, _ := os.ReadFile(settingsPath)
+	if len(cur) > 0 {
+		_ = os.WriteFile(settingsPath+".entire-tail.bak", cur, 0o644)
+	}
+	merged, err := mergeHooks(cur, sp)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(settingsPath, merged, 0o644)
+}
+
+// uninstallHooks removes our entries from settings.json (leaving the script +
+// markers dir in place is harmless, but remove the script too).
+func uninstallHooks(home string) error {
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	cur, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return err
+	}
+	out, err := unmergeHooks(cur, hookScriptPath(home))
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(settingsPath, out, 0o644); err != nil {
+		return err
+	}
+	_ = os.Remove(hookScriptPath(home))
+	return nil
+}
+
+// hookInstalledFor reports whether our hook entries are already present in
+// home's settings.json (a missing/unreadable file is "not installed").
+func hookInstalledFor(home string) bool {
+	b, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		return false
+	}
+	return hasHookInstalled(b, hookScriptPath(home))
+}
+
+// offerHookInstall prints the one-time prompt and, on yes, installs. Either way
+// it records the choice so it never asks again. Reads a single line from in.
+func offerHookInstall(home string, in *bufio.Reader) {
+	fmt.Fprint(os.Stderr, "entire-tail: add the live pending-question hook to ~/.claude/settings.json? "+
+		"It surfaces AskUserQuestion/permission prompts the instant they appear. [y/N] ")
+	line, _ := in.ReadString('\n')
+	if strings.EqualFold(strings.TrimSpace(line), "y") {
+		if err := installHooks(home); err != nil {
+			fmt.Fprintln(os.Stderr, "entire-tail: hook install failed: "+err.Error())
+			return // don't record — let them retry next run
+		}
+		recordHookChoice(home, "yes")
+		fmt.Fprintln(os.Stderr, "entire-tail: installed. Restart Claude Code (or open /hooks once) so it loads the hook.")
+		return
+	}
+	recordHookChoice(home, "no")
+	fmt.Fprintln(os.Stderr, "entire-tail: skipped. Run `entire-tail install-hooks` anytime to enable it.")
 }
 
 // ── small any-tree helpers ──
