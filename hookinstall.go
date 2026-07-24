@@ -157,9 +157,17 @@ func installHooks(home string) error {
 		return err
 	}
 	settingsPath := filepath.Join(home, ".claude", "settings.json")
-	cur, _ := os.ReadFile(settingsPath)
+	cur, err := os.ReadFile(settingsPath)
+	if err != nil && !os.IsNotExist(err) {
+		// Any read failure other than "no such file" means the file exists but we
+		// couldn't read it — bail rather than overwrite it with a merge into empty
+		// (which would clobber it with no backup taken).
+		return fmt.Errorf("read %s: %w", settingsPath, err)
+	}
 	if len(cur) > 0 {
-		_ = os.WriteFile(settingsPath+".entire-tail.bak", cur, 0o644)
+		if err := os.WriteFile(settingsPath+".entire-tail.bak", cur, 0o644); err != nil {
+			return fmt.Errorf("back up %s: %w", settingsPath, err)
+		}
 	}
 	merged, err := mergeHooks(cur, sp)
 	if err != nil {
@@ -203,7 +211,8 @@ func offerHookInstall(home string, in *bufio.Reader) {
 	fmt.Fprint(os.Stderr, "entire-tail: add the live pending-question hook to ~/.claude/settings.json? "+
 		"It surfaces AskUserQuestion/permission prompts the instant they appear. [y/N] ")
 	line, _ := in.ReadString('\n')
-	if strings.EqualFold(strings.TrimSpace(line), "y") {
+	ans := strings.ToLower(strings.TrimSpace(line))
+	if ans == "y" || ans == "yes" {
 		if err := installHooks(home); err != nil {
 			fmt.Fprintln(os.Stderr, "entire-tail: hook install failed: "+err.Error())
 			return // don't record — let them retry next run
