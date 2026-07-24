@@ -69,7 +69,7 @@ dependency. When `fm` is absent the card falls back to metadata only.
 ## Usage
 
 ```sh
-entire tail                                # open the session tree picker (default)
+entire tail                                # adopt the claude in this iTerm tab, else the tree picker
 entire-tail                                # same, when called standalone
 entire tail --no-pick                      # skip the picker: auto-detect + tail $PWD
 entire tail --agent codex                  # force a specific agent (tails directly)
@@ -92,6 +92,28 @@ All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 `ENTIRE_TAIL_COLLAPSE`, `ENTIRE_TAIL_PICK`, `ENTIRE_TAIL_DAYS`, `GLOW_STYLE`) for shell-rc
 convenience — flags override env vars when both are set. The legacy
 `CLAUDE_TAIL_*` variants are still honored.
+
+### Auto-adopt the pane's agent (iTerm2, macOS)
+
+entire-tail is built to run in a pane next to the agent — so when you launch it
+bare and there's **exactly one `claude` in the same iTerm tab**, it skips the
+picker and tails *that* session directly. Split a pane, run `entire-tail`, done —
+no ids, no picking.
+
+The catch it works around: Claude Code doesn't expose its session id to
+outsiders — it's not in the process argv, not in the environment, and the
+transcript file is opened-appended-closed per write (never held open), so you
+can't `lsof` it either. Instead entire-tail pins the *process*: every terminal
+carries `ITERM_SESSION_ID` (`wNtNpM:…` — window, tab, pane) in its environment,
+so it takes its own tab and adopts the lone `claude` sharing it (read via `ps
+eww`). A claude in another tab or window is **never** grabbed; with zero or
+several claudes in the tab it quietly falls back to the tree. It then resolves
+that claude's transcript — exactly if the claude was launched with
+`--session-id`/`--resume`, otherwise the actively-written session in its project
+dir. Worktree-fork and `/clear` rollovers are then followed as usual (see
+[Following a Claude session across a fork](#following-a-claude-session-across-a-fork)).
+Force the tree instead with `-p`. Off iTerm (or non-macOS) this is inert and the
+tree/`--no-pick` behavior is unchanged.
 
 ## Live keys
 
