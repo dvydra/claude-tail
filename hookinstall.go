@@ -44,6 +44,9 @@ func mergeHooks(settings []byte, scriptPath string) ([]byte, error) {
 			return nil, fmt.Errorf("settings.json is not valid JSON: %w", err)
 		}
 	}
+	if root == nil {
+		root = map[string]any{}
+	}
 	hooks := asObj(root, "hooks")
 	for _, s := range pendingHookSpecs() {
 		cmd := hookCommand(scriptPath, s.mode)
@@ -57,7 +60,6 @@ func mergeHooks(settings []byte, scriptPath string) ([]byte, error) {
 		}
 		hooks[s.event] = append(arr, entry)
 	}
-	root["hooks"] = hooks
 	return json.MarshalIndent(root, "", "  ")
 }
 

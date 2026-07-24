@@ -38,6 +38,16 @@ func TestMergeHooksPreservesExistingAndAddsOurs(t *testing.T) {
 	}
 }
 
+func TestMergeHooksHandlesNullSettings(t *testing.T) {
+	out, err := mergeHooks([]byte("null"), "/opt/et/entire-tail-pending.sh")
+	if err != nil {
+		t.Fatalf("null settings should merge cleanly, got err: %v", err)
+	}
+	if !hasHookInstalled(out, "/opt/et/entire-tail-pending.sh") {
+		t.Fatal("our hook must be present after merging into null settings")
+	}
+}
+
 func TestUnmergeHooksRemovesOnlyOurs(t *testing.T) {
 	merged, _ := mergeHooks([]byte(fixtureSettings), "/opt/et/entire-tail-pending.sh")
 	out, err := unmergeHooks(merged, "/opt/et/entire-tail-pending.sh")
