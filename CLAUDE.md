@@ -198,7 +198,13 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   returns, and `Ctrl-X` (0x18) which signals `treeCh` and STOPS reading so
   `tailSession` returns and `run`'s picker↔tail loop re-enters the tree
   (Claude-only, gated by `treeEnabled`; a no-op on codex/agy). Returns the tty fd
-  so the overlay reuses it (single reader)
+  so the overlay reuses it (single reader). **`T` (shift-`t`) cycles the theme**
+  (`t` alone stays tools): unlike the atomic `t`/`c` toggles the keyboard flips
+  directly, a theme swap rebuilds the glamour render fn + header strings (the
+  non-atomic `Renderer` theme fields), so it can't be done off the render
+  goroutine — `T` only signals `themeCh` (coalesced buffered 1), and the live
+  loop's `cycleTheme` does the `nextTheme`→`applyTheme`→re-render on the render
+  goroutine (see render.go `applyTheme`)
 - `jqutil.go` — tiny JSON-value-to-string helpers (replaces shelling out to `jq`)
 - `handover.go` — the `entire-tail handover` subcommand: `todaysSessions`
   enumerates this machine's Claude sessions active since local midnight

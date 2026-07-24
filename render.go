@@ -97,8 +97,19 @@ type Renderer struct {
 }
 
 func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse int) (*Renderer, error) {
+	render, err := newGlamour(theme.StyleJSON)
+	if err != nil {
+		return nil, err
+	}
+	return newRendererWith(w, theme, toolStyle, collapse, render), nil
+}
+
+// newGlamour builds the markdown→styled-string render function for a theme's
+// style JSON. Split out of newRenderer so a live theme swap (the `T` key) can
+// rebuild just the render function without a whole new Renderer.
+func newGlamour(styleJSON []byte) (func(string) (string, error), error) {
 	md, err := glamour.NewTermRenderer(
-		glamour.WithStylesFromJSONBytes(theme.StyleJSON),
+		glamour.WithStylesFromJSONBytes(styleJSON),
 		glamour.WithWordWrap(0),
 		// Force truecolor in-process. The bash version piped glow and relied on
 		// CLICOLOR_FORCE, which capped rendering at 256 colors; rendering in
@@ -112,7 +123,25 @@ func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse int) (*Ren
 	if err != nil {
 		return nil, err
 	}
-	return newRendererWith(w, theme, toolStyle, collapse, md.Render), nil
+	return md.Render, nil
+}
+
+// applyTheme swaps the renderer to a new theme in place: it rebuilds the glamour
+// render function from the new style JSON and recomputes the box-header strings.
+// Called ONLY on the render goroutine (the `T`-key path in the live loop), so the
+// non-atomic theme fields (render/theme/userHdr/claudeHdr) it mutates are never
+// read concurrently — unlike the atomic t/c toggles, which the keyboard goroutine
+// flips directly. A rebuild failure leaves the current theme untouched.
+func (r *Renderer) applyTheme(t Theme) error {
+	render, err := newGlamour(t.StyleJSON)
+	if err != nil {
+		return err
+	}
+	r.render = render
+	r.theme = t
+	r.userHdr = t.UserANSI + userHdrBody + reset
+	r.claudeHdr = t.ClaudeANSI + claudeHdrBody + reset
+	return nil
 }
 
 // newRendererWith builds a Renderer around an arbitrary markdown render

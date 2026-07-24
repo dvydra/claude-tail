@@ -243,11 +243,12 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// ── phase 2: live follow until Ctrl-C / Ctrl-D / Ctrl-X ──
 	r.live = true
 	reloadCh := make(chan struct{}, 1) // keyboard 'r'; coalesced (buffered 1)
+	themeCh := make(chan struct{}, 1)  // keyboard 'T'; cycle theme, coalesced (buffered 1)
 	treeCh := make(chan struct{}, 1)   // keyboard Ctrl-X; back to the tree picker
 	focusCh := make(chan struct{}, 1)  // keyboard '→'; the render goroutine runs the overlay
 	resumeCh := make(chan struct{})    // handed back to unpark the keyboard after the overlay
 	treeEnabled := agent == AgentClaude
-	restoreTTY, kbTTY := startKeyboard(r, treeEnabled, codeCh, reloadCh, treeCh, focusCh, resumeCh)
+	restoreTTY, kbTTY := startKeyboard(r, treeEnabled, codeCh, reloadCh, themeCh, treeCh, focusCh, resumeCh)
 	defer restoreTTY() // panic safety; the normal paths restore explicitly below
 
 	emit := func(line []byte) {
@@ -289,9 +290,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			offset = appendStep(cur, offset, emit)
 		}
 	}
-	// reload re-renders the entire current transcript with the live settings
-	// (the `r` key) — the streaming-native way to apply t/c retrospectively.
-	reload := func() {
+	// rerender re-renders the entire current transcript with the live settings —
+	// the streaming-native way to apply t/c/theme changes retrospectively. banner
+	// is the dim divider line printed before the fresh copy (it reads r.theme, so
+	// a theme swap must land BEFORE this runs to colour the banner in the new theme).
+	rerender := func(banner string) {
 		d, err := os.ReadFile(cur)
 		if err != nil {
 			return
@@ -299,13 +302,29 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		all := splitLines(d)
 		r.endLine() // close any open dot-streak bracket before wiping state
 		r.reset()
-		io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ reloaded"+reset+"\n\n")
+		io.WriteString(out, "\n"+r.theme.DimANSI+banner+reset+"\n\n")
 		for _, l := range all {
 			emit(l)
 		}
 		offset = liveOffset(d)
 		agyKeep = newAgyDedup(maxStepIndex(all))
 		agyLastSize, agyLastMtime = -1, -1 // force a re-stat next tick
+	}
+	// reload is the `r` key: re-render with the current settings unchanged.
+	reload := func() { rerender("⟳ reloaded") }
+	// cycleTheme is the `T` key: swap to the next bundled theme, then re-render so
+	// the whole visible transcript recolours at once (glamour body colours already
+	// in scrollback can't be recoloured in place). A rebuild failure is a no-op.
+	cycleTheme := func() {
+		next, err := nextTheme(theme.Name)
+		if err != nil {
+			return
+		}
+		if err := r.applyTheme(next); err != nil {
+			return
+		}
+		theme = next // so a later focus overlay (runFocus) uses the new theme too
+		rerender("⟳ theme: " + next.Name)
 	}
 	// rollover follows the session across a Claude worktree fork. When the
 	// current file has gone quiet and a sibling in the same project dir forked
@@ -371,6 +390,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			return
 		case <-reloadCh:
 			reload()
+			out.Flush()
+		case <-themeCh:
+			cycleTheme()
 			out.Flush()
 		case <-focusCh:
 			// The keyboard goroutine is parked on resumeCh; we're the sole tty
@@ -531,7 +553,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		if agent == AgentClaude {
 			back = "Ctrl-X=back to tree  "
 		}
-		fmt.Fprintln(w, "  keys:     t=cycle tools  c=toggle collapse  →=focus subagents  r=reload  "+back+"q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     t=cycle tools  T=cycle theme  c=toggle collapse  →=focus subagents  r=reload  "+back+"q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())

@@ -15,6 +15,7 @@ type keyAction int
 const (
 	keyNone keyAction = iota
 	keyCycleTools
+	keyCycleTheme
 	keyToggleCollapse
 	keyReload
 	keyQuit
@@ -27,8 +28,10 @@ const (
 // a signal-generating control char, so cbreak passes them straight through).
 func keyActionFor(b byte) keyAction {
 	switch b {
-	case 't', 'T':
+	case 't':
 		return keyCycleTools
+	case 'T':
+		return keyCycleTheme
 	case 'c', 'C':
 		return keyToggleCollapse
 	case 'r', 'R':
@@ -58,7 +61,7 @@ func keyActionFor(b byte) keyAction {
 // the caller's live loop restores the tty and re-enters the picker. When false
 // (non-Claude session / no tree in scope), Ctrl-X is ignored — the tree is
 // Claude-only, so there's nothing to go back to.
-func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh chan<- struct{}, treeCh chan<- struct{}, focusCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
+func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh chan<- struct{}, themeCh chan<- struct{}, treeCh chan<- struct{}, focusCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
 	if !isCharDevice(os.Stdin) {
 		return func() {}, nil
 	}
@@ -118,6 +121,13 @@ func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh ch
 				}
 			case keyCycleTools:
 				fmt.Fprintln(os.Stderr, "entire-tail: "+r.cycleTools()+" (press r to re-render history)")
+			case keyCycleTheme:
+				// Theme swap + re-render must run on the render goroutine (it
+				// rebuilds the non-atomic render fn / header state); just signal it.
+				select {
+				case themeCh <- struct{}{}:
+				default: // a theme cycle is already pending; coalesce
+				}
 			case keyToggleCollapse:
 				fmt.Fprintln(os.Stderr, "entire-tail: "+r.toggleCollapse()+" (press r to re-render history)")
 			case keyReload:

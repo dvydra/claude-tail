@@ -137,3 +137,36 @@ func TestLoadThemeStyleOverride(t *testing.T) {
 		t.Error("ANSI colors should still come from the named theme")
 	}
 }
+
+func TestNextThemeCyclesInOrder(t *testing.T) {
+	infos := listThemeInfos()
+	if len(infos) < 2 {
+		t.Fatalf("need at least 2 bundled themes to test cycling, got %d", len(infos))
+	}
+	for i, in := range infos {
+		got, err := nextTheme(in.Name)
+		if err != nil {
+			t.Fatalf("nextTheme(%q): %v", in.Name, err)
+		}
+		want := infos[(i+1)%len(infos)].Name
+		if got.Name != want {
+			t.Errorf("nextTheme(%q) = %q, want %q", in.Name, got.Name, want)
+		}
+	}
+	// Wrap-around: the last theme cycles back to the first.
+	last, err := nextTheme(infos[len(infos)-1].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last.Name != infos[0].Name {
+		t.Errorf("nextTheme(last) = %q, want first %q", last.Name, infos[0].Name)
+	}
+	// An unknown current name starts the cycle at the first theme.
+	unknown, err := nextTheme("no-such-theme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.Name != infos[0].Name {
+		t.Errorf("nextTheme(unknown) = %q, want first %q", unknown.Name, infos[0].Name)
+	}
+}
