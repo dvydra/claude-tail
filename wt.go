@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 )
 
@@ -16,8 +17,22 @@ func wtAvailable() bool {
 	if os.Getenv("WT_SESSION") != "" {
 		return true
 	}
-	_, err := exec.LookPath("wt.exe")
+	_, err := findWTPath()
 	return err == nil
+}
+
+func findWTPath() (string, error) {
+	if p, err := exec.LookPath("wt.exe"); err == nil {
+		return p, nil
+	}
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData != "" {
+		wtApp := filepath.Join(localAppData, "Microsoft", "WindowsApps", "wt.exe")
+		if isFile(wtApp) {
+			return wtApp, nil
+		}
+	}
+	return "", fmt.Errorf("wt.exe not found on PATH")
 }
 
 // launchWTWorkspace opens a 3-pane Windows Terminal workspace to resume an existing session:
@@ -38,9 +53,9 @@ func launchWTNewWorkspace(cwd string) error {
 }
 
 func execWTWorkspace(cwd, sessionID string, agent Agent, isNew bool) error {
-	wtPath, err := exec.LookPath("wt.exe")
+	wtPath, err := findWTPath()
 	if err != nil {
-		return fmt.Errorf("wt.exe not found on PATH")
+		return err
 	}
 	self := selfPath()
 
@@ -58,13 +73,13 @@ func execWTWorkspace(cwd, sessionID string, agent Agent, isNew bool) error {
 		}
 	}
 
-	tailCmd := fmt.Sprintf("%s --follow-session %s", self, sessionID)
+	tailCmd := fmt.Sprintf("\"%s\" --follow-session %s", self, sessionID)
 
 	args := []string{
 		"-d", cwd, "cmd", "/k", agentCmd,
-		";", "split-pane", "-v", "-d", cwd, "cmd", "/k", tailCmd,
+		";", "split-pane", "-H", "-d", cwd, "cmd", "/k", tailCmd,
 		";", "move-focus", "left",
-		";", "split-pane", "-h", "-d", cwd,
+		";", "split-pane", "-V", "-d", cwd,
 	}
 
 	cmd := exec.Command(wtPath, args...)
