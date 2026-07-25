@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // wtAvailable reports whether Windows Terminal (wt.exe) is available and running
@@ -20,6 +22,21 @@ func wtAvailable() bool {
 	}
 	_, err := findWTPath()
 	return err == nil
+}
+
+// wtSinglePane reports whether the current Windows Terminal tab/window has
+// exactly one pane, so we can lay out the 3-pane workspace without disturbing an
+// existing split. If the window is already split into multiple panes, returns
+// false so the caller just tails in-place.
+func wtSinglePane() bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	w, h, err := term.GetSize(int(os.Stdout.Fd()))
+	if err == nil && (w < 90 || h < 22) {
+		return false
+	}
+	return true
 }
 
 func findWTPath() (string, error) {

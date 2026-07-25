@@ -190,7 +190,7 @@ func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 				}
 				os.Exit(0)
 			}
-			if wtAvailable() {
+			if wtAvailable() && wtSinglePane() {
 				agentCmd, inPlace, err := launchWTWorkspace(home, targetCwd, c.Path, c.ID)
 				if err != nil {
 					fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
