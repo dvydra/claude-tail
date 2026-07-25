@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // wtAvailable reports whether Windows Terminal (wt.exe) is available and running
@@ -35,27 +36,23 @@ func findWTPath() (string, error) {
 	return "", fmt.Errorf("wt.exe not found on PATH")
 }
 
-// launchWTWorkspace opens a 3-pane Windows Terminal workspace to resume an existing session:
-// Left-top (Pane A): claude --resume <id> or agy / codex
-// Right-full (Pane B): entire-tail --follow-session <id>
-// Left-bottom (Pane C): shell in cwd
-func launchWTWorkspace(home, cwd, path, resumeID string) error {
+// launchWTWorkspace opens a 3-pane Windows Terminal workspace to resume an existing session.
+// Returns (agentCmd, inPlace, error).
+func launchWTWorkspace(home, cwd, path, resumeID string) (string, bool, error) {
 	agent := detectAgentForFile(home, path)
 	return execWTWorkspace(cwd, resumeID, agent, false)
 }
 
-// launchWTNewWorkspace opens a 3-pane Windows Terminal workspace for a new session:
-// Left-top (Pane A): claude --session-id <id>
-// Right-full (Pane B): entire-tail --follow-session <id>
-// Left-bottom (Pane C): shell in cwd
-func launchWTNewWorkspace(cwd string) error {
+// launchWTNewWorkspace opens a 3-pane Windows Terminal workspace for a new session.
+// Returns (agentCmd, inPlace, error).
+func launchWTNewWorkspace(cwd string) (string, bool, error) {
 	return execWTWorkspace(cwd, newSessionID(), AgentClaude, true)
 }
 
-func execWTWorkspace(cwd, sessionID string, agent Agent, isNew bool) error {
+func execWTWorkspace(cwd, sessionID string, agent Agent, isNew bool) (string, bool, error) {
 	wtPath, err := findWTPath()
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	self := selfPath()
 
@@ -75,13 +72,52 @@ func execWTWorkspace(cwd, sessionID string, agent Agent, isNew bool) error {
 
 	tailCmd := fmt.Sprintf("\"%s\" --follow-session %s", self, sessionID)
 
-	args := []string{
-		"-d", cwd, "cmd", "/k", agentCmd,
-		";", "split-pane", "-V", "-d", cwd, "cmd", "/k", tailCmd,
-		";", "move-focus", "left",
-		";", "split-pane", "-H", "-d", cwd,
+	inWT := os.Getenv("WT_SESSION") != ""
+
+	var args []string
+	if inWT {
+		// Target current window (-w 0): Pane B (tail) on right, Pane C (shell) on bottom-left.
+		// Current process (Pane A) stays top-left and runs agentCmd in-place!
+		args = []string{
+			"-w", "0", "split-pane", "-V", "-d", cwd, "cmd", "/k", tailCmd,
+			";", "move-focus", "left",
+			";", "split-pane", "-H", "-d", cwd,
+		}
+	} else {
+		// New window: Pane A top-left, Pane B right, Pane C bottom-left.
+		args = []string{
+			"-d", cwd, "cmd", "/k", agentCmd,
+			";", "split-pane", "-V", "-d", cwd, "cmd", "/k", tailCmd,
+			";", "move-focus", "left",
+			";", "split-pane", "-H", "-d", cwd,
+		}
 	}
 
 	cmd := exec.Command(wtPath, args...)
-	return cmd.Start()
+	if err := cmd.Run(); err != nil {
+		return "", false, err
+	}
+	return agentCmd, inWT, nil
+}
+
+func runAgentInPlace(cwd, agentCmd string) error {
+	args := strings.Fields(agentCmd)
+	if len(args) == 0 {
+		return nil
+	}
+	bin, err := exec.LookPath(args[0])
+	if err != nil {
+		cmd := exec.Command("cmd", "/c", agentCmd)
+		cmd.Dir = cwd
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	cmd := exec.Command(bin, args[1:]...)
+	cmd.Dir = cwd
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }

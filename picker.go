@@ -151,8 +151,15 @@ func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 			os.Exit(0)
 		}
 		if wtAvailable() {
-			if err := launchWTNewWorkspace(c.Cwd); err != nil {
+			agentCmd, inPlace, err := launchWTNewWorkspace(c.Cwd)
+			if err != nil {
 				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+				os.Exit(1)
+			}
+			if inPlace {
+				if err := runAgentInPlace(c.Cwd, agentCmd); err != nil {
+					fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+				}
 			}
 			os.Exit(0)
 		}
@@ -169,17 +176,30 @@ func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 			os.Exit(0)
 		}
 		if c.Result == treeWorkspace && validSessionID(c.ID) {
+			targetCwd := sessionCwd(c.Path)
+			if targetCwd == "" {
+				targetCwd = c.Cwd
+			}
+			if targetCwd == "" {
+				targetCwd = mustGetwd()
+			}
 			if itermAvailable() && itermSinglePane() {
-				if err := launchWorkspace(sessionCwd(c.Path), c.ID); err != nil {
+				if err := launchWorkspace(targetCwd, c.ID); err != nil {
 					fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 					return c.Path, true // launch failed → tail in-place instead
 				}
 				os.Exit(0)
 			}
 			if wtAvailable() {
-				if err := launchWTWorkspace(home, sessionCwd(c.Path), c.Path, c.ID); err != nil {
+				agentCmd, inPlace, err := launchWTWorkspace(home, targetCwd, c.Path, c.ID)
+				if err != nil {
 					fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 					return c.Path, true // launch failed → tail in-place instead
+				}
+				if inPlace {
+					if err := runAgentInPlace(targetCwd, agentCmd); err != nil {
+						fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+					}
 				}
 				os.Exit(0)
 			}
