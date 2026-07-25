@@ -161,6 +161,27 @@ func fetchEntireSessions() ([]entireSession, error) {
 //	--cloud   → refresh entire's metadata (slow once), then enrich.
 func buildSessionTree(home, pwd string, days int, now int64, forceLocal, cloud bool) sessionTree {
 	local := buildClaudeTree(home, pwd, days, now, claudeLiveCwds())
+	agyTree := buildAgyTree(home, pwd, days, now)
+	for _, f := range agyTree.Folders {
+		found := false
+		for i := range local.Folders {
+			if local.Folders[i].Cwd == f.Cwd || local.Folders[i].Slug == f.Slug {
+				local.Folders[i].Sessions = append(local.Folders[i].Sessions, f.Sessions...)
+				sort.SliceStable(local.Folders[i].Sessions, func(a, b int) bool {
+					return local.Folders[i].Sessions[a].Mtime > local.Folders[i].Sessions[b].Mtime
+				})
+				if f.Mtime > local.Folders[i].Mtime {
+					local.Folders[i].Mtime = f.Mtime
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			local.Folders = append(local.Folders, f)
+		}
+	}
+	sortFolders(local.Folders)
 	if forceLocal {
 		ensureCurrentDirFolder(&local, pwd, now)
 		return local

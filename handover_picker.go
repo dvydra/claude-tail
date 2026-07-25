@@ -202,7 +202,7 @@ func renderHandoverPick(ui handoverPickUI) string {
 // the collapsed groups, or ok=false if the user aborted / no tty was available.
 // Live sessions start selected (their own doc); ended ones start excluded.
 func runHandoverPicker(items []handoverItem, home string, theme Theme, now int64) ([]handoverGroup, bool) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	tty, err := openTTY(os.O_RDWR)
 	if err != nil {
 		return nil, false
 	}

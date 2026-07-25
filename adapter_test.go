@@ -228,6 +228,37 @@ func TestAgyCallSummaryUnwrapsDoubleEncoded(t *testing.T) {
 	}
 }
 
+func TestNormalizeAgyToolCallSummaries(t *testing.T) {
+	cases := []struct {
+		tc   agyToolCall
+		want string
+	}{
+		{agyToolCall{Name: "multi_replace_file_content", Args: []byte(`{"TargetFile":"/a/b.go"}`)}, "/a/b.go"},
+		{agyToolCall{Name: "invoke_subagent", Args: []byte(`{"Role":"Researcher","Prompt":"search codebase"}`)}, "Researcher"},
+		{agyToolCall{Name: "define_subagent", Args: []byte(`{"Name":"helper"}`)}, "helper"},
+		{agyToolCall{Name: "send_message", Args: []byte(`{"Message":"hello"}`)}, "hello"},
+		{agyToolCall{Name: "manage_subagents", Args: []byte(`{"Action":"list"}`)}, "list"},
+		{agyToolCall{Name: "manage_task", Args: []byte(`{"Action":"status","TaskId":"t1"}`)}, "status"},
+		{agyToolCall{Name: "schedule", Args: []byte(`{"Prompt":"remind"}`)}, "remind"},
+		{agyToolCall{Name: "ask_question", Args: []byte(`{"Question":"confirm?"}`)}, "confirm?"},
+		{agyToolCall{Name: "ask_permission", Args: []byte(`{"Action":"command","Target":"git"}`)}, "command"},
+		{agyToolCall{Name: "generate_image", Args: []byte(`{"Prompt":"cat photo"}`)}, "cat photo"},
+	}
+	for _, c := range cases {
+		if got := agyCallSummary(c.tc); got != c.want {
+			t.Errorf("agyCallSummary(%s) = %q, want %q", c.tc.Name, got, c.want)
+		}
+	}
+}
+
+func TestNormalizeAgyToolSourceResult(t *testing.T) {
+	line := []byte(`{"type":"CUSTOM_TOOL_RESULT","source":"TOOL","created_at":"2026-06-15T05:00:00Z","content":"ok"}`)
+	got := normalize(AgentAgy, line, utc)
+	if len(got) != 1 || got[0].Kind != KindToolResult {
+		t.Errorf("got %+v, want tool result record", got)
+	}
+}
+
 func TestNormalizeMalformedLine(t *testing.T) {
 	for _, agent := range []Agent{AgentClaude, AgentCodex, AgentAgy} {
 		if got := normalize(agent, []byte(`{not json`), utc); got != nil {

@@ -145,6 +145,96 @@ func buildClaudeTree(home, pwd string, days int, now int64, liveCwds map[string]
 	return tree
 }
 
+// buildAgyTree scans ~/.gemini/antigravity-cli/brain for AGY sessions active within
+// the last `days` days (0 = uncapped), grouped by folder.
+func buildAgyTree(home, pwd string, days int, now int64) sessionTree {
+	root := agyRoot(home)
+	brainDir := filepath.Join(root, "brain")
+	if !isDir(brainDir) {
+		return sessionTree{Now: now, Pwd: pwd, Home: home}
+	}
+	metaMap := loadAgyMetadataMap(root)
+	entries, err := os.ReadDir(brainDir)
+	if err != nil {
+		return sessionTree{Now: now, Pwd: pwd, Home: home}
+	}
+
+	var cutoff int64
+	if days > 0 {
+		cutoff = now - int64(days)*86400
+	}
+
+	pwdSlug := claudeSlug(pwd)
+	tree := sessionTree{Now: now, Pwd: pwd, Home: home}
+	foldersByCwd := map[string]*treeFolder{}
+	var folderOrder []string
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		id := e.Name()
+		tPath := agyTranscriptPath(root, id)
+		fi, err := os.Stat(tPath)
+		if err != nil || fi.Size() == 0 {
+			continue
+		}
+		mtime := fi.ModTime().Unix()
+		if cutoff > 0 && mtime < cutoff {
+			continue
+		}
+
+		meta := metaMap[id]
+		cwd := meta.cwd
+		if cwd == "" {
+			cwd = pwd
+		}
+		snippet := meta.preview
+		if snippet == "" {
+			for _, l := range headLines(tPath, 10) {
+				if s := previewCandidate(AgentAgy, l); s != "" {
+					snippet = s
+					break
+				}
+			}
+		}
+
+		sess := treeSession{
+			Path:    tPath,
+			ID:      id,
+			Mtime:   mtime,
+			Snippet: collapsePreview(snippet),
+			cwd:     cwd,
+		}
+
+		g, ok := foldersByCwd[cwd]
+		if !ok {
+			slug := claudeSlug(cwd)
+			g = &treeFolder{
+				Cwd:      cwd,
+				Dir:      cwd,
+				Slug:     slug,
+				Mtime:    mtime,
+				Expanded: slug == pwdSlug,
+			}
+			foldersByCwd[cwd] = g
+			folderOrder = append(folderOrder, cwd)
+		}
+		g.Sessions = append(g.Sessions, sess)
+		if mtime > g.Mtime {
+			g.Mtime = mtime
+		}
+	}
+
+	for _, cwd := range folderOrder {
+		g := foldersByCwd[cwd]
+		sort.SliceStable(g.Sessions, func(i, j int) bool { return g.Sessions[i].Mtime > g.Sessions[j].Mtime })
+		tree.Folders = append(tree.Folders, *g)
+	}
+	sortFolders(tree.Folders)
+	return tree
+}
+
 // claudeFolderSessions returns the folder's sessions newer than cutoff,
 // newest-first. When force is set (a live folder) the newest session is kept even
 // if it's older than the window, so a long-idle live pane still shows.
@@ -943,7 +1033,7 @@ func runClaudeTree(home, pwd string, days int, local, cloud bool, theme Theme) t
 }
 
 func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	tty, err := openTTY(os.O_RDWR)
 	if err != nil {
 		return treeChoice{Result: treeNone}
 	}

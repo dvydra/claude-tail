@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -144,8 +145,9 @@ func TestHandoverVaultDirDefaultAndEnv(t *testing.T) {
 	loc := time.FixedZone("AEST", 10*3600)
 	now := time.Date(2026, 7, 17, 9, 0, 0, 0, loc).Unix()
 	def := handoverVaultDir(func(string) string { return "" }, now, loc)
-	if def != "/Users/dvydra/Library/Mobile Documents/iCloud~md~obsidian/Documents/Entire/Handover/2026-07-17" {
-		t.Fatalf("default = %q", def)
+	wantDef := filepath.Join(defaultHandoverVault, "Entire", "Handover", "2026-07-17")
+	if def != wantDef {
+		t.Fatalf("default = %q, want %q", def, wantDef)
 	}
 	env := handoverVaultDir(func(k string) string {
 		if k == "ENTIRE_TAIL_HANDOVER_VAULT" {
@@ -153,8 +155,9 @@ func TestHandoverVaultDirDefaultAndEnv(t *testing.T) {
 		}
 		return ""
 	}, now, loc)
-	if env != "/tmp/v/Entire/Handover/2026-07-17" {
-		t.Fatalf("env = %q", env)
+	wantEnv := filepath.Join("/tmp/v", "Entire", "Handover", "2026-07-17")
+	if env != wantEnv {
+		t.Fatalf("env = %q, want %q", env, wantEnv)
 	}
 }
 

@@ -141,15 +141,99 @@ func agyTranscriptPath(root, id string) string {
 
 // agyConversationID looks up the conversation id mapped to cwd in the agy cache.
 func agyConversationID(root, cwd string) string {
-	b, err := os.ReadFile(filepath.Join(root, "cache", "last_conversations.json"))
-	if err != nil {
-		return ""
+	cleanCwd := filepath.Clean(cwd)
+	toSlashCwd := filepath.ToSlash(cwd)
+
+	if b, err := os.ReadFile(filepath.Join(root, "cache", "last_conversations.json")); err == nil {
+		var m map[string]string
+		if json.Unmarshal(b, &m) == nil {
+			if id, ok := m[cwd]; ok {
+				return id
+			}
+			for k, id := range m {
+				if filepath.Clean(k) == cleanCwd || filepath.ToSlash(k) == toSlashCwd || strings.EqualFold(filepath.Clean(k), cleanCwd) {
+					return id
+				}
+			}
+		}
 	}
-	var m map[string]string
-	if json.Unmarshal(b, &m) != nil {
-		return ""
+
+	// Secondary lookup: conversation_metadata.json
+	if bMeta, err := os.ReadFile(filepath.Join(root, "cache", "conversation_metadata.json")); err == nil {
+		var meta struct {
+			Conversations map[string]struct {
+				Summary struct {
+					ID            string   `json:"ID"`
+					WorkspaceURIs []string `json:"WorkspaceURIs"`
+					UpdatedAt     string   `json:"UpdatedAt"`
+				} `json:"summary"`
+				LastModified string `json:"last_modified_time"`
+			} `json:"conversations"`
+		}
+		if json.Unmarshal(bMeta, &meta) == nil {
+			bestID, bestTime := "", ""
+			for id, conv := range meta.Conversations {
+				for _, uri := range conv.Summary.WorkspaceURIs {
+					cleanURI := strings.TrimPrefix(uri, "file:///")
+					if filepath.Clean(cleanURI) == cleanCwd || filepath.ToSlash(cleanURI) == toSlashCwd || strings.EqualFold(filepath.Clean(cleanURI), cleanCwd) {
+						mod := conv.LastModified
+						if mod == "" {
+							mod = conv.Summary.UpdatedAt
+						}
+						if bestID == "" || mod > bestTime {
+							bestID = id
+							bestTime = mod
+						}
+					}
+				}
+			}
+	if bestID != "" {
+				return bestID
+			}
+		}
 	}
-	return m[cwd]
+	return ""
+}
+
+type agyMetaInfo struct {
+	cwd     string
+	preview string
+}
+
+func loadAgyMetadataMap(root string) map[string]agyMetaInfo {
+	out := map[string]agyMetaInfo{}
+	if b, err := os.ReadFile(filepath.Join(root, "cache", "last_conversations.json")); err == nil {
+		var m map[string]string
+		if json.Unmarshal(b, &m) == nil {
+			for cwd, id := range m {
+				out[id] = agyMetaInfo{cwd: cwd}
+			}
+		}
+	}
+	if bMeta, err := os.ReadFile(filepath.Join(root, "cache", "conversation_metadata.json")); err == nil {
+		var meta struct {
+			Conversations map[string]struct {
+				Summary struct {
+					ID            string   `json:"ID"`
+					Preview       string   `json:"Preview"`
+					WorkspaceURIs []string `json:"WorkspaceURIs"`
+				} `json:"summary"`
+			} `json:"conversations"`
+		}
+		if json.Unmarshal(bMeta, &meta) == nil {
+			for id, conv := range meta.Conversations {
+				info := out[id]
+				if conv.Summary.Preview != "" {
+					info.preview = conv.Summary.Preview
+				}
+				if info.cwd == "" && len(conv.Summary.WorkspaceURIs) > 0 {
+					info.cwd = strings.TrimPrefix(conv.Summary.WorkspaceURIs[0], "file:///")
+				}
+				out[id] = info
+			}
+		}
+	}
+	return out
 }
 
 // codexScanner reads codex rollouts' cwd lazily and once. Codex paths don't
@@ -225,12 +309,14 @@ var upperEnumRe = regexp.MustCompile(`^[A-Z_]+$`)
 // detectAgentForFile identifies which agent owns a session path: by location
 // first, then by sniffing the first line's shape.
 func detectAgentForFile(home, path string) Agent {
+	p := filepath.ToSlash(path)
+	h := filepath.ToSlash(home)
 	switch {
-	case strings.HasPrefix(path, filepath.Join(home, ".claude", "projects")+string(os.PathSeparator)):
+	case strings.HasPrefix(p, h+"/.claude/projects/"):
 		return AgentClaude
-	case strings.HasPrefix(path, filepath.Join(home, ".codex", "sessions")+string(os.PathSeparator)):
+	case strings.HasPrefix(p, h+"/.codex/sessions/"):
 		return AgentCodex
-	case strings.HasPrefix(path, filepath.Join(home, ".gemini", "antigravity-cli")+string(os.PathSeparator)):
+	case strings.HasPrefix(p, h+"/.gemini/antigravity-cli/"):
 		return AgentAgy
 	}
 	return sniffAgent(firstLine(path))

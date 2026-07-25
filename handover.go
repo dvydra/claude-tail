@@ -188,9 +188,13 @@ func manifestSessionFrom(it handoverItem, links []sessionLink) manifestSession {
 			prs = append(prs, ln.URL)
 		}
 	}
+	agent := "claude"
+	if strings.Contains(filepath.ToSlash(it.Path), "antigravity-cli") {
+		agent = "agy"
+	}
 	return manifestSession{
 		SessionID:        it.SessionID,
-		Agent:            "claude",
+		Agent:            agent,
 		Cwd:              it.Cwd,
 		Repo:             it.Repo,
 		Title:            it.Title,

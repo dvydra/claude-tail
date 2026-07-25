@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -114,11 +113,21 @@ func cwShort(cwd string) string {
 // or no Claude agent in scope, so the caller falls back to auto-discovery. A
 // workspace selection launches the iTerm layout and exits; quitting exits.
 func runPicker(agents []Agent, home, pwd string, days int, local, cloud bool, theme Theme) (string, Agent, bool) {
-	if !ttyUsable() || !slices.Contains(agents, AgentClaude) {
+	if !ttyUsable() {
+		return "", "", false
+	}
+	hasSupported := false
+	for _, ag := range agents {
+		if ag == AgentClaude || ag == AgentAgy || ag == AgentCodex {
+			hasSupported = true
+			break
+		}
+	}
+	if !hasSupported {
 		return "", "", false
 	}
 	if p, ok := resolveTreeChoice(home, runClaudeTree(home, pwd, days, local, cloud, theme)); ok {
-		return p, AgentClaude, true
+		return p, detectAgentForFile(home, p), true
 	}
 	return "", "", false
 }
@@ -141,7 +150,13 @@ func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 			}
 			os.Exit(0)
 		}
-		fmt.Fprintln(os.Stderr, "entire-tail: a new-session workspace needs iTerm2 on macOS.")
+		if wtAvailable() {
+			if err := launchWTNewWorkspace(c.Cwd); err != nil {
+				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+			}
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "entire-tail: a new-session workspace needs iTerm2 on macOS or Windows Terminal on Windows.")
 		os.Exit(0)
 	case treeChosen, treeWorkspace:
 		if c.Path == "" {
@@ -153,30 +168,30 @@ func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 			fmt.Fprintln(os.Stderr, "entire-tail: session "+shortID(c.ID)+" isn't on this machine and its repo isn't checked out here — nothing to tail.")
 			os.Exit(0)
 		}
-		if c.Result == treeWorkspace && itermAvailable() && itermSinglePane() && validSessionID(c.ID) {
-			if err := launchWorkspace(sessionCwd(c.Path), c.ID); err != nil {
-				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
-				return c.Path, true // launch failed → tail in-place instead
+		if c.Result == treeWorkspace && validSessionID(c.ID) {
+			if itermAvailable() && itermSinglePane() {
+				if err := launchWorkspace(sessionCwd(c.Path), c.ID); err != nil {
+					fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+					return c.Path, true // launch failed → tail in-place instead
+				}
+				os.Exit(0)
 			}
-			os.Exit(0)
+			if wtAvailable() {
+				if err := launchWTWorkspace(sessionCwd(c.Path), c.ID); err != nil {
+					fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+					return c.Path, true // launch failed → tail in-place instead
+				}
+				os.Exit(0)
+			}
 		}
-		return c.Path, true // tail in-place (already split / no iTerm / t key)
+		return c.Path, true // tail in-place (already split / no iTerm / no WT / t key)
 	case treeQuit:
 		os.Exit(0)
 	}
 	return "", false
 }
 
-func ttyUsable() bool {
-	if !isCharDevice(os.Stdout) {
-		return false
-	}
-	if f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {
-		f.Close()
-		return true
-	}
-	return false
-}
+
 
 // ── preview extraction ──────────────────────────────────────────────────────
 

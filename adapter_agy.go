@@ -14,6 +14,7 @@ import (
 
 type agyEvent struct {
 	Type      string          `json:"type"`
+	Source    string          `json:"source"`
 	CreatedAt string          `json:"created_at"`
 	Content   json.RawMessage `json:"content"`
 	ToolCalls []agyToolCall   `json:"tool_calls"`
@@ -29,9 +30,10 @@ type agyToolCall struct {
 // agyResultTypes are the tool-output step types, each 1:1 with a tool_call in
 // the preceding PLANNER_RESPONSE.
 var agyResultTypes = []string{
-	"RUN_COMMAND", "VIEW_FILE", "LIST_DIRECTORY", "GREP_SEARCH", "VIEW_CODE_ITEM",
-	"WRITE_TO_FILE", "REPLACE_FILE_CONTENT", "EDIT_FILE", "SEARCH_WEB",
-	"READ_URL_CONTENT", "GENERIC",
+	"RUN_COMMAND", "VIEW_FILE", "LIST_DIRECTORY", "LIST_DIR", "GREP_SEARCH", "VIEW_CODE_ITEM",
+	"WRITE_TO_FILE", "REPLACE_FILE_CONTENT", "MULTI_REPLACE_FILE_CONTENT", "EDIT_FILE", "SEARCH_WEB",
+	"READ_URL_CONTENT", "INVOKE_SUBAGENT", "DEFINE_SUBAGENT", "SEND_MESSAGE", "MANAGE_SUBAGENTS",
+	"MANAGE_TASK", "SCHEDULE", "ASK_QUESTION", "ASK_PERMISSION", "GENERATE_IMAGE", "GENERIC",
 }
 
 var userEnvelopeRe = regexp.MustCompile(`(?s)<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>`)
@@ -63,7 +65,7 @@ func normalizeAgy(line []byte, loc *time.Location) []Record {
 			out = append(out, Record{Kind: KindToolUse, Name: tc.Name, Summary: agyCallSummary(tc)})
 		}
 		return out
-	case slices.Contains(agyResultTypes, ev.Type):
+	case ev.Source == "TOOL" || slices.Contains(agyResultTypes, ev.Type) || strings.HasSuffix(ev.Type, "_OUTPUT") || strings.HasSuffix(ev.Type, "_RESULT"):
 		return []Record{{Kind: KindToolResult, N: 1}}
 	}
 	return nil
@@ -95,10 +97,28 @@ func agyCallSummary(tc agyToolCall) string {
 		s = pick("DirectoryPath", "Path")
 	case "grep_search":
 		s = pick("SearchPattern", "Query", "Pattern")
-	case "write_to_file", "replace_file_content", "edit_file":
+	case "write_to_file", "replace_file_content", "multi_replace_file_content", "edit_file":
 		s = pick("TargetFile", "AbsolutePath", "Path")
 	case "search_web", "read_url_content":
 		s = pick("Url", "URL", "Query")
+	case "invoke_subagent":
+		s = pick("Role", "Prompt", "Description", "TypeName")
+	case "define_subagent":
+		s = pick("name", "Name", "description", "Description")
+	case "send_message":
+		s = pick("Message", "Recipient")
+	case "manage_subagents":
+		s = pick("Action", "ConversationIds")
+	case "manage_task":
+		s = pick("Action", "TaskId")
+	case "schedule":
+		s = pick("Prompt", "CronExpression", "DurationSeconds")
+	case "ask_question":
+		s = pick("Question", "questions")
+	case "ask_permission":
+		s = pick("Action", "Target", "Reason")
+	case "generate_image":
+		s = pick("Prompt", "ImageName")
 	default:
 		if raw, ok := firstRaw(a, "toolSummary", "toolAction"); ok {
 			s = unqRaw(raw)

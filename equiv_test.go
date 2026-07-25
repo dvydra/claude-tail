@@ -2,12 +2,11 @@ package main
 
 import (
 	"bytes"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"syscall"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,7 +63,7 @@ func renderFixture(t *testing.T, fc fixtureCase, loc *time.Location) string {
 func TestGolden(t *testing.T) {
 	for _, fc := range fixtureCases {
 		t.Run(fc.name, func(t *testing.T) {
-			got := stripANSI(renderFixture(t, fc, time.UTC))
+			got := strings.ReplaceAll(stripANSI(renderFixture(t, fc, time.UTC)), "\r\n", "\n")
 			golden := filepath.Join("testdata", fc.name+".golden")
 			if os.Getenv("UPDATE_GOLDEN") == "1" {
 				if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
@@ -76,8 +75,9 @@ func TestGolden(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read golden (run with UPDATE_GOLDEN=1 to create): %v", err)
 			}
-			if got != string(want) {
-				t.Errorf("output differs from golden %s:\n--- got ---\n%s\n--- want ---\n%s", golden, got, want)
+			wantStr := strings.ReplaceAll(string(want), "\r\n", "\n")
+			if got != wantStr {
+				t.Errorf("output differs from golden %s:\n--- got ---\n%s\n--- want ---\n%s", golden, got, wantStr)
 			}
 		})
 	}
@@ -123,39 +123,3 @@ func TestEquivalenceVsBash(t *testing.T) {
 	}
 }
 
-// runOracleBackfill runs the bash oracle and captures its backfill output. The
-// oracle follows the file forever after backfill, and its pipeline children
-// (tail -F, glow) keep stdout open — so we run it in its own process group and
-// kill the whole group once the deadline fires, then collect what was written.
-func runOracleBackfill(t *testing.T, oracle string, fc fixtureCase, d time.Duration) []byte {
-	t.Helper()
-	cmd := exec.Command("bash", oracle,
-		"--agent", string(fc.agent), "--no-pick", "--backfill", "all",
-		"-t", "tokyo-night", "--tool-style", fc.toolStyle,
-		filepath.Join("testdata", fc.file))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	pgid := cmd.Process.Pid // group leader, since Setpgid
-	done := make(chan []byte, 1)
-	go func() {
-		b, _ := io.ReadAll(stdout)
-		done <- b
-	}()
-	var out []byte
-	select {
-	case out = <-done:
-	case <-time.After(d):
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		out = <-done
-	}
-	_ = cmd.Wait()
-	// Sweep any stragglers (tail -F is stubborn) that outlived the first kill.
-	_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	return out
-}

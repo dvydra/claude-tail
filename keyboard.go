@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"golang.org/x/term"
 )
 
 // keyAction is what a single keypress means during live follow.
@@ -51,21 +53,11 @@ func keyActionFor(b byte) keyAction {
 // are atomic, so this is race-free with the render goroutine). A quit key
 // reports exit code 0 on codeCh. Returns a restore func the caller must run
 // before exit; it's a no-op when there's no usable tty.
-// The returned *os.File is the controlling tty the keyboard goroutine reads (nil
-// when there's no usable tty). The focus overlay reuses this SAME fd — while it
-// runs, the keyboard goroutine is parked on resumeCh, so there's a single tty
-// reader at all times (two fds on the same tty race for input).
-//
-// When treeEnabled is true, Ctrl-X signals treeCh and the goroutine RETURNS
-// (stops reading), so the tree picker that follows is the sole reader of the tty;
-// the caller's live loop restores the tty and re-enters the picker. When false
-// (non-Claude session / no tree in scope), Ctrl-X is ignored — the tree is
-// Claude-only, so there's nothing to go back to.
 func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh chan<- struct{}, themeCh chan<- struct{}, treeCh chan<- struct{}, focusCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
 	if !isCharDevice(os.Stdin) {
 		return func() {}, nil
 	}
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	tty, err := openTTY(os.O_RDWR)
 	if err != nil {
 		return func() {}, nil
 	}
@@ -142,82 +134,86 @@ func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh ch
 	return restore, tty
 }
 
-// setCbreak puts tty into cbreak mode via stty (which handles the BSD/Linux
-// termios differences itself) and returns the prior settings for restore. Only
-// canonical mode and echo are disabled — output post-processing and signal keys
-// are left on. ok is false if stty isn't usable.
-func setCbreak(tty *os.File) (saved string, ok bool) {
+type termState struct {
+	sttyState string
+	rawState  *term.State
+	fd        int
+}
+
+// setCbreak puts tty into cbreak mode via stty or term.MakeRaw fallback.
+func setCbreak(tty *os.File) (termState, bool) {
+	fd := int(tty.Fd())
 	var buf bytes.Buffer
 	get := exec.Command("stty", "-g")
 	get.Stdin = tty
 	get.Stdout = &buf
-	if get.Run() != nil {
-		return "", false
+	if get.Run() == nil {
+		saved := strings.TrimSpace(buf.String())
+		set := exec.Command("stty", "-icanon", "-echo", "min", "1", "time", "0")
+		set.Stdin = tty
+		if set.Run() == nil {
+			return termState{sttyState: saved, fd: fd}, true
+		}
 	}
-	saved = strings.TrimSpace(buf.String())
-
-	set := exec.Command("stty", "-icanon", "-echo", "min", "1", "time", "0")
-	set.Stdin = tty
-	if set.Run() != nil {
-		// Best-effort restore of whatever we read, then report failure.
-		restoreCbreak(tty, saved)
-		return "", false
+	oldState, err := term.MakeRaw(fd)
+	if err == nil {
+		return termState{rawState: oldState, fd: fd}, true
 	}
-	return saved, true
+	return termState{}, false
 }
 
-// setRaw is like setCbreak but also disables signal keys (-isig), so Ctrl-C
-// arrives as a byte (0x03) instead of a signal. The alt-screen tree uses this so
-// a Ctrl-C is caught by the loop and the terminal is restored cleanly (alt-screen
-// off, cursor back) rather than the process dying with the screen left raw.
-// Restored with restoreCbreak.
-func setRaw(tty *os.File) (saved string, ok bool) {
+// setRaw puts tty into raw mode via stty or term.MakeRaw fallback.
+func setRaw(tty *os.File) (termState, bool) {
+	fd := int(tty.Fd())
 	var buf bytes.Buffer
 	get := exec.Command("stty", "-g")
 	get.Stdin = tty
 	get.Stdout = &buf
-	if get.Run() != nil {
-		return "", false
+	if get.Run() == nil {
+		saved := strings.TrimSpace(buf.String())
+		set := exec.Command("stty", "-icanon", "-echo", "-isig", "min", "1", "time", "0")
+		set.Stdin = tty
+		if set.Run() == nil {
+			return termState{sttyState: saved, fd: fd}, true
+		}
 	}
-	saved = strings.TrimSpace(buf.String())
-
-	set := exec.Command("stty", "-icanon", "-echo", "-isig", "min", "1", "time", "0")
-	set.Stdin = tty
-	if set.Run() != nil {
-		restoreCbreak(tty, saved)
-		return "", false
+	oldState, err := term.MakeRaw(fd)
+	if err == nil {
+		return termState{rawState: oldState, fd: fd}, true
 	}
-	return saved, true
+	return termState{}, false
 }
 
-// setRawTimed is setRaw with a read timeout (min 0, time 5 = 0.5s): tty.Read
-// returns n==0 after the timeout even with no keypress. The focus overlay uses
-// this to poll the subagent file for new content between keystrokes (live
-// follow) on a single goroutine. Restored with restoreCbreak.
-func setRawTimed(tty *os.File) (saved string, ok bool) {
+// setRawTimed puts tty into raw mode with a timeout.
+func setRawTimed(tty *os.File) (termState, bool) {
+	fd := int(tty.Fd())
 	var buf bytes.Buffer
 	get := exec.Command("stty", "-g")
 	get.Stdin = tty
 	get.Stdout = &buf
-	if get.Run() != nil {
-		return "", false
+	if get.Run() == nil {
+		saved := strings.TrimSpace(buf.String())
+		set := exec.Command("stty", "-icanon", "-echo", "-isig", "min", "0", "time", "5")
+		set.Stdin = tty
+		if set.Run() == nil {
+			return termState{sttyState: saved, fd: fd}, true
+		}
 	}
-	saved = strings.TrimSpace(buf.String())
-
-	set := exec.Command("stty", "-icanon", "-echo", "-isig", "min", "0", "time", "5")
-	set.Stdin = tty
-	if set.Run() != nil {
-		restoreCbreak(tty, saved)
-		return "", false
+	oldState, err := term.MakeRaw(fd)
+	if err == nil {
+		return termState{rawState: oldState, fd: fd}, true
 	}
-	return saved, true
+	return termState{}, false
 }
 
-func restoreCbreak(tty *os.File, saved string) {
-	if saved == "" {
+func restoreCbreak(tty *os.File, state termState) {
+	if state.rawState != nil {
+		_ = term.Restore(state.fd, state.rawState)
 		return
 	}
-	cmd := exec.Command("stty", saved)
-	cmd.Stdin = tty
-	_ = cmd.Run()
+	if state.sttyState != "" {
+		cmd := exec.Command("stty", state.sttyState)
+		cmd.Stdin = tty
+		_ = cmd.Run()
+	}
 }
