@@ -77,9 +77,9 @@ func execWTWorkspace(cwd, sessionID string, agent Agent, isNew bool) error {
 
 	args := []string{
 		"-d", cwd, "cmd", "/k", agentCmd,
-		";", "split-pane", "-H", "-d", cwd, "cmd", "/k", tailCmd,
+		";", "split-pane", "-V", "-d", cwd, "cmd", "/k", tailCmd,
 		";", "move-focus", "left",
-		";", "split-pane", "-V", "-d", cwd,
+		";", "split-pane", "-H", "-d", cwd,
 	}
 
 	cmd := exec.Command(wtPath, args...)
