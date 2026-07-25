@@ -523,10 +523,17 @@ func waitForSessionFile(home, pwd, id string) string {
 	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
 		return path
 	}
-	fmt.Fprintf(os.Stderr, "entire-tail: waiting for Claude session %s in %s … (Ctrl-C to cancel)\n", id, pwd)
+	agyPath := agyTranscriptPath(agyRoot(home), id)
+	if fi, err := os.Stat(agyPath); err == nil && fi.Size() > 0 {
+		return agyPath
+	}
+	fmt.Fprintf(os.Stderr, "entire-tail: waiting for session %s in %s … (Ctrl-C to cancel)\n", id, pwd)
 	for {
 		if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
 			return path
+		}
+		if fi, err := os.Stat(agyPath); err == nil && fi.Size() > 0 {
+			return agyPath
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
