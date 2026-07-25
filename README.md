@@ -41,21 +41,24 @@ session for `$PWD`. Force a specific agent with `--agent claude|codex|agy`.
 
 ## Install
 
+**macOS / Linux:**
 ```sh
 ./install.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 The script does three things in one shot:
 
 1. Builds the Go binary in place (requires the [Go toolchain](https://go.dev/dl/)).
-2. Symlinks `entire-tail` into `~/.local/bin/` so the standalone command
-   works.
+2. Symlinks/copies `entire-tail` into `~/.local/bin/` (and creates the `et` shortcut on Windows) so the standalone command works.
 3. Registers it via `entire plugin install` if the [`entire`](https://docs.entire.io)
    CLI is on `$PATH`, so you can also invoke it as `entire tail`.
 
-The binary embeds its themes, so it's self-contained — the symlink works from
-anywhere. After editing source or themes, re-run `./install.sh` (or
-`go build -o entire-tail .`) to rebuild.
+The binary embeds its themes, so it's self-contained — the binary works from anywhere. After editing source or themes, re-run `./install.sh` or `.\install.ps1` (or `go build -o entire-tail .`) to rebuild.
 
 **No runtime dependencies** beyond the binary itself. The session tree
 supports 3-pane dev workspaces natively on **macOS (iTerm2)** and **Windows (Windows Terminal `wt.exe`)**.
@@ -542,8 +545,7 @@ Original output inside the agent TUI.
 
 - `*.go` — the source (single `package main`; see Architecture below)
 - `themes/<name>.{json,sh}` — bundled themes, embedded at build (see Themes)
-- `install.sh` — builds the binary, symlinks it into `~/.local/bin`, and
-  registers the entire plugin
+- `install.sh` / `install.ps1` — builds the binary, installs it into `~/.local/bin` (and sets up `et` alias on Windows), and registers the entire plugin
 - `entire-tail.bash` — the original bash implementation, kept as a reference
   oracle for the equivalence test (`RUN_ORACLE=1 go test`)
 - `testdata/` — synthetic session fixtures + golden render output
