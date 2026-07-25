@@ -231,16 +231,58 @@ func TestAgyConversationIDAndDiscovery(t *testing.T) {
 	tdir := filepath.Join(root, "brain", id, ".system_generated", "logs")
 	os.MkdirAll(tdir, 0o755)
 	transcript := filepath.Join(tdir, "transcript.jsonl")
-	os.WriteFile(transcript, []byte("{}"), 0o644)
+	os.WriteFile(transcript, []byte(`{"step_index":1,"type":"USER_INPUT","created_at":"2026-06-15T05:00:00Z","content":"<USER_REQUEST>help me</USER_REQUEST>"}`+"\n"), 0o644)
 	os.MkdirAll(filepath.Join(root, "cache"), 0o755)
-	cache, _ := json.Marshal(map[string]string{"/my/cwd": id})
+	cache, _ := json.Marshal(map[string]string{filepath.Join(home, "my", "cwd"): id})
 	os.WriteFile(filepath.Join(root, "cache", "last_conversations.json"), cache, 0o644)
 
-	if got := agyConversationID(root, "/my/cwd"); got != id {
-		t.Errorf("got %q", got)
+	// Test path normalization lookup
+	if got := agyConversationID(root, filepath.Join(home, "my", "cwd")); got != id {
+		t.Errorf("got %q, want %q", got, id)
 	}
-	if got := findSessionAgy(home, "/my/cwd"); got != transcript {
+	if got := findSessionAgy(home, filepath.Join(home, "my", "cwd")); got != transcript {
 		t.Errorf("findSessionAgy got %q want %q", got, transcript)
+	}
+
+	// Test buildAgyTree
+	tree := buildAgyTree(home, filepath.Join(home, "my", "cwd"), 7, time.Now().Unix())
+	if len(tree.Folders) == 0 || len(tree.Folders[0].Sessions) == 0 {
+		t.Fatalf("buildAgyTree returned empty tree: %+v", tree)
+	}
+	if tree.Folders[0].Sessions[0].ID != id {
+		t.Errorf("tree session ID = %q, want %q", tree.Folders[0].Sessions[0].ID, id)
+	}
+}
+
+func TestAgyConversationIDMetadataFallback(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".gemini", "antigravity-cli")
+	id := "conv-meta-456"
+	tdir := filepath.Join(root, "brain", id, ".system_generated", "logs")
+	os.MkdirAll(tdir, 0o755)
+	transcript := filepath.Join(tdir, "transcript.jsonl")
+	os.WriteFile(transcript, []byte("{}\n"), 0o644)
+	os.MkdirAll(filepath.Join(root, "cache"), 0o755)
+
+	metaJSON := `{
+		"conversations": {
+			"conv-meta-456": {
+				"summary": {
+					"ID": "conv-meta-456",
+					"Preview": "Meta Test Session",
+					"WorkspaceURIs": ["file:///` + filepath.ToSlash(filepath.Join(home, "proj")) + `"]
+				},
+				"last_modified_time": "2026-07-25T10:00:00Z"
+			}
+		}
+	}`
+	os.WriteFile(filepath.Join(root, "cache", "conversation_metadata.json"), []byte(metaJSON), 0o644)
+
+	if got := agyConversationID(root, filepath.Join(home, "proj")); got != id {
+		t.Errorf("metadata fallback got %q want %q", got, id)
+	}
+	if got := findSessionAgy(home, filepath.Join(home, "proj")); got != transcript {
+		t.Errorf("findSessionAgy fallback got %q want %q", got, transcript)
 	}
 }
 

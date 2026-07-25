@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,6 +141,96 @@ func buildClaudeTree(home, pwd string, days int, now int64, liveCwds map[string]
 			folder.Sessions[i].Live = i < folder.Live
 		}
 		tree.Folders = append(tree.Folders, folder)
+	}
+	sortFolders(tree.Folders)
+	return tree
+}
+
+// buildAgyTree scans ~/.gemini/antigravity-cli/brain for AGY sessions active within
+// the last `days` days (0 = uncapped), grouped by folder.
+func buildAgyTree(home, pwd string, days int, now int64) sessionTree {
+	root := agyRoot(home)
+	brainDir := filepath.Join(root, "brain")
+	if !isDir(brainDir) {
+		return sessionTree{Now: now, Pwd: pwd, Home: home}
+	}
+	metaMap := loadAgyMetadataMap(root)
+	entries, err := os.ReadDir(brainDir)
+	if err != nil {
+		return sessionTree{Now: now, Pwd: pwd, Home: home}
+	}
+
+	var cutoff int64
+	if days > 0 {
+		cutoff = now - int64(days)*86400
+	}
+
+	pwdSlug := claudeSlug(pwd)
+	tree := sessionTree{Now: now, Pwd: pwd, Home: home}
+	foldersByCwd := map[string]*treeFolder{}
+	var folderOrder []string
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		id := e.Name()
+		tPath := agyTranscriptPath(root, id)
+		fi, err := os.Stat(tPath)
+		if err != nil || fi.Size() == 0 {
+			continue
+		}
+		mtime := fi.ModTime().Unix()
+		if cutoff > 0 && mtime < cutoff {
+			continue
+		}
+
+		meta := metaMap[id]
+		cwd := meta.cwd
+		if cwd == "" {
+			cwd = pwd
+		}
+		snippet := meta.preview
+		if snippet == "" {
+			for _, l := range headLines(tPath, 10) {
+				if s := previewCandidate(AgentAgy, l); s != "" {
+					snippet = s
+					break
+				}
+			}
+		}
+
+		sess := treeSession{
+			Path:    tPath,
+			ID:      id,
+			Mtime:   mtime,
+			Snippet: collapsePreview(snippet),
+			cwd:     cwd,
+		}
+
+		g, ok := foldersByCwd[cwd]
+		if !ok {
+			slug := claudeSlug(cwd)
+			g = &treeFolder{
+				Cwd:      cwd,
+				Dir:      cwd,
+				Slug:     slug,
+				Mtime:    mtime,
+				Expanded: slug == pwdSlug,
+			}
+			foldersByCwd[cwd] = g
+			folderOrder = append(folderOrder, cwd)
+		}
+		g.Sessions = append(g.Sessions, sess)
+		if mtime > g.Mtime {
+			g.Mtime = mtime
+		}
+	}
+
+	for _, cwd := range folderOrder {
+		g := foldersByCwd[cwd]
+		sort.SliceStable(g.Sessions, func(i, j int) bool { return g.Sessions[i].Mtime > g.Sessions[j].Mtime })
+		tree.Folders = append(tree.Folders, *g)
 	}
 	sortFolders(tree.Folders)
 	return tree
@@ -943,7 +1034,7 @@ func runClaudeTree(home, pwd string, days int, local, cloud bool, theme Theme) t
 }
 
 func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	tty, err := openTTY(os.O_RDWR)
 	if err != nil {
 		return treeChoice{Result: treeNone}
 	}
@@ -954,13 +1045,18 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 	}
 	defer restoreCbreak(tty, saved)
 
+	outWriter := io.Writer(tty)
+	if runtime.GOOS == "windows" {
+		outWriter = os.Stdout
+	}
+
 	// Enter alt-screen + hide cursor. If this write fails the terminal never
 	// switched, so bail before registering the restore defer (which would
 	// otherwise send exit-alt-screen codes to a terminal that never entered it).
-	if _, err := io.WriteString(tty, "\x1b[?1049h\x1b[?25l"); err != nil {
+	if _, err := io.WriteString(outWriter, "\x1b[?1049h\x1b[?25l"); err != nil {
 		return treeChoice{Result: treeNone}
 	}
-	defer io.WriteString(tty, "\x1b[?25h\x1b[?1049l")
+	defer io.WriteString(outWriter, "\x1b[?25h\x1b[?1049l")
 
 	ui := treeUI{Tree: tree, Theme: theme}
 	ui.Rows = flattenRows(ui.Tree, "")
@@ -974,7 +1070,7 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 			ui.Height = 1
 		}
 		ui.clamp()
-		io.WriteString(tty, renderTree(ui))
+		io.WriteString(outWriter, renderTree(ui))
 
 		n, err := tty.Read(buf)
 		if err != nil || n == 0 {
@@ -987,7 +1083,7 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 		}
 		if ui.SummaryReq {
 			ui.SummaryReq = false
-			showInfo(tty, ui.Sel, home, theme)
+			showInfo(outWriter, tty, ui.Sel, home, theme)
 			continue
 		}
 		if ui.NewWorkspace {
@@ -1004,7 +1100,11 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 }
 
 func termSize(tty *os.File) (int, int) {
-	w, h, err := term.GetSize(int(tty.Fd()))
+	fd := int(tty.Fd())
+	if runtime.GOOS == "windows" {
+		fd = int(os.Stdout.Fd())
+	}
+	w, h, err := term.GetSize(fd)
 	if err != nil || w <= 0 || h <= 0 {
 		return 80, 24
 	}

@@ -36,8 +36,12 @@ type subagentMeta struct {
 }
 
 // subagentsDir returns the sidecar directory for a main transcript path, i.e.
-// "<dir>/<sessionId>/subagents".
+// "<dir>/<sessionId>/subagents" or "<brain>/<id>/subagents".
 func subagentsDir(mainPath string) string {
+	if strings.Contains(filepath.ToSlash(mainPath), "/.system_generated/logs/") {
+		brainDir := filepath.Dir(filepath.Dir(filepath.Dir(mainPath)))
+		return filepath.Join(brainDir, "subagents")
+	}
 	base := strings.TrimSuffix(mainPath, filepath.Ext(mainPath))
 	return filepath.Join(base, "subagents")
 }
@@ -49,11 +53,15 @@ func discoverSubagents(mainPath string) []subagentChannel {
 	dir := subagentsDir(mainPath)
 	matches, err := filepath.Glob(filepath.Join(dir, "agent-*.jsonl"))
 	if err != nil || len(matches) == 0 {
-		return nil
+		matches, err = filepath.Glob(filepath.Join(dir, "*.jsonl"))
+		if err != nil || len(matches) == 0 {
+			return nil
+		}
 	}
 	var chans []subagentChannel
 	for _, p := range matches {
-		id := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), "agent-"), ".jsonl")
+		baseName := filepath.Base(p)
+		id := strings.TrimSuffix(strings.TrimPrefix(baseName, "agent-"), ".jsonl")
 		ch := subagentChannel{AgentID: id, Path: p}
 		if m, ok := readSubagentMeta(strings.TrimSuffix(p, ".jsonl") + ".meta.json"); ok {
 			ch.Description, ch.AgentType = m.Description, m.AgentType
@@ -101,7 +109,7 @@ func (c subagentChannel) status(now int64) (running bool, dur time.Duration) {
 	return running, dur
 }
 
-// tsRe-free timestamp helpers: read the first / last record's "timestamp".
+// tsRe-free timestamp helpers: read the first / last record's "timestamp" / "created_at".
 
 func firstRecordTS(path string) int64 {
 	lines := headLines(path, 1)
@@ -119,18 +127,29 @@ func lastRecordTS(path string) int64 {
 	return recordEpoch(lines[len(lines)-1])
 }
 
-// recordEpoch parses the "timestamp" field of a Claude JSONL line to unix
+// recordEpoch parses the "timestamp" or "created_at" field of a JSONL line to unix
 // seconds; 0 when absent/unparseable.
 func recordEpoch(line []byte) int64 {
 	var ev struct {
 		Timestamp string `json:"timestamp"`
+		CreatedAt string `json:"created_at"`
 	}
-	if json.Unmarshal(line, &ev) != nil || ev.Timestamp == "" {
+	if json.Unmarshal(line, &ev) != nil {
 		return 0
 	}
-	t, err := time.Parse(time.RFC3339, ev.Timestamp)
+	tsStr := ev.Timestamp
+	if tsStr == "" {
+		tsStr = ev.CreatedAt
+	}
+	if tsStr == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339, tsStr)
 	if err != nil {
-		return 0
+		t, err = time.Parse(time.RFC3339Nano, tsStr)
+		if err != nil {
+			return 0
+		}
 	}
 	return t.Unix()
 }

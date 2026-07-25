@@ -41,30 +41,30 @@ session for `$PWD`. Force a specific agent with `--agent claude|codex|agy`.
 
 ## Install
 
+**macOS / Linux:**
 ```sh
 ./install.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 The script does three things in one shot:
 
 1. Builds the Go binary in place (requires the [Go toolchain](https://go.dev/dl/)).
-2. Symlinks `entire-tail` into `~/.local/bin/` so the standalone command
-   works.
+2. Symlinks/copies `entire-tail` into `~/.local/bin/` (and creates the `et` shortcut on Windows) so the standalone command works.
 3. Registers it via `entire plugin install` if the [`entire`](https://docs.entire.io)
    CLI is on `$PATH`, so you can also invoke it as `entire tail`.
 
-The binary embeds its themes, so it's self-contained — the symlink works from
-anywhere. After editing source or themes, re-run `./install.sh` (or
-`go build -o entire-tail .`) to rebuild.
+The binary embeds its themes, so it's self-contained — the binary works from anywhere. After editing source or themes, re-run `./install.sh` or `.\install.ps1` (or `go build -o entire-tail .`) to rebuild.
 
 **No runtime dependencies** beyond the binary itself. The session tree
-additionally uses `pgrep` + `lsof` when present (both ship with macOS and most
+supports 3-pane dev workspaces natively on **macOS (iTerm2)** and **Windows (Windows Terminal `wt.exe`)**.
+The tree additionally uses `pgrep` + `lsof` when present (both ship with macOS and most
 Linux) to mark which sessions are live; without them the tree still works, just
 without live markers.
-
-On **macOS 26+** the `i` card's AI summary uses Apple's built-in Foundation
-Models CLI (`fm`, `/usr/bin/fm`) on the on-device model — no build step, no extra
-dependency. When `fm` is absent the card falls back to metadata only.
 
 ## Usage
 
@@ -244,7 +244,7 @@ the local view adds the git branch and live markers.
 collapses; `/` filters by name/title/id as you type (`Esc` clears); `q`/`Esc`
 quits. The most recent group starts expanded. On a session:
 
-- **`Enter`** → open the **iTerm workspace** for it (see below).
+- **`Enter`** → open the **workspace** for it (iTerm2 on macOS or Windows Terminal on Windows).
 - **`i`** → the combined **info view**: an info card fixed at the top, a divider,
   then the session's recent transcript in a **scrollable** pane below (starts at
   the latest turns; works for cloud-only sessions too — reconstructed from git
@@ -311,13 +311,9 @@ cloned locally does it report the session can't be opened. Codex/Antigravity
 aren't tailable through the tree yet — use `--agent codex`/`agy` or an explicit
 `SESSION_FILE`.
 
-## The iTerm2 workspace (macOS)
+## Dev workspaces (iTerm2 on macOS, Windows Terminal on Windows)
 
-Pressing **`Enter`** on a session (on macOS + iTerm2) turns the **current**
-window into a 3-pane workspace for it, via AppleScript — no extra deps,
-`osascript` ships with the OS. The pane you launched from becomes Claude,
-resuming the picked session, with a live tail and a shell beside it — all `cd`'d
-to that **session's** folder (wherever it was, not necessarily `$PWD`):
+Pressing **`Enter`** on a session turns your window into a 3-pane workspace for it — via AppleScript on macOS (iTerm2) or native `wt.exe split-pane` on Windows (Windows Terminal). The pane you launched from becomes Claude (or your agent), resuming the picked session, with a live tail and a shell beside it — all `cd`'d to that **session's** folder (wherever it was, not necessarily `$PWD`):
 
 ```
 ┌──────────┬──────────┐
@@ -331,11 +327,12 @@ to that **session's** folder (wherever it was, not necessarily `$PWD`):
 (The `claude --resume` command is queued into the current pane and runs the
 moment `entire-tail` exits, so that pane becomes A.)
 
-The workspace only fires when the current window is a **single pane**. If the
+On macOS + iTerm2, the workspace only fires when the current window is a **single pane**. If the
 window already has splits, `Enter` just **tails the session in the current pane**
-— no scripting, no new window — so your existing layout is never touched.
+— no scripting, no new window — so your existing layout is never touched. On Windows,
+`wt.exe` launches the 3-pane layout natively.
 
-Off iTerm (or non-macOS), `Enter` likewise falls back to tailing in place, same
+Off iTerm or Windows Terminal, `Enter` likewise falls back to tailing in place, same
 as `t`. `-w`/`--workspace` just forces the picker (it's already the default).
 tmux / other terminals are a possible follow-up.
 
@@ -548,8 +545,7 @@ Original output inside the agent TUI.
 
 - `*.go` — the source (single `package main`; see Architecture below)
 - `themes/<name>.{json,sh}` — bundled themes, embedded at build (see Themes)
-- `install.sh` — builds the binary, symlinks it into `~/.local/bin`, and
-  registers the entire plugin
+- `install.sh` / `install.ps1` — builds the binary, installs it into `~/.local/bin` (and sets up `et` alias on Windows), and registers the entire plugin
 - `entire-tail.bash` — the original bash implementation, kept as a reference
   oracle for the equivalence test (`RUN_ORACLE=1 go test`)
 - `testdata/` — synthetic session fixtures + golden render output

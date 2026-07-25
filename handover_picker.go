@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -202,7 +203,7 @@ func renderHandoverPick(ui handoverPickUI) string {
 // the collapsed groups, or ok=false if the user aborted / no tty was available.
 // Live sessions start selected (their own doc); ended ones start excluded.
 func runHandoverPicker(items []handoverItem, home string, theme Theme, now int64) ([]handoverGroup, bool) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	tty, err := openTTY(os.O_RDWR)
 	if err != nil {
 		return nil, false
 	}
@@ -212,10 +213,16 @@ func runHandoverPicker(items []handoverItem, home string, theme Theme, now int64
 		return nil, false
 	}
 	defer restoreCbreak(tty, saved)
-	if _, err := io.WriteString(tty, "\x1b[?1049h\x1b[?25l"); err != nil {
+
+	outWriter := io.Writer(tty)
+	if runtime.GOOS == "windows" {
+		outWriter = os.Stdout
+	}
+
+	if _, err := io.WriteString(outWriter, "\x1b[?1049h\x1b[?25l"); err != nil {
 		return nil, false
 	}
-	defer io.WriteString(tty, "\x1b[?25h\x1b[?1049l")
+	defer io.WriteString(outWriter, "\x1b[?25h\x1b[?1049l")
 
 	ui := handoverPickUI{Items: items, Tags: defaultTags(items), Now: now}
 	buf := make([]byte, 16)
@@ -226,7 +233,7 @@ func runHandoverPicker(items []handoverItem, home string, theme Theme, now int64
 			ui.Height = 1
 		}
 		ui.clampPick()
-		io.WriteString(tty, renderHandoverPick(ui))
+		io.WriteString(outWriter, renderHandoverPick(ui))
 		n, err := tty.Read(buf)
 		if err != nil || n == 0 {
 			return nil, false
@@ -240,7 +247,7 @@ func runHandoverPicker(items []handoverItem, home string, theme Theme, now int64
 			ui.PreviewReq = false
 			if ui.Cursor >= 0 && ui.Cursor < len(ui.Items) {
 				it := ui.Items[ui.Cursor]
-				showInfo(tty, treeSession{
+				showInfo(outWriter, tty, treeSession{
 					Path: it.Path, ID: it.SessionID, Snippet: it.Title,
 					Repo: it.Repo, Branch: it.Branch, Mtime: it.LastActivity,
 					Tokens: it.Tokens, Live: it.Live,

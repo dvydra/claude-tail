@@ -8,8 +8,9 @@ import (
 )
 
 func TestSubagentsDir(t *testing.T) {
-	if got := subagentsDir("/p/proj/abc123.jsonl"); got != "/p/proj/abc123/subagents" {
-		t.Errorf("subagentsDir = %q", got)
+	want := filepath.Join("/p", "proj", "abc123", "subagents")
+	if got := subagentsDir(filepath.Join("/p", "proj", "abc123.jsonl")); got != want {
+		t.Errorf("subagentsDir = %q, want %q", got, want)
 	}
 }
 
