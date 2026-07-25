@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1044,13 +1045,18 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 	}
 	defer restoreCbreak(tty, saved)
 
+	outWriter := io.Writer(tty)
+	if runtime.GOOS == "windows" {
+		outWriter = os.Stdout
+	}
+
 	// Enter alt-screen + hide cursor. If this write fails the terminal never
 	// switched, so bail before registering the restore defer (which would
 	// otherwise send exit-alt-screen codes to a terminal that never entered it).
-	if _, err := io.WriteString(tty, "\x1b[?1049h\x1b[?25l"); err != nil {
+	if _, err := io.WriteString(outWriter, "\x1b[?1049h\x1b[?25l"); err != nil {
 		return treeChoice{Result: treeNone}
 	}
-	defer io.WriteString(tty, "\x1b[?25h\x1b[?1049l")
+	defer io.WriteString(outWriter, "\x1b[?25h\x1b[?1049l")
 
 	ui := treeUI{Tree: tree, Theme: theme}
 	ui.Rows = flattenRows(ui.Tree, "")
@@ -1064,7 +1070,7 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 			ui.Height = 1
 		}
 		ui.clamp()
-		io.WriteString(tty, renderTree(ui))
+		io.WriteString(outWriter, renderTree(ui))
 
 		n, err := tty.Read(buf)
 		if err != nil || n == 0 {
@@ -1077,7 +1083,7 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 		}
 		if ui.SummaryReq {
 			ui.SummaryReq = false
-			showInfo(tty, ui.Sel, home, theme)
+			showInfo(outWriter, tty, ui.Sel, home, theme)
 			continue
 		}
 		if ui.NewWorkspace {
@@ -1094,7 +1100,11 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 }
 
 func termSize(tty *os.File) (int, int) {
-	w, h, err := term.GetSize(int(tty.Fd()))
+	fd := int(tty.Fd())
+	if runtime.GOOS == "windows" {
+		fd = int(os.Stdout.Fd())
+	}
+	w, h, err := term.GetSize(fd)
 	if err != nil || w <= 0 || h <= 0 {
 		return 80, 24
 	}

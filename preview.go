@@ -93,7 +93,7 @@ func osc8(url, label string) string {
 // Intelligence summary when fm + the model are available, the trails/PRs
 // referenced in the transcript, and entire's metadata) fixed at the top, then
 // the session's recent transcript in a scrollable pane below the divider.
-func showInfo(tty *os.File, s treeSession, home string, theme Theme) {
+func showInfo(out io.Writer, tty *os.File, s treeSession, home string, theme Theme) {
 	// Resolve a transcript (local, else reconstructed) once — used for the
 	// on-device summary, the trail/PR scan, and the preview pane.
 	path := s.Path
@@ -106,7 +106,7 @@ func showInfo(tty *os.File, s treeSession, home string, theme Theme) {
 	var ai aiSummary
 	haveAI := false
 	if fmAvailable() && path != "" {
-		io.WriteString(tty, "\x1b[H\x1b[2J\n  Summarizing with Apple Intelligence…")
+		io.WriteString(out, "\x1b[H\x1b[2J\n  Summarizing with Apple Intelligence…")
 		ai, haveAI = aiSummarize(transcriptText(path, home))
 	}
 	var links []sessionLink
@@ -122,7 +122,7 @@ func showInfo(tty *os.File, s treeSession, home string, theme Theme) {
 		preview = renderPreviewLines(path, home, theme)
 	}
 
-	pagerSplit(tty, card, preview, "INFO "+shortID(s.ID)+"  "+s.Snippet, theme)
+	pagerSplit(out, tty, card, preview, "INFO "+shortID(s.ID)+"  "+s.Snippet, theme)
 }
 
 // minPreviewRows is the minimum scrollable preview height; the fixed card is
@@ -144,7 +144,7 @@ func splitPaneHeights(h, cardLen int) (cardH, body int) {
 // scrollable bottom pane (the transcript preview, started at the latest turns).
 // The card is clipped if the terminal is too short to show it whole and still
 // leave room to scroll; only the preview scrolls. q/Esc returns.
-func pagerSplit(tty *os.File, card, preview []string, title string, theme Theme) {
+func pagerSplit(out io.Writer, tty *os.File, card, preview []string, title string, theme Theme) {
 	buf := make([]byte, 16)
 	top := len(preview) // clamped to the bottom on the first render
 	for {
@@ -175,7 +175,7 @@ func pagerSplit(tty *os.File, card, preview []string, title string, theme Theme)
 		fmt.Fprintf(&b, "\x1b[2m  preview %d–%d of %d · ↑↓/PgUp/PgDn scroll · q/Esc back"+reset,
 			min(top+1, len(preview)), min(top+body, len(preview)), len(preview))
 		b.WriteString("\x1b[K\x1b[J")
-		io.WriteString(tty, b.String())
+		io.WriteString(out, b.String())
 
 		n, err := tty.Read(buf)
 		if err != nil || n == 0 {
