@@ -556,3 +556,55 @@ func TestApplyTheme(t *testing.T) {
 		t.Errorf("failed applyTheme mutated theme: got %q, want dracula", r.theme.Name)
 	}
 }
+
+// The done banner leads the closing message: header, then the bright-green
+// marker, then the body.
+func TestDoneBannerLeadsClosingMessage(t *testing.T) {
+	out := renderRecords("dots", 0, false,
+		Record{Kind: KindAssistant, Ts: "T1", Body: "shipped it", Done: true, MsgID: "m1"},
+	)
+	plain := stripANSI(out)
+	if !strings.Contains(plain, doneMark) {
+		t.Fatalf("banner missing in %q", plain)
+	}
+	if !strings.Contains(out, doneANSI+doneMark) {
+		t.Errorf("banner must be bright green + bold, got %q", out)
+	}
+	iHdr := strings.Index(plain, "AGENT")
+	iMark := strings.Index(plain, doneMark)
+	iBody := strings.Index(plain, "shipped it")
+	if !(iHdr < iMark && iMark < iBody) {
+		t.Errorf("want header < banner < body, got %d/%d/%d in %q", iHdr, iMark, iBody, plain)
+	}
+}
+
+func TestNoDoneBannerMidTurn(t *testing.T) {
+	out := renderRecords("dots", 0, false,
+		Record{Kind: KindAssistant, Ts: "T1", Body: "working on it", MsgID: "m1"},
+	)
+	if strings.Contains(stripANSI(out), doneMark) {
+		t.Errorf("mid-turn message must not be marked done: %q", out)
+	}
+}
+
+// One message spanning two text records prints one banner, not two.
+func TestDoneBannerDedupedByMessageID(t *testing.T) {
+	out := renderRecords("dots", 0, false,
+		Record{Kind: KindAssistant, Ts: "T1", Body: "part one", Done: true, MsgID: "m1"},
+		Record{Kind: KindAssistant, Ts: "T1", Body: "part two", Done: true, MsgID: "m1"},
+	)
+	if n := strings.Count(stripANSI(out), doneMark); n != 1 {
+		t.Errorf("want 1 banner for one message, got %d in %q", n, out)
+	}
+}
+
+func TestDoneBannerPerMessageNotDeduped(t *testing.T) {
+	out := renderRecords("dots", 0, false,
+		Record{Kind: KindAssistant, Ts: "T1", Body: "turn one", Done: true, MsgID: "m1"},
+		Record{Kind: KindUser, Ts: "T2", Body: "next"},
+		Record{Kind: KindAssistant, Ts: "T3", Body: "turn two", Done: true, MsgID: "m2"},
+	)
+	if n := strings.Count(stripANSI(out), doneMark); n != 2 {
+		t.Errorf("want a banner per finished turn, got %d in %q", n, out)
+	}
+}

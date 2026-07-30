@@ -102,6 +102,11 @@ type Renderer struct {
 	// question is suppressed so the user sees exactly one card. Cleared by
 	// reset() so a full re-render (r / rollover) shows JSONL cards normally.
 	pendingShown map[string]bool
+
+	// lastDoneMsgID is the message id whose done banner we last printed. One
+	// assistant message occasionally spans two jsonl text records (both carrying
+	// the same terminal stop_reason); this keeps the banner to one per message.
+	lastDoneMsgID string
 }
 
 func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse int) (*Renderer, error) {
@@ -197,6 +202,7 @@ func (r *Renderer) reset() {
 	r.lastKind = ""
 	r.inDotStreak = false
 	r.lineOpen = false
+	r.lastDoneMsgID = ""
 	clear(r.pendingShown)
 }
 
@@ -223,6 +229,7 @@ func (r *Renderer) emit(rec Record) {
 			io.WriteString(r.w, "\a")
 		}
 		r.header(KindAssistant, rec.Ts)
+		r.doneBanner(rec)
 		r.body(rec.Body)
 	case KindToolUse:
 		r.toolUse(rec.Name, rec.Summary)
@@ -233,6 +240,28 @@ func (r *Renderer) emit(rec Record) {
 	case KindQuestion:
 		r.question(rec)
 	}
+}
+
+// Done-banner colors (fixed bright green, prominent on light and dark themes).
+const (
+	doneANSI = "\x1b[1m\x1b[38;2;60;235;120m"
+	doneMark = "✔ DONE — over to you"
+)
+
+// doneBanner prints the bright-green "the agent finished its turn" line at the
+// TOP of the closing message, so a turn that hands control back is obvious at a
+// glance without reading the text. Only Claude reports this explicitly
+// (message.stop_reason); other agents never set Done, so nothing is printed.
+// Deduped by message id — one message can span two text records.
+func (r *Renderer) doneBanner(rec Record) {
+	if !rec.Done {
+		return
+	}
+	if rec.MsgID != "" && rec.MsgID == r.lastDoneMsgID {
+		return
+	}
+	r.lastDoneMsgID = rec.MsgID
+	io.WriteString(r.w, doneANSI+doneMark+reset+"\n")
 }
 
 // agentSpawn renders a subagent launch as a distinct marker, shown in every tool
