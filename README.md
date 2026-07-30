@@ -194,6 +194,27 @@ as the deferred JSONL — dedup prevents doubling once the real record arrives.
 
 This feature is **Claude-only** and has no effect on Codex or Antigravity.
 
+### "I'm done" marker (Claude)
+
+Most agent turns are the agent *continuing* — it says a sentence and fires more
+tools. Only some turns actually hand control back. Claude records which is
+which: every assistant record carries `message.stop_reason`, and it's `end_turn`
+(not `tool_use`) exactly when the agent is finished and waiting on you.
+
+entire-tail leads that closing message with a bright-green banner, so you can
+tell "still working" from "your move" at a glance while scrolling:
+
+```
+─── ◀ AGENT ────────────────────────────── 2026-07-29 16:16:00
+✔ DONE — over to you
+Post this to #progress:
+```
+
+It's read straight from the transcript — no hooks, nothing to install. A
+subagent's `end_turn` is ignored (that's the subagent finishing, not the agent),
+and transcripts predating `stop_reason` simply render as before. Also
+**Claude-only**: Codex and Antigravity don't report the signal.
+
 ## The session tree (default)
 
 Can't remember which session that was? Just run `entire tail` — with no session

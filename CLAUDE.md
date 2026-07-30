@@ -293,6 +293,19 @@ needs to change.
   the Go renderer no longer matches the bash oracle in any mode, so
   `TestEquivalenceVsBash` (`RUN_ORACLE=1`) is retired to skips; the goldens +
   units are the gate.
+- **The "done" signal is read, never inferred.** Claude's assistant records carry
+  `message.stop_reason` on EVERY jsonl line of a message — `tool_use` while the
+  agent keeps going, `end_turn` (rarely `stop_sequence`/`max_tokens`/`refusal`)
+  when it hands control back. `claudeTurnDone` maps that to `Record.Done`, and
+  `doneBanner` leads the closing message with a bright-green `✔ DONE — over to
+  you`. Two traps the shape of the data sets: a **sidechain** record's `end_turn`
+  is a *subagent* finishing (skipped via `isSidechain`), and a single message
+  occasionally spans two text records that BOTH say `end_turn` — deduped by
+  `message.id` in the adapter (within one line) and by `Renderer.lastDoneMsgID`
+  (across lines, cleared in `reset()`). Do NOT reimplement this as "no tool call
+  followed" — that isn't knowable until the next event lands, which is exactly
+  the latency the marker exists to remove. Other agents never set `Done`, so the
+  goldens for claude/codex/agy are untouched.
 - **Instant pending-prompt alert dedup** — the marker-file render path and the
   eventual JSONL card both compute the SAME `contentKey` (questions via
   `claudeParseQuestions`→`questionsContentKey`, permissions via sha256) so the

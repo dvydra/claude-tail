@@ -17,10 +17,31 @@ type claudeEvent struct {
 	Timestamp     string          `json:"timestamp"`
 	Message       *claudeMessage  `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"` // rich result detail (full mode)
+	// IsSidechain marks a subagent's records, which are interleaved into the
+	// main transcript. A subagent finishing is not the main agent finishing.
+	IsSidechain bool `json:"isSidechain"`
 }
 
 type claudeMessage struct {
 	Content json.RawMessage `json:"content"`
+	ID      string          `json:"id"`
+	// StopReason is the API stop reason, repeated on every jsonl line of the
+	// message. "tool_use" means the agent is continuing; anything terminal
+	// means it just handed control back to the user.
+	StopReason string `json:"stop_reason"`
+}
+
+// claudeTurnDone reports whether a stop reason ends the agent's turn. Claude
+// Code writes "tool_use" for ~90% of assistant records (the agent keeps going)
+// and "end_turn" for the rest; "stop_sequence"/"max_tokens"/"refusal" are rare
+// but equally hand control back. An empty/unknown value is treated as
+// not-done, so older transcripts (no stop_reason) simply render as before.
+func claudeTurnDone(stopReason string) bool {
+	switch stopReason {
+	case "end_turn", "stop_sequence", "max_tokens", "refusal":
+		return true
+	}
+	return false
 }
 
 type claudeBlock struct {
@@ -82,11 +103,17 @@ func normalizeClaude(line []byte, loc *time.Location) []Record {
 		if json.Unmarshal(ev.Message.Content, &blocks) != nil {
 			return nil
 		}
+		// The turn ends here only if the API said so AND this is the main agent
+		// (a sidechain's end_turn is just a subagent finishing). Carried on the
+		// text block, so the banner lands at the top of the closing message.
+		done := !ev.IsSidechain && claudeTurnDone(ev.Message.StopReason)
+
 		var out []Record
 		for _, b := range blocks {
 			switch b.Type {
 			case "text":
-				out = append(out, Record{Kind: KindAssistant, Ts: ts, Body: b.Text})
+				out = append(out, Record{Kind: KindAssistant, Ts: ts, Body: b.Text, Done: done, MsgID: ev.Message.ID})
+				done = false // at most one banner per message
 			case "tool_use":
 				switch b.Name {
 				case "AskUserQuestion":

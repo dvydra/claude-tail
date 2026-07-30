@@ -21,7 +21,7 @@ const (
 
 // Record is one renderable unit. Which fields are populated depends on Kind:
 //
-//	USER/CLAUDE   → Ts, Body
+//	USER/CLAUDE   → Ts, Body (+ Done, MsgID when the turn ends here)
 //	TOOLUSE       → Name, Summary
 //	TOOLRESULT    → N, and (full mode, when available) Result
 //	AGENTSPAWN    → Ts, AgentDesc, AgentType
@@ -34,6 +34,15 @@ type Record struct {
 	Summary string      // one-line tool input preview
 	N       int         // tool_result count
 	Result  *ToolResult // rich result detail for full mode (nil if unavailable)
+
+	// Done marks the assistant turn that hands control back to the user — the
+	// agent's "I'm done". Set only when the source event says so explicitly
+	// (Claude's message.stop_reason); never inferred from "no tool call
+	// followed", which can't be known until the next event arrives.
+	Done bool
+	// MsgID is the provider message id backing this record, used to dedup the
+	// Done banner when one message spills across several jsonl lines.
+	MsgID string
 
 	AgentDesc string // subagent task description (AGENTSPAWN)
 	AgentType string // subagent type, e.g. "general-purpose" (AGENTSPAWN)

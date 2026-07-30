@@ -242,3 +242,72 @@ func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// Claude's "I'm done" signal: message.stop_reason. "end_turn" ends the turn and
+// hands control back; "tool_use" means the agent is still working.
+func TestNormalizeClaudeDoneOnEndTurn(t *testing.T) {
+	line := []byte(`{"type":"assistant","timestamp":"2026-06-15T05:00:00Z","message":{"id":"msg_1","stop_reason":"end_turn","content":[
+		{"type":"text","text":"all set"}
+	]}}`)
+	got := normalize(AgentClaude, line, utc)
+	want := []Record{{Kind: KindAssistant, Ts: "2026-06-15 05:00:00", Body: "all set", Done: true, MsgID: "msg_1"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v want %+v", got, want)
+	}
+}
+
+func TestNormalizeClaudeNotDoneOnToolUse(t *testing.T) {
+	line := []byte(`{"type":"assistant","timestamp":"2026-06-15T05:00:00Z","message":{"id":"msg_2","stop_reason":"tool_use","content":[
+		{"type":"text","text":"looking"}
+	]}}`)
+	got := normalize(AgentClaude, line, utc)
+	if len(got) != 1 || got[0].Done {
+		t.Errorf("tool_use must not be a done signal: %+v", got)
+	}
+}
+
+// A subagent's end_turn is the SUBAGENT finishing, not the main agent.
+func TestNormalizeClaudeSidechainEndTurnNotDone(t *testing.T) {
+	line := []byte(`{"type":"assistant","isSidechain":true,"timestamp":"2026-06-15T05:00:00Z","message":{"id":"msg_3","stop_reason":"end_turn","content":[
+		{"type":"text","text":"subagent report"}
+	]}}`)
+	got := normalize(AgentClaude, line, utc)
+	if len(got) != 1 || got[0].Done {
+		t.Errorf("sidechain end_turn must not be a done signal: %+v", got)
+	}
+}
+
+// One message, several text blocks → at most one banner.
+func TestNormalizeClaudeDoneOnlyFirstTextBlock(t *testing.T) {
+	line := []byte(`{"type":"assistant","timestamp":"2026-06-15T05:00:00Z","message":{"id":"msg_4","stop_reason":"end_turn","content":[
+		{"type":"text","text":"first"},
+		{"type":"text","text":"second"}
+	]}}`)
+	got := normalize(AgentClaude, line, utc)
+	if len(got) != 2 || !got[0].Done || got[1].Done {
+		t.Errorf("only the first text block should carry Done: %+v", got)
+	}
+}
+
+// Transcripts predating stop_reason (and other agents) keep rendering as before.
+func TestNormalizeClaudeNoStopReasonNotDone(t *testing.T) {
+	line := []byte(`{"type":"assistant","timestamp":"2026-06-15T05:00:00Z","message":{"content":[{"type":"text","text":"hi"}]}}`)
+	got := normalize(AgentClaude, line, utc)
+	if len(got) != 1 || got[0].Done {
+		t.Errorf("missing stop_reason must not be a done signal: %+v", got)
+	}
+}
+
+func TestClaudeTurnDone(t *testing.T) {
+	for _, tc := range []struct {
+		reason string
+		want   bool
+	}{
+		{"end_turn", true}, {"stop_sequence", true}, {"max_tokens", true}, {"refusal", true},
+		{"tool_use", false}, {"", false}, {"something_new", false},
+	} {
+		if got := claudeTurnDone(tc.reason); got != tc.want {
+			t.Errorf("claudeTurnDone(%q) = %v want %v", tc.reason, got, tc.want)
+		}
+	}
+}
