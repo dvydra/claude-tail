@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -26,7 +27,19 @@ type Config struct {
 	FollowSession    string // --follow-session <id>: tail exactly $PWD's <id>.jsonl (waiting for it), following forks
 	MarkContinuation bool   // --mark-continuation: at a Claude lineage flip, write a forward-pointer record into the stopped file
 	NoHookInstall    bool   // --no-hook-install: suppress the first-run pending-hook offer
+	ClaudeBin        string // --claude-bin: the binary the workspace panes + handover launch
+	ClaudeBinSet     bool   // ClaudeBin came from a flag/env, not the built-in default
 }
+
+// The workspace panes and `handover` launch an agent; which binary that is is a
+// preference. `happy` is the default: it wraps Claude Code (honoring
+// --session-id/--resume, so the workspace's pinned-id contract holds) and its
+// sessions land in the same ~/.claude/projects transcripts we tail, so nothing
+// downstream changes. A machine without happy falls back to plain `claude`.
+const (
+	defaultClaudeBin  = "happy"
+	fallbackClaudeBin = "claude"
+)
 
 // Action is what the parsed CLI asks for beyond a normal run.
 type Action int
@@ -76,10 +89,34 @@ func defaultConfig(getenv func(string) string) Config {
 		Pick:             firstNonEmpty(getenv("ENTIRE_TAIL_PICK"), "auto"),
 		Days:             getenv("ENTIRE_TAIL_DAYS"),
 		MarkContinuation: envTrue(getenv("ENTIRE_TAIL_MARK_CONTINUATION")),
+		ClaudeBin:        firstNonEmpty(getenv("ENTIRE_TAIL_CLAUDE_BIN"), defaultClaudeBin),
+		ClaudeBinSet:     getenv("ENTIRE_TAIL_CLAUDE_BIN") != "",
 	}
 	c.Collapse = normalizeCollapseWord(c.Collapse)
 	c.Pick = normalizePickWord(c.Pick)
 	return c
+}
+
+// resolveClaudeBin picks the binary the workspace panes (and handover) launch,
+// falling back to `claude` when the preferred one isn't installed. An EXPLICIT
+// choice that's missing warns — a typo'd preference must not silently launch
+// something else — while the built-in default falling back is silent, since the
+// user never asked for it.
+func resolveClaudeBin(c Config, lookPath func(string) (string, error), warn io.Writer) string {
+	bin := firstNonEmpty(c.ClaudeBin, defaultClaudeBin)
+	if _, err := lookPath(bin); err == nil {
+		return bin
+	}
+	if bin == fallbackClaudeBin {
+		return bin // nothing better to fall back to
+	}
+	if _, err := lookPath(fallbackClaudeBin); err != nil {
+		return bin // neither is installed — keep the ask and let the pane report it
+	}
+	if c.ClaudeBinSet {
+		fmt.Fprintf(warn, "entire-tail: %q is not on PATH — launching %q instead\n", bin, fallbackClaudeBin)
+	}
+	return fallbackClaudeBin
 }
 
 // normalizeCollapseWord maps the off-synonyms to "0" (the bash COLLAPSE case).
@@ -222,6 +259,15 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.MarkContinuation = false
 		case a == "--no-hook-install":
 			c.NoHookInstall = true
+		case a == "--claude-bin":
+			v, err := needValue(i, a)
+			if err != nil {
+				return c, ActionRun, err
+			}
+			c.ClaudeBin, c.ClaudeBinSet = v, true
+			i++
+		case strings.HasPrefix(a, "--claude-bin="):
+			c.ClaudeBin, c.ClaudeBinSet = strings.TrimPrefix(a, "--claude-bin="), true
 		case a == "-S" || a == "--search":
 			v, err := needValue(i, a)
 			if err != nil {

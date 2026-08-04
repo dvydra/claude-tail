@@ -113,11 +113,11 @@ func cwShort(cwd string) string {
 // tail that session in the current pane; it returns ok=false when there's no tty
 // or no Claude agent in scope, so the caller falls back to auto-discovery. A
 // workspace selection launches the iTerm layout and exits; quitting exits.
-func runPicker(agents []Agent, home, pwd string, days int, local, cloud bool, theme Theme) (string, Agent, bool) {
+func runPicker(agents []Agent, home, pwd string, days int, local, cloud bool, theme Theme, claudeBin string) (string, Agent, bool) {
 	if !ttyUsable() || !slices.Contains(agents, AgentClaude) {
 		return "", "", false
 	}
-	if p, ok := resolveTreeChoice(home, runClaudeTree(home, pwd, days, local, cloud, theme)); ok {
+	if p, ok := resolveTreeChoice(home, claudeBin, runClaudeTree(home, pwd, days, local, cloud, theme)); ok {
 		return p, AgentClaude, true
 	}
 	return "", "", false
@@ -132,11 +132,11 @@ func runPicker(agents []Agent, home, pwd string, days int, local, cloud bool, th
 // A cloud-only session (no local jsonl) is reconstructed from its repo's git
 // checkpoint refs when that repo is checked out locally; otherwise it exits with
 // a note rather than tailing something unrelated.
-func resolveTreeChoice(home string, c treeChoice) (string, bool) {
+func resolveTreeChoice(home, claudeBin string, c treeChoice) (string, bool) {
 	switch c.Result {
 	case treeNewWorkspace:
 		if itermAvailable() {
-			if err := launchNewWorkspace(c.Cwd); err != nil {
+			if err := launchNewWorkspace(c.Cwd, claudeBin); err != nil {
 				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 			}
 			os.Exit(0)
@@ -154,7 +154,7 @@ func resolveTreeChoice(home string, c treeChoice) (string, bool) {
 			os.Exit(0)
 		}
 		if c.Result == treeWorkspace && itermAvailable() && itermSinglePane() && validSessionID(c.ID) {
-			if err := launchWorkspace(sessionCwd(c.Path), c.ID); err != nil {
+			if err := launchWorkspace(sessionCwd(c.Path), c.ID, claudeBin); err != nil {
 				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 				return c.Path, true // launch failed → tail in-place instead
 			}

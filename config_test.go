@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"errors"
+	"slices"
+	"testing"
+)
 
 // envFunc builds a getenv closure from a map.
 func envFunc(m map[string]string) func(string) string {
@@ -77,6 +82,76 @@ func TestParseCLIFollowSession(t *testing.T) {
 	}
 	if _, _, err := parseCLI([]string{"--follow-session"}, envFunc(nil)); err == nil {
 		t.Error("--follow-session with no value should error")
+	}
+}
+
+func TestParseCLIClaudeBin(t *testing.T) {
+	// The built-in default is happy, and it's not marked as an explicit ask — so a
+	// machine without happy falls back silently.
+	c, _, _ := parseCLI(nil, envFunc(nil))
+	if c.ClaudeBin != "happy" || c.ClaudeBinSet {
+		t.Errorf("default: ClaudeBin=%q set=%v, want happy/false", c.ClaudeBin, c.ClaudeBinSet)
+	}
+
+	env := map[string]string{"ENTIRE_TAIL_CLAUDE_BIN": "claude"}
+	c, _, _ = parseCLI(nil, envFunc(env))
+	if c.ClaudeBin != "claude" || !c.ClaudeBinSet {
+		t.Errorf("env: ClaudeBin=%q set=%v, want claude/true", c.ClaudeBin, c.ClaudeBinSet)
+	}
+
+	// A flag beats the env var, in both forms.
+	c, _, err := parseCLI([]string{"--claude-bin", "/opt/bin/happy"}, envFunc(env))
+	if err != nil || c.ClaudeBin != "/opt/bin/happy" || !c.ClaudeBinSet {
+		t.Errorf("flag: %v ClaudeBin=%q set=%v", err, c.ClaudeBin, c.ClaudeBinSet)
+	}
+	c, _, _ = parseCLI([]string{"--claude-bin=codex"}, envFunc(env))
+	if c.ClaudeBin != "codex" || !c.ClaudeBinSet {
+		t.Errorf("equals form: ClaudeBin=%q set=%v", c.ClaudeBin, c.ClaudeBinSet)
+	}
+	if _, _, err := parseCLI([]string{"--claude-bin"}, envFunc(nil)); err == nil {
+		t.Error("--claude-bin with no value should error")
+	}
+}
+
+func TestResolveClaudeBin(t *testing.T) {
+	// lookPath stub: only the named binaries "exist".
+	have := func(names ...string) func(string) (string, error) {
+		return func(n string) (string, error) {
+			if slices.Contains(names, n) {
+				return "/usr/bin/" + n, nil
+			}
+			return "", errors.New("not found")
+		}
+	}
+	cases := []struct {
+		name      string
+		cfg       Config
+		installed []string
+		want      string
+		wantWarn  bool
+	}{
+		{"default happy present", Config{ClaudeBin: "happy"}, []string{"happy", "claude"}, "happy", false},
+		// The default falling back is silent — the user never asked for happy.
+		{"default happy absent", Config{ClaudeBin: "happy"}, []string{"claude"}, "claude", false},
+		// An explicit ask that's missing warns, so a typo isn't silently swallowed.
+		{"explicit missing warns", Config{ClaudeBin: "hapy", ClaudeBinSet: true}, []string{"claude"}, "claude", true},
+		{"explicit present", Config{ClaudeBin: "claude", ClaudeBinSet: true}, []string{"claude"}, "claude", false},
+		// Neither installed: keep the ask and let the pane report the miss, rather
+		// than swapping in a `claude` that isn't there either.
+		{"neither installed", Config{ClaudeBin: "happy"}, nil, "happy", false},
+		{"claude itself missing", Config{ClaudeBin: "claude", ClaudeBinSet: true}, nil, "claude", false},
+		// An empty ClaudeBin (a zero Config) still resolves to the default.
+		{"empty falls to default", Config{}, []string{"happy"}, "happy", false},
+	}
+	for _, tc := range cases {
+		var warn bytes.Buffer
+		got := resolveClaudeBin(tc.cfg, have(tc.installed...), &warn)
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+		if gotWarn := warn.Len() > 0; gotWarn != tc.wantWarn {
+			t.Errorf("%s: warned=%v, want %v (%q)", tc.name, gotWarn, tc.wantWarn, warn.String())
+		}
 	}
 }
 
