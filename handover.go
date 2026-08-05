@@ -291,11 +291,12 @@ func runHandover(cfg Config) {
 	}
 	fmt.Fprintf(os.Stderr, "entire-tail: %d group(s), %d session(s) → %s\n", len(groups), total, vaultDir)
 
-	// Hand off to claude in-place (works in any terminal — zellij/tmux/iTerm).
+	// Hand off to the agent in-place (works in any terminal — zellij/tmux/iTerm).
 	// Exec only returns on failure, in which case fall back to printing the command.
-	if err := launchClaude(path); err != nil {
+	agentBin := resolveClaudeBin(cfg, exec.LookPath, os.Stderr)
+	if err := launchClaude(path, agentBin); err != nil {
 		fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
-		printHandoverCmd(path)
+		printHandoverCmd(path, agentBin)
 	}
 }
 
@@ -303,21 +304,22 @@ func handoverPrompt(manifestPath string) string {
 	return "Use the handover-sessions skill to write today's handover docs. Manifest JSON: " + manifestPath
 }
 
-// launchClaude replaces this process with an interactive claude seeded with the
-// handover prompt, so the docs are written in the terminal the user ran the
-// picker in. syscall.Exec returns only on error.
-func launchClaude(manifestPath string) error {
-	bin, err := exec.LookPath("claude")
+// launchClaude replaces this process with an interactive agent (agentBin —
+// `happy` by default, see resolveClaudeBin) seeded with the handover prompt, so
+// the docs are written in the terminal the user ran the picker in. Both launchers
+// take a positional prompt. syscall.Exec returns only on error.
+func launchClaude(manifestPath, agentBin string) error {
+	path, err := exec.LookPath(agentBin)
 	if err != nil {
-		return fmt.Errorf("claude not found on PATH")
+		return fmt.Errorf("%s not found on PATH", agentBin)
 	}
-	fmt.Fprintln(os.Stderr, "entire-tail: launching claude to write the handover docs…")
-	return syscall.Exec(bin, []string{"claude", handoverPrompt(manifestPath)}, os.Environ())
+	fmt.Fprintf(os.Stderr, "entire-tail: launching %s to write the handover docs…\n", agentBin)
+	return syscall.Exec(path, []string{filepath.Base(agentBin), handoverPrompt(manifestPath)}, os.Environ())
 }
 
-func printHandoverCmd(manifestPath string) {
+func printHandoverCmd(manifestPath, agentBin string) {
 	fmt.Fprintln(os.Stderr, "entire-tail: run this to generate the docs:")
-	fmt.Fprintf(os.Stderr, "  claude %q\n", handoverPrompt(manifestPath))
+	fmt.Fprintf(os.Stderr, "  %s %q\n", agentBin, handoverPrompt(manifestPath))
 }
 
 func printHandoverList(items []handoverItem) {

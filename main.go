@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "0.24.0"
+const version = "0.25.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -67,6 +68,11 @@ func run(cfg Config) {
 	// it to color rows, and the picker runs before the session is resolved.
 	theme := mustLoadTheme(cfg)
 
+	// Which binary the workspace panes launch is a preference (`happy` by default);
+	// resolved once here so an explicit-but-missing choice is reported at startup
+	// rather than at the moment a pane silently runs the wrong thing.
+	claudeBin := resolveClaudeBin(cfg, exec.LookPath, os.Stderr)
+
 	scanner := newCodexScanner(home)
 	resolved := false
 	session := ""
@@ -113,7 +119,7 @@ func run(cfg Config) {
 				out.Flush()
 				return
 			}
-			p, ok := resolveTreeChoice(home, runTreeTUI(home, tree, theme))
+			p, ok := resolveTreeChoice(home, claudeBin, runTreeTUI(home, tree, theme))
 			if !ok {
 				return
 			}
@@ -173,7 +179,7 @@ func run(cfg Config) {
 		if derr != nil {
 			die(derr.Error())
 		}
-		if path, ag, ok := runPicker(agents, home, pwd, days, cfg.Local, cfg.Cloud, theme); ok {
+		if path, ag, ok := runPicker(agents, home, pwd, days, cfg.Local, cfg.Cloud, theme, claudeBin); ok {
 			session, agentStr, resolved = path, string(ag), true
 		}
 	}
@@ -203,7 +209,7 @@ func run(cfg Config) {
 		if derr != nil {
 			die(derr.Error())
 		}
-		path, ag, ok := runPicker([]Agent{AgentClaude}, home, pwd, days, cfg.Local, cfg.Cloud, theme)
+		path, ag, ok := runPicker([]Agent{AgentClaude}, home, pwd, days, cfg.Local, cfg.Cloud, theme, claudeBin)
 		if !ok {
 			os.Exit(0) // no tty / no Claude tree in scope — nothing to go back to
 		}
@@ -805,10 +811,11 @@ OPTIONS:
                             last 15m, white = today, grey = older. Scoped to the
                             last --days days (default 7). On a session:
                               Enter   open the iTerm workspace — split the
-                                      current window into claude --resume, a
+                                      current window into '<agent> --resume', a
                                       live tail, and a shell, all in the
                                       session's folder (macOS + iTerm2; falls
-                                      back to tailing in place otherwise).
+                                      back to tailing in place otherwise). The
+                                      agent is --claude-bin (default 'happy').
                               p       preview the session's recent transcript.
                               i       summary card: an on-device Apple
                                       Intelligence summary (headline, summary,
@@ -818,7 +825,7 @@ OPTIONS:
                               t       just tail the session in the current pane.
                               n       open a workspace for a NEW Claude session
                                       in the highlighted folder's directory
-                                      (or $PWD) — fresh claude + tail + shell.
+                                      (or $PWD) — fresh agent + tail + shell.
                             Claude only (codex/agy tail directly via --agent).
       --no-pick             Skip the picker — auto-discover and tail $PWD's most
                             recent session in place (the pre-tree behavior).
@@ -850,7 +857,7 @@ OPTIONS:
                             'claude' creates, instead of racing an older one.
       --follow-session ID   Follow exactly $PWD's <ID>.jsonl (waiting for it to
                             appear), then follow worktree forks by lineage. The
-                            workspace pairs it with 'claude --session-id ID' so
+                            workspace pairs it with '<agent> --session-id ID' so
                             the tail can't latch onto the wrong concurrent session.
       --mark-continuation   At a Claude lineage flip (worktree fork or /clear),
                             also write a forward-pointer note into the now-stopped
@@ -860,6 +867,13 @@ OPTIONS:
                             otherwise read-only). Uses Claude Code's own
                             transcript-only 'informational' record, so it shows on
                             resume without steering Claude.
+      --claude-bin BIN      Which binary the workspace panes and 'handover'
+                            launch. Default 'happy' (Claude Code with mobile
+                            control) — it honors --session-id/--resume and
+                            writes the same ~/.claude transcripts, so the tail
+                            is unaffected. Pass 'claude' for plain Claude Code,
+                            or any other claude-compatible wrapper. Falls back
+                            to 'claude' when the named binary isn't on PATH.
   -w, --workspace           Alias for the default: force the session tree. Its
                             Enter opens the iTerm workspace (macOS + iTerm2).
   -l, --list-themes         List available themes (with descriptions) and exit.
@@ -897,6 +911,7 @@ ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_COLLAPSE      Same as --collapse (or 'off' to disable).
   ENTIRE_TAIL_PICK          'always'/'never'/'auto' — same as --pick/--no-pick.
   ENTIRE_TAIL_DAYS          Same as --days (session-tree window).
+  ENTIRE_TAIL_CLAUDE_BIN    Same as --claude-bin (default 'happy').
   ENTIRE_TAIL_MARK_CONTINUATION  Truthy (1/true/yes/on) = --mark-continuation.
   ENTIRE_TAIL_HANDOVER_VAULT  Obsidian vault root for handover docs (default:
                             the iCloud Obsidian Documents folder).
