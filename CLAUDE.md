@@ -111,18 +111,30 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   --follow-session <id>`; resume: `<bin> --resume <id>` + `--follow-session
   <id>` — so the tail latches onto exactly that session even with other Claude
   sessions live in the same repo (replaces the racy `--wait-new` newest-file
-  heuristic; `newSessionID` mints a v4 UUID via crypto/rand). `<bin>` is
+  heuristic; `newSessionID` mints a v4 UUID via crypto/rand) — **but only for a
+  launcher that forwards `--session-id`; see `pinsSessionID`**. `<bin>` is
   `resolveClaudeBin` (config.go): **`happy` by default** (`--claude-bin` /
   `ENTIRE_TAIL_CLAUDE_BIN`), falling back to `claude` when it isn't on PATH —
   silently for the built-in default, with a warning when the choice was
   explicit (`ClaudeBinSet`), so a typo isn't swallowed. happy is a *wrapper*, not
-  a different agent: it spawns the real Claude binary, honors
-  `--session-id`/`--resume`, and its sessions land in the same
-  `~/.claude/projects/<slug>/<id>.jsonl`, so discovery/lineage/pending-hooks and
-  every golden are untouched. Auto-adopt needs no happy-specific code either —
+  a different agent: it spawns the real Claude binary and its sessions land in the
+  same `~/.claude/projects/<slug>/<id>.jsonl`, so discovery/lineage/pending-hooks
+  and every golden are untouched. Auto-adopt needs no happy-specific code either —
   `pgrep -x claude` matches happy's spawned `claude` and it passes
   `--resume=<uuid>`, the equals form `scrapeSessionIDArg` already handles. The
-  same preference picks the agent `handover` execs (`launchClaude`)
+  same preference picks the agent `handover` execs (`launchClaude`).
+  **The `--session-id` trap (cost us a broken `n` workspace once):** happy
+  forwards `--resume` but *extracts and drops* `--session-id` — in the hook mode
+  it runs interactive sessions under, the spawn only ever pushes `--resume`
+  (`dist/index-*.mjs`). So `happy --session-id X` makes Claude mint its OWN id,
+  `X.jsonl` never appears, and a `--follow-session X` pane waits forever. Hence
+  `pinsSessionID` (iterm.go) gates the pin on `filepath.Base(bin) == "claude"`
+  and the fresh workspace falls back to `--wait-new` for everything else.
+  Conservative on purpose: a wrapper that *does* forward the flag merely loses the
+  pin, while wrongly assuming support strands the tail. Do NOT "restore" the pin
+  for wrappers without verifying the spawned claude's argv (`pgrep -x claude` +
+  `ps -o args=`), not the wrapper's own argv — the wrapper accepting a flag says
+  nothing about whether it passes it on
 - `search.go` — `--search`: content search across local transcripts (ripgrep,
   literal) + `entire checkpoint search` (semantic session results), merged by
   session id and ranked (`searchHit.score`: exact local match dominates, entire

@@ -289,8 +289,11 @@ quits. The most recent group starts expanded. On a session:
   folder's** directory (or `$PWD` if it has none) — a fresh agent (`happy` by
   default, see [`--claude-bin`](#which-agent-pane-a-launches---claude-bin)) +
   tail + shell. Pick a repo group, hit `n`, and it `cd`s there and starts fresh.
-  Both panes **pin a shared session id**, so the tail latches onto exactly that
-  session even with other Claude sessions live in the same repo.
+  With plain `claude` both panes **pin a shared session id**, so the tail latches
+  onto exactly that session even with other Claude sessions live in the same repo.
+  Under a wrapper that doesn't forward `--session-id` (happy included — see
+  below) the pane instead uses `--wait-new` and waits for whatever session the
+  agent creates.
 
 The **current directory always appears** in the tree — even with no sessions yet
 (shown as `▸ path  (no sessions — n to start one)`), so you can always land on
@@ -357,9 +360,9 @@ moment `entire-tail` exits, so that pane becomes A.)
 ### Which agent pane A launches (`--claude-bin`)
 
 Pane A runs **[`happy`](https://github.com/slopus/happy)** by default — Claude
-Code with mobile control. It wraps the real Claude binary, honors
-`--session-id`/`--resume`, and its sessions land in the same
-`~/.claude/projects/…` transcripts, so the tail in pane B is identical either way.
+Code with mobile control. It wraps the real Claude binary and its sessions land in
+the same `~/.claude/projects/…` transcripts, so the tail in pane B reads exactly
+the same thing either way.
 
 ```sh
 entire-tail --claude-bin claude          # plain Claude Code
@@ -371,6 +374,16 @@ named binary isn't on `PATH`, entire-tail falls back to `claude` — silently fo
 the built-in default, with a one-line warning when you asked for something
 specific, so a typo isn't swallowed. The same preference picks the agent that
 `entire-tail handover` launches.
+
+**How the id pinning differs per launcher.** `⏎` (resume) passes `--resume <id>`,
+which happy forwards to Claude — the session keeps appending to the same
+`<id>.jsonl`, so the tail pins it exactly. `n` (fresh) would pass
+`--session-id <id>`, but happy **extracts that flag and doesn't forward it** (in
+the hook mode it runs interactive sessions under, it only forwards `--resume`), so
+Claude mints its own id. entire-tail therefore omits the id for any launcher that
+isn't plain `claude` and has the tail pane use `--wait-new` instead — slightly
+racier, but it actually finds the session. With `--claude-bin claude` you get the
+pinned id back.
 
 The workspace only fires when the current window is a **single pane**. If the
 window already has splits, `Enter` just **tails the session in the current pane**

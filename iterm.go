@@ -102,6 +102,26 @@ func launchNewWorkspace(cwd, bin string) error {
 	return osaRun(newWorkspaceScript(cwd, selfPath(), newSessionID(), bin))
 }
 
+// pinsSessionID reports whether bin forwards Claude's `--session-id` to the
+// process that actually writes the transcript, which is what lets the fresh
+// workspace pin a shared id across both panes.
+//
+// Only plain `claude` does. happy *extracts* `--session-id` for its own
+// bookkeeping and then, in the local hook mode it runs interactive sessions
+// under, spawns claude without it (`dist/index-*.mjs`: the `hookSettingsPath`
+// branch pushes `--resume` only) — so Claude mints its own id, the pinned file
+// never appears, and a `--follow-session` tail waits forever. Verified live:
+// `happy --session-id X` produced a transcript under a different id entirely.
+// `--resume` IS forwarded on both branches, so the resume workspace still pins.
+//
+// Anything that isn't `claude` is treated as not pinning. A wrapper that does
+// pass the flag through only loses the pin and falls back to --wait-new, whereas
+// wrongly assuming support strands the tail — so the conservative default is the
+// safe one.
+func pinsSessionID(bin string) bool {
+	return filepath.Base(bin) == fallbackClaudeBin
+}
+
 // newWorkspaceScript lays out a fresh-session workspace. Unlike the resume
 // workspace (whose caller only fires it in a single-pane window, else tails in
 // place), a fresh session has nothing to tail in place — so this splits the
@@ -113,13 +133,18 @@ func launchNewWorkspace(cwd, bin string) error {
 //
 // Pinning a shared id (rather than --wait-new racing the newest file) means B
 // latches onto exactly A's session even when other Claude sessions are live in
-// the same repo. bin is the resolved launcher (`happy` by default, `claude` as
-// the fallback) — both honor --session-id and write the same transcripts, so B
-// is unaffected by the choice.
+// the same repo. That only works when bin forwards the flag — see pinsSessionID;
+// a launcher that doesn't gets no id and B falls back to --wait-new.
 func newWorkspaceScript(cwd, self, sessionID, bin string) string {
 	cd := "cd " + shQuote(cwd)
-	a := cd + " && " + shQuote(bin) + " --session-id " + shQuote(sessionID)
-	b := cd + " && " + shQuote(self) + " --follow-session " + shQuote(sessionID)
+	a := cd + " && " + shQuote(bin)
+	b := cd + " && " + shQuote(self)
+	if pinsSessionID(bin) {
+		a += " --session-id " + shQuote(sessionID)
+		b += " --follow-session " + shQuote(sessionID)
+	} else {
+		b += " --wait-new"
+	}
 	c := cd
 	return fmt.Sprintf(`tell application "iTerm2"
 	if (count of sessions of current tab of current window) > 1 then

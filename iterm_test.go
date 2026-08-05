@@ -86,14 +86,14 @@ func TestWorkspaceScriptsHonorClaudeBin(t *testing.T) {
 		t.Errorf("resume workspace should launch happy:\n%s", resume)
 	}
 	fresh := newWorkspaceScript("/work/proj", self, id, "happy")
-	if !strings.Contains(fresh, "cd '/work/proj' && 'happy' --session-id '"+id+"'") {
+	if !strings.Contains(fresh, "cd '/work/proj' && 'happy'") {
 		t.Errorf("fresh workspace should launch happy:\n%s", fresh)
 	}
 	for name, s := range map[string]string{"resume": resume, "fresh": fresh} {
 		if strings.Contains(s, "&& 'claude'") {
 			t.Errorf("%s workspace still launches claude:\n%s", name, s)
 		}
-		if !strings.Contains(s, "'"+self+"' --follow-session '"+id+"'") {
+		if !strings.Contains(s, "'"+self+"' --") {
 			t.Errorf("%s workspace: pane B must still run entire-tail, not the launcher:\n%s", name, s)
 		}
 	}
@@ -101,6 +101,45 @@ func TestWorkspaceScriptsHonorClaudeBin(t *testing.T) {
 	spaced := workspaceScript("/work/proj", id, self, "/opt/my agents/happy")
 	if !strings.Contains(spaced, `&& '/opt/my agents/happy' --resume '`+id+`'`) {
 		t.Errorf("a launcher path with spaces must stay quoted:\n%s", spaced)
+	}
+}
+
+// Only plain `claude` forwards --session-id to the process that writes the
+// transcript. happy extracts the flag and, in its local hook mode, spawns claude
+// WITHOUT it (dist/index-…mjs: the hookSettingsPath branch pushes --resume only),
+// so Claude mints its own id and a pinned tail waits for a file that never
+// appears. For any non-claude launcher the fresh workspace must therefore pass no
+// id at all and let pane B discover the new session with --wait-new.
+func TestNewWorkspaceScriptPinsOnlyForClaude(t *testing.T) {
+	id := "11111111-2222-4333-8444-555555555555"
+	self := "/usr/local/bin/entire-tail"
+
+	happy := newWorkspaceScript("/work/proj", self, id, "happy")
+	if strings.Contains(happy, "--session-id") {
+		t.Errorf("happy drops --session-id, so the script must not pass it:\n%s", happy)
+	}
+	if strings.Contains(happy, "--follow-session") {
+		t.Errorf("nothing pins the id under happy, so pane B must not --follow-session:\n%s", happy)
+	}
+	if !strings.Contains(happy, "'"+self+"' --wait-new") {
+		t.Errorf("pane B must discover the new session with --wait-new:\n%s", happy)
+	}
+	if !strings.Contains(happy, "cd '/work/proj' && 'happy'") {
+		t.Errorf("pane A must still launch happy in the picked folder:\n%s", happy)
+	}
+
+	// Plain claude keeps the pinned-id contract, by name or by absolute path.
+	for _, bin := range []string{"claude", "/opt/homebrew/bin/claude"} {
+		s := newWorkspaceScript("/work/proj", self, id, bin)
+		if !strings.Contains(s, shQuote(bin)+" --session-id '"+id+"'") {
+			t.Errorf("%s: fresh workspace must still pin the id:\n%s", bin, s)
+		}
+		if !strings.Contains(s, "'"+self+"' --follow-session '"+id+"'") {
+			t.Errorf("%s: pane B must still follow the pinned id:\n%s", bin, s)
+		}
+		if strings.Contains(s, "--wait-new") {
+			t.Errorf("%s: pinned workspace must not fall back to --wait-new:\n%s", bin, s)
+		}
 	}
 }
 
