@@ -388,6 +388,14 @@ needs to change.
   different port would break every live session, which is also why `tap install`
   writes a `KeepAlive` LaunchAgent. A daemon that dies mid-session still takes
   that session's API endpoint with it — the known, documented cost of routing.
+- **happy DOES inherit the tap's `ANTHROPIC_BASE_URL`** — verified live (`happy -p`
+  through the daemon produced a routed session). Worth stating because happy
+  advertises `--claude-env ANTHROPIC_BASE_URL=…` for custom endpoints, which
+  reads like ambient env gets scrubbed the way `--session-id` is (see the
+  `--session-id` trap above). It isn't: a plain env assignment reaches the claude
+  happy spawns, so `tapEnvPrefix` needs no happy-specific branch. If a future
+  happy sandbox starts filtering env, `--claude-env` is the escape hatch — but
+  don't add it speculatively.
 - **The tap daemon must never log or persist headers** — they carry the auth
   token. Only method/path/status and the assistant stream (which the transcript
   already stores in plaintext) are recorded; `TestTapHandlerTeesStreamAndPreservesBytes`

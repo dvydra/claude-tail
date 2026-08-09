@@ -74,9 +74,8 @@ func run(cfg Config) {
 	theme := mustLoadTheme(cfg)
 
 	// Which binary the workspace panes launch is a preference (plain `claude` by
-	// default);
-	// resolved once here so an explicit-but-missing choice is reported at startup
-	// rather than at the moment a pane silently runs the wrong thing.
+	// default); resolved once here so an explicit-but-missing choice is reported at
+	// startup rather than at the moment a pane silently runs the wrong thing.
 	claudeBin := resolveClaudeBin(cfg, exec.LookPath, os.Stderr)
 
 	scanner := newCodexScanner(home)
