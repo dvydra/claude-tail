@@ -29,6 +29,8 @@ type Config struct {
 	NoHookInstall    bool   // --no-hook-install: suppress the first-run pending-hook offer
 	ClaudeBin        string // --claude-bin: the binary the workspace panes + handover launch
 	ClaudeBinSet     bool   // ClaudeBin came from a flag/env, not the built-in default
+	NoTap            bool   // --no-tap: ignore the API-stream tap even when its daemon is up
+	TapArgs          []string
 }
 
 // The workspace panes and `handover` launch an agent; which binary that is is a
@@ -64,6 +66,7 @@ const (
 	ActionHandover       // `entire-tail handover`: generate session handover docs
 	ActionInstallHooks   // `entire-tail install-hooks`
 	ActionUninstallHooks // `entire-tail uninstall-hooks`
+	ActionTap            // `entire-tail tap <start|status|stop|install|uninstall>`
 )
 
 // envTrue reports whether an env var holds a truthy value (1/true/yes/on),
@@ -156,6 +159,10 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 
 	if len(args) > 0 && args[0] == "handover" {
 		return c, ActionHandover, nil
+	}
+	if len(args) > 0 && args[0] == "tap" {
+		c.TapArgs = args[1:]
+		return c, ActionTap, nil
 	}
 	if len(args) > 0 && args[0] == "install-hooks" {
 		return c, ActionInstallHooks, nil
@@ -270,6 +277,8 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.MarkContinuation = false
 		case a == "--no-hook-install":
 			c.NoHookInstall = true
+		case a == "--no-tap":
+			c.NoTap = true
 		case a == "--claude-bin":
 			v, err := needValue(i, a)
 			if err != nil {

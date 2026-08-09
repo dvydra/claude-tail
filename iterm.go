@@ -92,14 +92,33 @@ func osaRun(script string) error {
 // All three cd into cwd. B follows the resumed session by id (--follow-session),
 // so a later worktree fork is followed too.
 func launchWorkspace(cwd, resumeID, bin string) error {
-	return osaRun(workspaceScript(cwd, resumeID, selfPath(), bin))
+	return osaRun(workspaceScript(cwd, resumeID, selfPath(), bin, tapEnvPrefix(tapBaseURL(homeDir()))))
 }
+
+// tapEnvPrefix returns the shell assignment that routes a launched agent's API
+// traffic through the tap daemon, or "" when no daemon answers.
+//
+// This is the fail-open half of the tap: the decision is made once, at launch,
+// from a live health check (tapBaseURL). A session is only ever pointed at the
+// daemon if the daemon is actually there — so a machine that never ran
+// `entire-tail tap start`, or ran it and stopped it, launches agents exactly as
+// before. The remaining exposure is deliberate and documented: a daemon that
+// dies MID-session takes that session's API endpoint with it, which is why the
+// LaunchAgent (tap install) sets KeepAlive.
+func tapEnvPrefix(baseURL string) string {
+	if baseURL == "" {
+		return ""
+	}
+	return "ANTHROPIC_BASE_URL=" + shQuote(baseURL) + " "
+}
+
+func homeDir() string { return firstNonEmpty(os.Getenv("HOME"), mustHome()) }
 
 // launchNewWorkspace opens the 3-pane workspace for a FRESH Claude session in
 // cwd (the tree's `n` key): A = a new agent with a pinned session id, B =
 // entire-tail following exactly that id, C = a shell.
 func launchNewWorkspace(cwd, bin string) error {
-	return osaRun(newWorkspaceScript(cwd, selfPath(), newSessionID(), bin))
+	return osaRun(newWorkspaceScript(cwd, selfPath(), newSessionID(), bin, tapEnvPrefix(tapBaseURL(homeDir()))))
 }
 
 // pinsSessionID reports whether bin forwards Claude's `--session-id` to the
@@ -135,9 +154,9 @@ func pinsSessionID(bin string) bool {
 // latches onto exactly A's session even when other Claude sessions are live in
 // the same repo. That only works when bin forwards the flag — see pinsSessionID;
 // a launcher that doesn't gets no id and B falls back to --wait-new.
-func newWorkspaceScript(cwd, self, sessionID, bin string) string {
+func newWorkspaceScript(cwd, self, sessionID, bin, tapEnv string) string {
 	cd := "cd " + shQuote(cwd)
-	a := cd + " && " + shQuote(bin)
+	a := cd + " && " + tapEnv + shQuote(bin)
 	b := cd + " && " + shQuote(self)
 	if pinsSessionID(bin) {
 		a += " --session-id " + shQuote(sessionID)
@@ -175,9 +194,9 @@ end tell`, asEscape(a), asEscape(b), asEscape(c))
 // A's command is queued to its tty and runs the moment entire-tail exits. All
 // three panes cd into the picked session's folder. B follows by id (not the file
 // path) so a worktree fork of the resumed session is followed too.
-func workspaceScript(cwd, resumeID, self, bin string) string {
+func workspaceScript(cwd, resumeID, self, bin, tapEnv string) string {
 	cd := "cd " + shQuote(cwd)
-	a := cd + " && " + shQuote(bin) + " --resume " + shQuote(resumeID)
+	a := cd + " && " + tapEnv + shQuote(bin) + " --resume " + shQuote(resumeID)
 	b := cd + " && " + shQuote(self) + " --follow-session " + shQuote(resumeID)
 	c := cd
 	return fmt.Sprintf(`tell application "iTerm2"

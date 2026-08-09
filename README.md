@@ -195,6 +195,50 @@ as the deferred JSONL — dedup prevents doubling once the real record arrives.
 
 This feature is **Claude-only** and has no effect on Codex or Antigravity.
 
+### The API tap: see the question's *reasoning*, not just the question (opt-in)
+
+The hooks above tell you a question is waiting, but not *why*. Claude Code
+withholds the entire message an `AskUserQuestion` belongs to — **including the
+text it wrote just before asking** — until you answer. So the card appears alone,
+and the paragraph that explains it only shows up afterwards, below the card,
+reading backwards.
+
+The transcript can't fix this: while a question is pending, those bytes are
+nowhere on disk. The tap gets them from the wire instead — a local reverse proxy
+that agents launched from the tree are pointed at:
+
+```sh
+entire-tail tap start           # run it in the foreground (127.0.0.1:47391)
+entire-tail tap status          # is it up? which sessions are generating?
+entire-tail tap install         # KeepAlive LaunchAgent, so it restarts itself
+entire-tail tap stop
+```
+
+With it running, a blocked question renders **preamble first, then the card**, at
+the moment it's asked. When the transcript finally flushes the same text, it's
+suppressed rather than repeated (matched on the provider's own message id, so the
+match is exact).
+
+It also gives the picker something no amount of file-mtime guessing can: the tap
+knows *which* session has a request in flight, marked `◉` instead of `●`.
+
+Deliberately conservative:
+
+- **Opt-in and fail-open.** A session is routed only if the daemon answers a
+  health check at launch. No daemon → agents launch exactly as they did before.
+- **Only `POST /v1/messages` is inspected**; everything else is proxied
+  untouched, and request headers are never logged or stored (they carry your auth
+  token).
+- **Ordinary turns still come from the transcript** — measured, it lands ~200ms
+  after the wire, so there's nothing to win there and the tap stays out of it.
+- **The cost:** a session launched through the tap depends on it. If the daemon
+  dies mid-session, that session's API endpoint is gone until it's back — hence
+  `tap install`'s KeepAlive. `--no-tap` makes the tail ignore the tap entirely.
+
+Without the tap, entire-tail still fixes the *ordering*: when the withheld
+preamble finally arrives, the question card is redrawn beneath it so the pane
+reads in the order things actually happened.
+
 ### "I'm done" marker (Claude)
 
 Most agent turns are the agent *continuing* — it says a sentence and fires more

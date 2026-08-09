@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "0.25.0"
+const version = "0.26.0"
 
 func main() {
 	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
@@ -43,6 +43,11 @@ func main() {
 			die("install-hooks: " + err.Error())
 		}
 		fmt.Println("entire-tail: hooks installed. Restart Claude Code (or open /hooks once) to load them.")
+		return
+	case ActionTap:
+		if err := runTap(cfg.TapArgs, firstNonEmpty(os.Getenv("HOME"), mustHome()), os.Getenv, os.Stdout); err != nil {
+			die(err.Error())
+		}
 		return
 	case ActionUninstallHooks:
 		if err := uninstallHooks(firstNonEmpty(os.Getenv("HOME"), mustHome())); err != nil {
@@ -427,6 +432,16 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// lingering across ticks renders exactly once.
 	pendingWatch := agent == AgentClaude && isDir(pendingDir(home))
 	lastMarkerKey := ""
+	// Live API-tap watch (Claude only, and only for a session actually routed
+	// through the tap daemon — i.e. its sidecar exists). This is what surfaces a
+	// blocked question's preamble, which the transcript withholds until the user
+	// answers. Absent daemon → no sidecar → nil watcher → zero cost.
+	var tap *tapWatcher
+	if agent == AgentClaude && !cfg.NoTap {
+		if _, err := os.Stat(tapSidecarPath(home, sessionIDFromPath(cur))); err == nil {
+			tap = newTapWatcher(home, sessionIDFromPath(cur))
+		}
+	}
 	for {
 		select {
 		case code := <-codeCh:
@@ -476,6 +491,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 						poll()
 					}
 					idle = 0
+				}
+			}
+			if tap != nil {
+				// Follow the tap across a lineage flip/relocation, same as the
+				// transcript follower does.
+				tap.rebind(home, sessionIDFromPath(cur))
+				for _, p := range tap.poll() {
+					r.tapPreamble(p, formatTapTS(p.Ts, loc))
 				}
 			}
 			if pendingWatch {
@@ -746,6 +769,26 @@ SUBCOMMANDS:
                             handover-sessions skill). Docs go to
                             $ENTIRE_TAIL_HANDOVER_VAULT/Entire/Handover/YYYY-MM-DD/
                             (default: the iCloud Obsidian vault).
+  tap start|status|stop|install|uninstall
+                            The API tap: a local reverse proxy (127.0.0.1:%d)
+                            that agents launched from the tree are pointed at
+                            with ANTHROPIC_BASE_URL, so entire-tail can see the
+                            assistant stream as it happens. It exists for one
+                            case the transcript can't cover: Claude Code
+                            withholds the whole message containing an
+                            AskUserQuestion — the preamble text included —
+                            until you answer, so a blocked question otherwise
+                            shows up with no sign of the reasoning behind it.
+                            It also yields exact per-session activity (which
+                            session is generating right now) for the picker.
+                            Opt-in and fail-open: sessions are only routed when
+                            the daemon answers a health check at launch, so with
+                            no daemon everything behaves exactly as before.
+                            'install' writes a KeepAlive LaunchAgent (a daemon
+                            that dies mid-session takes that session's API
+                            endpoint with it, so it should come back by itself).
+                            Traffic other than POST /v1/messages is proxied
+                            untouched, and headers are never logged or stored.
 
 ARGUMENTS:
   [ARGS...]                 With no args, if exactly one 'claude' is running in
@@ -868,6 +911,10 @@ OPTIONS:
                             otherwise read-only). Uses Claude Code's own
                             transcript-only 'informational' record, so it shows on
                             resume without steering Claude.
+      --no-tap              Ignore the API tap even for a session routed
+                            through it (see the 'tap' subcommand) — a blocked
+                            question then shows the card alone, with its
+                            preamble arriving after you answer.
       --claude-bin BIN      Which binary the workspace panes and 'handover'
                             launch. Default 'claude'. Pass any claude-compatible
                             wrapper instead ('happy' for mobile control, a shim
@@ -935,5 +982,5 @@ EXAMPLES:
   entire-tail --list                          # static ls-style dump of all sessions
   entire-tail --list --days 3                 # ...only the last 3 days
   entire-tail ~/.codex/sessions/2026/05/.../rollout-...jsonl
-`, version)
+`, version, tapDefaultPort)
 }
