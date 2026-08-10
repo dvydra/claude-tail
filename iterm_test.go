@@ -154,8 +154,15 @@ func TestWorkspaceScriptsTapEnv(t *testing.T) {
 		t.Fatalf("no daemon must yield no prefix, got %q", tapEnvPrefix(""))
 	}
 	prefix := tapEnvPrefix("http://127.0.0.1:47391")
-	if prefix != "ANTHROPIC_BASE_URL='http://127.0.0.1:47391' " {
+	if prefix != "ANTHROPIC_BASE_URL='http://127.0.0.1:47391' ENABLE_TOOL_SEARCH=true " {
 		t.Fatalf("prefix = %q", prefix)
+	}
+	// ENABLE_TOOL_SEARCH is load-bearing, not decoration: a custom base URL makes
+	// Claude Code stop deferring MCP tool schemas, which on a large MCP fleet is
+	// the difference between a working session and "Prompt is too long". Routing
+	// must never silently change how requests are composed.
+	if !strings.Contains(prefix, "ENABLE_TOOL_SEARCH=true") {
+		t.Error("routing an agent must re-enable tool search")
 	}
 
 	for name, s := range map[string]string{

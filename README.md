@@ -235,6 +235,18 @@ Deliberately conservative:
   dies mid-session, that session's API endpoint is gone until it's back — hence
   `tap install`'s KeepAlive. `--no-tap` makes the tail ignore the tap entirely.
 
+**If you route a session by hand, set `ENABLE_TOOL_SEARCH=true` too:**
+
+```sh
+ANTHROPIC_BASE_URL=http://127.0.0.1:47391 ENABLE_TOOL_SEARCH=true claude
+```
+
+A custom base URL makes Claude Code stop deferring MCP tool schemas (it can't
+know a proxy forwards `tool_reference` blocks), so every schema ships inline —
+with a big MCP fleet that alone can push you past the context limit and you'll
+see **"Prompt is too long"** a turn or two in. The tap's own launcher sets both
+vars for you; this only matters when you export `ANTHROPIC_BASE_URL` yourself.
+
 Without the tap, entire-tail still fixes the *ordering*: when the withheld
 preamble finally arrives, the question card is redrawn beneath it so the pane
 reads in the order things actually happened.

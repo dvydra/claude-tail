@@ -396,6 +396,21 @@ needs to change.
   happy spawns, so `tapEnvPrefix` needs no happy-specific branch. If a future
   happy sandbox starts filtering env, `--claude-env` is the escape hatch — but
   don't add it speculatively.
+- **Routing through the tap CHANGES how Claude Code composes requests, and one
+  env var undoes it.** Setting `ANTHROPIC_BASE_URL` to anything that isn't a
+  first-party Anthropic host makes Claude Code **disable tool search** — it stops
+  deferring MCP tool schemas behind `tool_reference` blocks and ships every schema
+  inline, because it can't know a gateway forwards those blocks. On a machine with
+  a large MCP fleet that is the difference between a normal prompt and **"Prompt is
+  too long" on the second turn of a fresh session** (hit live, twice). Claude
+  Code's own `--debug api` log states it: `[ToolSearch:optimistic] disabled:
+  ANTHROPIC_BASE_URL=… is not a first-party Anthropic host. Set
+  ENABLE_TOOL_SEARCH=true …`. Hence `tapEnvPrefix` always emits
+  `ENABLE_TOOL_SEARCH=true` beside the base URL (verified to restore the
+  first-party decision exactly: `mode=tst, ENABLE_TOOL_SEARCH=true, result=true`).
+  Do NOT drop it, and when debugging anything context-shaped under the tap, diff
+  `--debug api` logs with and without the base URL before suspecting the proxy
+  itself — the proxy is byte-transparent; the CLIENT behaves differently.
 - **The tap daemon must never log or persist headers** — they carry the auth
   token. Only method/path/status and the assistant stream (which the transcript
   already stores in plaintext) are recorded; `TestTapHandlerTeesStreamAndPreservesBytes`

@@ -257,6 +257,54 @@ func TestTapPathDoesNotRedrawCard(t *testing.T) {
 	}
 }
 
+// A session with BOTH early paths live (hook marker + API tap) must still show
+// exactly one card. Observed live as a doubled question block: the tap sees the
+// question at message_stop, the hook fires when Claude Code dispatches the tool.
+func TestQuestionCardNotDoubledByBothEarlyPaths(t *testing.T) {
+	qs := []QuestionItem{{Header: "Next", Question: "Which do I build next?", Options: []string{"4a", "3"}}}
+	count := func(s string) int { return strings.Count(s, "Which do I build next?") }
+
+	// Order 1: tap first (the normal case — the wire beats the tool dispatch).
+	var buf bytes.Buffer
+	r := newRendererWith(&buf, testTheme(), "dots", 0, identityRender)
+	r.live = true
+	r.tapPreamble(tapPendingPrompt{MsgID: "m1", Preamble: []string{"Reasoning."}, QID: "q1", Questions: qs}, "2026-08-10 09:00:00")
+	r.pendingQuestion(qs) // the hook marker, arriving second
+	r.endLine()
+	if n := count(buf.String()); n != 1 {
+		t.Errorf("tap-then-marker: card rendered %d times, want 1", n)
+	}
+	if !strings.Contains(buf.String(), "Reasoning.") {
+		t.Error("tap-then-marker: preamble should still be there")
+	}
+	if n := strings.Count(buf.String(), "\a"); n != 1 {
+		t.Errorf("tap-then-marker: want 1 bell, got %d", n)
+	}
+
+	// Order 2: marker first (a slow sidecar write). The card still appears once,
+	// and the tap's preamble is not dropped just because the card already showed.
+	buf.Reset()
+	r2 := newRendererWith(&buf, testTheme(), "dots", 0, identityRender)
+	r2.live = true
+	r2.pendingQuestion(qs)
+	r2.tapPreamble(tapPendingPrompt{MsgID: "m2", Preamble: []string{"Late reasoning."}, QID: "q2", Questions: qs}, "2026-08-10 09:00:00")
+	r2.endLine()
+	if n := count(buf.String()); n != 1 {
+		t.Errorf("marker-then-tap: card rendered %d times, want 1", n)
+	}
+	if !strings.Contains(buf.String(), "Late reasoning.") {
+		t.Error("marker-then-tap: preamble must still render")
+	}
+
+	// And the transcript record that eventually lands is still suppressed.
+	buf.Reset()
+	r2.emit(Record{Kind: KindQuestion, Ts: "2026-08-10 09:01:00", QID: "q2", Questions: qs})
+	r2.endLine()
+	if n := count(buf.String()); n != 0 {
+		t.Errorf("transcript card should stay suppressed, rendered %d times", n)
+	}
+}
+
 func TestEarlyTextKeyDistinguishesMessages(t *testing.T) {
 	if earlyTextKey("m1", "ok") == earlyTextKey("m2", "ok") {
 		t.Error("identical text in different messages must not share a key")

@@ -105,11 +105,30 @@ func launchWorkspace(cwd, resumeID, bin string) error {
 // before. The remaining exposure is deliberate and documented: a daemon that
 // dies MID-session takes that session's API endpoint with it, which is why the
 // LaunchAgent (tap install) sets KeepAlive.
+// ENABLE_TOOL_SEARCH is NOT optional here, and this cost a broken session before
+// it was understood. Claude Code defers MCP tool schemas behind tool_reference
+// blocks ("tool search"), but it disables that the moment ANTHROPIC_BASE_URL
+// points anywhere that isn't a first-party Anthropic host — it can't know a
+// gateway forwards those blocks. Its own debug log spells out both the behaviour
+// and the remedy:
+//
+//	[ToolSearch:optimistic] disabled: ANTHROPIC_BASE_URL=… is not a first-party
+//	Anthropic host. Set ENABLE_TOOL_SEARCH=true (…) if your proxy forwards
+//	tool_reference blocks.
+//
+// With tool search off, every tool schema ships inline. On a machine with a large
+// MCP fleet that is the difference between a normal prompt and "Prompt is too
+// long" on the second turn of a fresh session. Our proxy is a byte-transparent
+// pass-through, so it does forward tool_reference blocks and the opt-in is
+// correct — it restores the first-party default (verified: the decision line
+// reads `mode=tst, ENABLE_TOOL_SEARCH=true, result=true`, same as direct).
+const tapToolSearchEnv = "ENABLE_TOOL_SEARCH=true"
+
 func tapEnvPrefix(baseURL string) string {
 	if baseURL == "" {
 		return ""
 	}
-	return "ANTHROPIC_BASE_URL=" + shQuote(baseURL) + " "
+	return "ANTHROPIC_BASE_URL=" + shQuote(baseURL) + " " + tapToolSearchEnv + " "
 }
 
 func homeDir() string { return firstNonEmpty(os.Getenv("HOME"), mustHome()) }

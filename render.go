@@ -371,9 +371,17 @@ func (r *Renderer) consumeEarlyText(rec Record) bool {
 // flush), always ringing the bell, and records its content key so the eventual
 // JSONL card is suppressed. Runs on the render goroutine like every other emit.
 func (r *Renderer) pendingQuestion(qs []QuestionItem) {
+	key := questionsContentKey(qs)
+	// There are now TWO early paths to the same card — the hook marker and the API
+	// tap — and a session with both live hits both: the tap sees the question at
+	// message_stop on the wire, then the hook fires when Claude Code dispatches the
+	// tool a moment later. Whichever arrives first owns the card; the second is a
+	// no-op. (Observed live as the card printed twice.)
+	if r.pendingShown[key] {
+		return
+	}
 	r.endLine()
 	io.WriteString(r.w, "\a")
-	key := questionsContentKey(qs)
 	io.WriteString(r.w, questionCard(qs))
 	r.pendingShown[key] = true
 	r.pendingAt[key] = r.turnsRendered
