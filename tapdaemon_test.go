@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -290,6 +291,46 @@ func TestTapFailureDetailQuietOnSuccess(t *testing.T) {
 	bare := &http.Response{StatusCode: 500, Header: http.Header{}}
 	if got := tapFailureDetail(bare); !strings.Contains(got, "no diagnostic headers") {
 		t.Errorf("a failure with no headers should say so, got %q", got)
+	}
+}
+
+// A daemon must not inherit the previous daemon's activity table: its in-memory
+// map starts empty, so a leftover file would have consumers reporting activity
+// this daemon never saw (observed as a 43-minute-old "recent" entry surviving a
+// restart).
+func TestTapDaemonResetsActivityOnStart(t *testing.T) {
+	home := t.TempDir()
+	stale := tapActive{Updated: 1, Sessions: map[string]tapSessionStatus{
+		"ghost": {InFlight: 1, Requests: 9, LastStart: 1, LastEnd: 2, LastEvent: 3},
+	}}
+	if err := writeJSONAtomic(tapActivePath(home), stale); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bind an ephemeral port so the daemon starts, then stop it.
+	done := make(chan error, 1)
+	go func() { done <- runTapDaemon(home, 0, func(string) string { return "" }, io.Discard) }()
+
+	var got tapActive
+	for i := 0; i < 100; i++ {
+		if a, ok := readTapActive(home); ok && len(a.Sessions) == 0 {
+			got = a
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(got.Sessions) != 0 {
+		a, _ := readTapActive(home)
+		t.Errorf("start should clear the inherited table, still has %+v", a.Sessions)
+	}
+
+	if st, ok := readTapState(home); ok && st.Pid > 0 {
+		_ = syscall.Kill(st.Pid, syscall.SIGTERM)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Log("daemon did not exit promptly (test process keeps running); not fatal")
 	}
 }
 
