@@ -286,14 +286,13 @@ quits. The most recent group starts expanded. On a session:
   `q`/`Esc` returns.
 - **`t`** → just tail the session in the current pane.
 - **`n`** → open a workspace for a **new** Claude session in the **highlighted
-  folder's** directory (or `$PWD` if it has none) — a fresh agent (`happy` by
+  folder's** directory (or `$PWD` if it has none) — a fresh agent (`claude` by
   default, see [`--claude-bin`](#which-agent-pane-a-launches---claude-bin)) +
   tail + shell. Pick a repo group, hit `n`, and it `cd`s there and starts fresh.
-  With plain `claude` both panes **pin a shared session id**, so the tail latches
-  onto exactly that session even with other Claude sessions live in the same repo.
-  Under a wrapper that doesn't forward `--session-id` (happy included — see
-  below) the pane instead uses `--wait-new` and waits for whatever session the
-  agent creates.
+  Both panes **pin a shared session id**, so the tail latches onto exactly that
+  session even with other Claude sessions live in the same repo. Under a wrapper
+  that doesn't forward `--session-id` (happy included — see below) the pane
+  instead uses `--wait-new` and waits for whatever session the agent creates.
 
 The **current directory always appears** in the tree — even with no sessions yet
 (shown as `▸ path  (no sessions — n to start one)`), so you can always land on
@@ -347,43 +346,49 @@ to that **session's** folder (wherever it was, not necessarily `$PWD`):
 
 ```
 ┌──────────┬──────────┐
-│ happy    │          │   A = happy --resume <picked id>  (the pane you were in)
+│ claude   │          │   A = claude --resume <picked id>  (the pane you were in)
 │ --resume │ entire-  │   B = entire-tail, following that session
 ├──────────┤ tail     │   C = a plain shell
 │ shell    │          │
 └──────────┴──────────┘
 ```
 
-(The `happy --resume` command is queued into the current pane and runs the
+(The `claude --resume` command is queued into the current pane and runs the
 moment `entire-tail` exits, so that pane becomes A.)
 
 ### Which agent pane A launches (`--claude-bin`)
 
-Pane A runs **[`happy`](https://github.com/slopus/happy)** by default — Claude
-Code with mobile control. It wraps the real Claude binary and its sessions land in
-the same `~/.claude/projects/…` transcripts, so the tail in pane B reads exactly
-the same thing either way.
+Pane A runs plain **`claude`** by default. Any claude-compatible wrapper works
+instead (a shim script, an absolute path, [`happy`](https://github.com/slopus/happy)
+for mobile control) — a wrapper spawns the real Claude binary and its sessions
+land in the same `~/.claude/projects/…` transcripts, so the tail in pane B reads
+exactly the same thing either way.
 
 ```sh
-entire-tail --claude-bin claude          # plain Claude Code
-export ENTIRE_TAIL_CLAUDE_BIN=claude     # ...as your default
+entire-tail --claude-bin happy           # Claude Code with mobile control
+export ENTIRE_TAIL_CLAUDE_BIN=happy      # ...as your default
 ```
 
-Any claude-compatible wrapper works (a shim script, an absolute path). If the
-named binary isn't on `PATH`, entire-tail falls back to `claude` — silently for
-the built-in default, with a one-line warning when you asked for something
-specific, so a typo isn't swallowed. The same preference picks the agent that
-`entire-tail handover` launches.
+If the named binary isn't on `PATH`, entire-tail falls back to `claude` —
+silently for the built-in default, with a one-line warning when you asked for
+something specific, so a typo isn't swallowed. The same preference picks the
+agent that `entire-tail handover` launches.
+
+**Why plain `claude` is the default.** happy held the job for one release and
+lost it: `n` (a *fresh* session) came back already at its context limit —
+"Context limit reached · /compact or /clear to continue" on the first turn —
+because it resumes rather than starting clean. Which is the pinning problem
+below, with teeth.
 
 **How the id pinning differs per launcher.** `⏎` (resume) passes `--resume <id>`,
-which happy forwards to Claude — the session keeps appending to the same
-`<id>.jsonl`, so the tail pins it exactly. `n` (fresh) would pass
-`--session-id <id>`, but happy **extracts that flag and doesn't forward it** (in
-the hook mode it runs interactive sessions under, it only forwards `--resume`), so
-Claude mints its own id. entire-tail therefore omits the id for any launcher that
-isn't plain `claude` and has the tail pane use `--wait-new` instead — slightly
-racier, but it actually finds the session. With `--claude-bin claude` you get the
-pinned id back.
+which wrappers generally forward — the session keeps appending to the same
+`<id>.jsonl`, so the tail pins it exactly. `n` (fresh) passes `--session-id <id>`,
+which plain `claude` honors, so both panes agree on one id up front. happy
+**extracts that flag and doesn't forward it** (in the hook mode it runs
+interactive sessions under, it only forwards `--resume`), so Claude mints its own
+id. entire-tail therefore omits the id for any launcher that isn't plain `claude`
+and has the tail pane use `--wait-new` instead — slightly racier, but it actually
+finds the session.
 
 The workspace only fires when the current window is a **single pane**. If the
 window already has splits, `Enter` just **tails the session in the current pane**
@@ -454,7 +459,7 @@ picker:
 - **`x`** (default) keeps a session on its own doc; **`-`** skips it; **⏎** writes;
   **`q`** aborts.
 
-On confirm it launches an interactive agent (`--claude-bin`, `happy` by default —
+On confirm it launches an interactive agent (`--claude-bin`, `claude` by default —
 a fresh iTerm window) that, for
 each group, reads the transcripts, **live-fetches current state** — Linear issues
 (MCP), GitHub PRs (`gh`), Entire Trails (`entire trail show`) — and writes one

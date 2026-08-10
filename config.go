@@ -32,12 +32,23 @@ type Config struct {
 }
 
 // The workspace panes and `handover` launch an agent; which binary that is is a
-// preference. `happy` is the default: it wraps Claude Code (honoring
-// --session-id/--resume, so the workspace's pinned-id contract holds) and its
-// sessions land in the same ~/.claude/projects transcripts we tail, so nothing
-// downstream changes. A machine without happy falls back to plain `claude`.
+// preference. **Plain `claude` is the default.**
+//
+// happy was the default (PR #47) and lost the job: on a fresh `n` workspace it
+// gave you a session that was already at its context limit. It drops
+// `--session-id` (see pinsSessionID) and its spawn only ever pushes `--resume`,
+// so "start a new session here" became "resume something", and the very first
+// turn died with "Context limit reached · /compact or /clear to continue".
+//
+// Defaulting to `claude` also restores the pinned-id contract the fresh
+// workspace wants: both panes agree on one `--session-id` up front instead of
+// falling back to the racy `--wait-new` newest-file heuristic.
+//
+// happy stays available via `--claude-bin happy` / ENTIRE_TAIL_CLAUDE_BIN — it
+// still writes the same ~/.claude transcripts, so everything downstream (tail,
+// lineage, tap, goldens) works either way.
 const (
-	defaultClaudeBin  = "happy"
+	defaultClaudeBin  = "claude"
 	fallbackClaudeBin = "claude"
 )
 
