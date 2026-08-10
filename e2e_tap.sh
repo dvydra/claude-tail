@@ -104,5 +104,27 @@ wait $NOTAP_PID 2>/dev/null || true
 check "--no-tap still renders the preamble from the transcript" 1 "cost model was wrong" "$ROOT/notap.txt"
 check "--no-tap still renders the card" 1 "Which do I build next" "$ROOT/notap.txt"
 
+# ── stage 4: the no-daemon fallback ───────────────────────────────────────────
+# The tap is optional. With NO daemon and NO sidecar at all, a tail must still
+# render the whole session from the transcript — the watcher polls a path that
+# doesn't exist and does nothing. (Checked with a fresh HOME so there is no tap
+# state, no sidecar, and no hook markers anywhere.)
+BARE=$(mktemp -d)
+BPROJ="$BARE/.claude/projects/-work-proj"
+mkdir -p "$BPROJ"
+cp "$T" "$BPROJ/$SID.jsonl"
+HOME="$BARE" $BIN --agent claude --no-pick --tool-style dots "$BPROJ/$SID.jsonl" > "$ROOT/bare.txt" 2>/dev/null &
+BARE_PID=$!
+sleep 1.5
+kill $BARE_PID 2>/dev/null || true
+wait $BARE_PID 2>/dev/null || true
+rm -rf "$BARE"
+
+echo "----- STAGE 4: no daemon, no sidecar -----"
+check "fallback renders the user turn" 1 "which phase next" "$ROOT/bare.txt"
+check "fallback renders the preamble" 1 "cost model was wrong" "$ROOT/bare.txt"
+check "fallback renders the question card" 1 "Which do I build next" "$ROOT/bare.txt"
+check "fallback renders the answer" 1 "Phase 4a + 4c\$" "$ROOT/bare.txt"
+
 [ -s "$ROOT/err.txt" ] && { echo "--- stderr ---"; head -3 "$ROOT/err.txt"; }
 exit $fail

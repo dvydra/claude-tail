@@ -208,9 +208,25 @@ nowhere on disk. The tap gets them from the wire instead — a local reverse pro
 that agents launched from the tree are pointed at:
 
 ```sh
+./install-tap.sh                # turn it on for good (KeepAlive LaunchAgent)
+./disable-tap.sh                # turn it off again
+```
+
+`install-tap.sh` makes sure entire-tail is installed at a stable path first — a
+LaunchAgent outlives the shell that wrote it, so pinning it to a git worktree or a
+temp build gives you a daemon that quietly stops coming back. It then loads the
+agent and **verifies something is listening** rather than telling you it probably
+worked. `disable-tap.sh` unloads it, stops a hand-started daemon too, warns about
+sessions that are already routed, and confirms the port is free.
+
+Or drive it directly:
+
+```sh
 entire-tail tap start           # run it in the foreground (127.0.0.1:47391)
 entire-tail tap status          # is it up? which sessions are generating?
-entire-tail tap install         # KeepAlive LaunchAgent, so it restarts itself
+entire-tail tap install         # write + load the KeepAlive LaunchAgent
+entire-tail tap install --binary /usr/local/bin/entire-tail   # pin a specific one
+entire-tail tap uninstall       # unload, remove, stop
 entire-tail tap stop
 ```
 
@@ -233,7 +249,15 @@ Deliberately conservative:
   after the wire, so there's nothing to win there and the tap stays out of it.
 - **The cost:** a session launched through the tap depends on it. If the daemon
   dies mid-session, that session's API endpoint is gone until it's back — hence
-  `tap install`'s KeepAlive. `--no-tap` makes the tail ignore the tap entirely.
+  the KeepAlive agent (verified: kill the daemon and launchd returns it on the
+  same port within seconds). `--no-tap` makes the tail ignore the tap entirely.
+
+**The tap is never required.** With no daemon running, `entire-tail` behaves
+exactly as it did before it existed: launched agents get no `ANTHROPIC_BASE_URL`,
+the tail renders everything from the transcript, and a blocked question still
+alerts via the opt-in hooks — you just don't see its preamble until you answer.
+That fallback is asserted in `e2e_tap.sh` (stage 4) against a completely bare
+`HOME`, not just assumed.
 
 **If you route a session by hand, set `ENABLE_TOOL_SEARCH=true` too:**
 
@@ -666,6 +690,10 @@ Original output inside the agent TUI.
 - `themes/<name>.{json,sh}` — bundled themes, embedded at build (see Themes)
 - `install.sh` — builds the binary, symlinks it into `~/.local/bin`, and
   registers the entire plugin
+- `install-tap.sh` / `disable-tap.sh` — turn the optional API tap on (KeepAlive
+  LaunchAgent) and off again; see [the tap](#the-api-tap-see-the-questions-reasoning-not-just-the-question-opt-in)
+- `e2e_tap.sh` — manual end-to-end check of the tap render path and the
+  no-daemon fallback (`sh e2e_tap.sh`)
 - `entire-tail.bash` — the original bash implementation, kept as a reference
   oracle for the equivalence test (`RUN_ORACLE=1 go test`)
 - `testdata/` — synthetic session fixtures + golden render output

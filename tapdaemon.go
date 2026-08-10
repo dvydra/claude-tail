@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -298,8 +299,43 @@ func tapSessionOf(h http.Header) string { return h.Get("x-claude-code-session-id
 
 func isTapAPIPath(p string) bool { return strings.HasPrefix(p, tapAPIPath) }
 
+// tapDiagHeaders are the RESPONSE headers worth reporting when upstream refuses a
+// request. Deliberately a whitelist: the daemon's rule is that headers are never
+// logged, and these are the narrow exceptions — none carry credentials (they're
+// upstream's, not the client's) and without them a 429 or 400 is an unexplained
+// number. A 429 at session start is normally just a burst being rate-limited and
+// the SDK retrying; retry-after and the remaining/reset counters say so outright.
+var tapDiagHeaders = []string{
+	"retry-after",
+	"request-id",
+	"anthropic-ratelimit-unified-status",
+	"anthropic-ratelimit-requests-remaining",
+	"anthropic-ratelimit-requests-reset",
+	"anthropic-ratelimit-tokens-remaining",
+	"anthropic-ratelimit-tokens-reset",
+}
+
+// tapFailureDetail renders the whitelisted diagnostics for a non-2xx response, or
+// "" for a normal one.
+func tapFailureDetail(resp *http.Response) string {
+	if resp.StatusCode < 400 {
+		return ""
+	}
+	var parts []string
+	for _, h := range tapDiagHeaders {
+		if v := resp.Header.Get(h); v != "" {
+			parts = append(parts, h+"="+v)
+		}
+	}
+	if len(parts) == 0 {
+		return " (no diagnostic headers)"
+	}
+	return " [" + strings.Join(parts, " ") + "]"
+}
+
 // newTapHandler builds the proxy. logf receives one line per request — method,
-// path, status only, NEVER headers.
+// path, status, and for a failure the whitelisted diagnostics above. NEVER
+// request headers.
 func newTapHandler(upstream *url.URL, tr *tapTracker, logf func(string, ...any)) http.Handler {
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1, // forward each chunk as it arrives; required for SSE
@@ -318,7 +354,8 @@ func newTapHandler(upstream *url.URL, tr *tapTracker, logf func(string, ...any))
 				return nil
 			}
 			session := tapSessionOf(resp.Request.Header)
-			logf("%s %s -> %d", resp.Request.Method, resp.Request.URL.Path, resp.StatusCode)
+			logf("%s %s -> %d%s", resp.Request.Method, resp.Request.URL.Path, resp.StatusCode,
+				tapFailureDetail(resp))
 			if session == "" || !strings.Contains(resp.Header.Get("Content-Type"), "event-stream") {
 				tr.requestEnd(session)
 				return nil
@@ -410,6 +447,7 @@ func runTap(args []string, home string, getenv func(string) string, out io.Write
 		args = args[1:]
 	}
 	port := tapDefaultPort
+	binary := ""
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--port" && i+1 < len(args):
@@ -424,6 +462,10 @@ func runTap(args []string, home string, getenv func(string) string, out io.Write
 				return fmt.Errorf("tap: invalid --port")
 			}
 			port = n
+		case args[i] == "--binary" && i+1 < len(args):
+			binary, i = args[i+1], i+1
+		case strings.HasPrefix(args[i], "--binary="):
+			binary = strings.TrimPrefix(args[i], "--binary=")
 		}
 	}
 
@@ -464,20 +506,43 @@ func runTap(args []string, home string, getenv func(string) string, out io.Write
 		fmt.Fprintf(out, "entire-tail tap: stopped (pid %d)\n", st.Pid)
 		return nil
 	case "install":
-		path, err := installTapAgent(home, port)
+		bin, err := tapAgentBinary(binary, exec.LookPath)
+		if err != nil {
+			return fmt.Errorf("tap install: cannot resolve the binary to run: %w", err)
+		}
+		path, err := installTapAgent(home, bin, port, out)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "entire-tail tap: LaunchAgent written to %s\n", path)
-		fmt.Fprintf(out, "  load it with:  launchctl load -w %s\n", path)
-		return nil
+		fmt.Fprintf(out, "  exec: %s tap start --port %d\n", bin, port)
+		// Reload rather than load: an existing agent has to go before the new plist
+		// takes effect, and this makes re-running install idempotent.
+		_ = tapAgentUnload(path)
+		if err := tapAgentLoad(path); err != nil {
+			return err
+		}
+		if st, ok := tapAgentWait(home, 8*time.Second); ok {
+			fmt.Fprintf(out, "entire-tail tap: listening on 127.0.0.1:%d (pid %d) — survives crashes and logins\n", st.Port, st.Pid)
+			return nil
+		}
+		return fmt.Errorf("tap install: agent loaded but nothing is listening on 127.0.0.1:%d — see %s", port, tapAgentLogPath(home))
 	case "uninstall":
 		path := tapAgentPath(home)
+		if err := tapAgentUnload(path); err != nil {
+			return err
+		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		fmt.Fprintf(out, "entire-tail tap: LaunchAgent removed (%s)\n", path)
-		fmt.Fprintf(out, "  unload it with:  launchctl unload %s\n", path)
+		// KeepAlive is gone, but a daemon started by hand is still up; stop it too
+		// so "uninstall" means the tap is actually off.
+		if st, ok := readTapState(home); ok && st.Pid > 0 {
+			_ = syscall.Kill(st.Pid, syscall.SIGTERM)
+		}
+		fmt.Fprintf(out, "entire-tail tap: LaunchAgent removed and stopped (%s)\n", path)
+		fmt.Fprintln(out, "  New sessions launch unrouted; entire-tail keeps working without the tap.")
+		fmt.Fprintln(out, "  Sessions ALREADY routed through it have its address baked in — restart those.")
 		return nil
 	}
 	return fmt.Errorf("tap: unknown subcommand %q (want start|status|stop|install|uninstall)", sub)
@@ -489,20 +554,16 @@ func tapAgentPath(home string) string {
 	return filepath.Join(home, "Library", "LaunchAgents", tapAgentLabel+".plist")
 }
 
-// installTapAgent writes a KeepAlive LaunchAgent so the daemon comes back if it
-// crashes. KeepAlive matters more here than for a normal helper: sessions
-// launched through the tap have its address baked in, so an unattended death
-// would break them until it returns.
-func installTapAgent(home string, port int) (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	path := tapAgentPath(home)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
-	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+func tapAgentLogPath(home string) string { return filepath.Join(tapDir(home), "daemon.log") }
+
+// tapAgentPlist builds the LaunchAgent, pure so its contents are unit-tested.
+//
+// KeepAlive matters more here than for a normal helper: a routed session has the
+// daemon's address baked in at launch, so an unattended death breaks it until the
+// daemon returns. ThrottleInterval keeps a crash-loop from hammering — launchd's
+// 1s default would spin on, say, a port that never frees.
+func tapAgentPlist(bin string, port int, logPath string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -517,14 +578,117 @@ func installTapAgent(home string, port int) (string, error) {
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>%s</string>
   <key>StandardErrorPath</key><string>%s</string>
 </dict>
 </plist>
-`, tapAgentLabel, exe, port, filepath.Join(tapDir(home), "daemon.log"), filepath.Join(tapDir(home), "daemon.log"))
+`, tapAgentLabel, bin, port, logPath, logPath)
+}
 
+// looksEphemeralBinary reports whether a path is one a LaunchAgent shouldn't be
+// pinned to. A plist outlives the shell that wrote it, so pointing it at a git
+// worktree (deleted when the branch is done) or a temp dir gives you a daemon
+// that silently stops coming back — and because routing is decided per launch,
+// the symptom is "the tap just doesn't work any more" rather than an error.
+func looksEphemeralBinary(p string) bool {
+	for _, frag := range []string{"/.claude/worktrees/", "/tmp/", "/private/tmp/", "/var/folders/"} {
+		if strings.Contains(p, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// tapAgentBinary resolves what the plist should exec: an explicit --binary, else
+// the installed `entire-tail` on PATH (which survives rebuilds), else this
+// executable.
+func tapAgentBinary(explicit string, lookPath func(string) (string, error)) (string, error) {
+	if explicit != "" {
+		return filepath.Abs(explicit)
+	}
+	if p, err := lookPath("entire-tail"); err == nil {
+		return p, nil
+	}
+	return os.Executable()
+}
+
+// installTapAgent writes the LaunchAgent and loads it, so `tap install` is the
+// whole job rather than a file plus a copy-pasted launchctl line.
+func installTapAgent(home, bin string, port int, out io.Writer) (string, error) {
+	path := tapAgentPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(tapDir(home), 0o700); err != nil {
 		return "", err
 	}
-	return path, os.WriteFile(path, []byte(plist), 0o644)
+	if err := os.WriteFile(path, []byte(tapAgentPlist(bin, port, tapAgentLogPath(home))), 0o644); err != nil {
+		return "", err
+	}
+	if looksEphemeralBinary(bin) {
+		fmt.Fprintf(out, "entire-tail tap: WARNING — the agent points at %s\n", bin)
+		fmt.Fprintf(out, "  that path looks temporary (worktree or temp dir); when it goes away the\n")
+		fmt.Fprintf(out, "  daemon stops coming back. Install entire-tail properly (./install.sh) and\n")
+		fmt.Fprintf(out, "  re-run 'entire-tail tap install', or pass --binary <stable path>.\n")
+	}
+	return path, nil
+}
+
+// Indirection for the three side-effecting steps of `tap install`/`uninstall`, so
+// tests can exercise the command without bootstrapping a real LaunchAgent into
+// the developer's launchd (which, pointed at a test binary under KeepAlive, is a
+// respawn loop — learned the hard way).
+var (
+	tapAgentLoad   = launchctlLoad
+	tapAgentUnload = launchctlUnload
+	tapAgentWait   = waitForTap
+)
+
+// launchctlLoad boots the agent into the user's GUI domain. `bootstrap` is the
+// modern verb; `load -w` is kept as the fallback for older systems (and for the
+// case where bootstrap rejects an already-loaded label).
+func launchctlLoad(path string) error {
+	uid := os.Getuid()
+	if out, err := exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%d", uid), path).CombinedOutput(); err == nil {
+		return nil
+	} else if strings.Contains(string(out), "already") {
+		return nil // already bootstrapped — not a failure
+	}
+	if out, err := exec.Command("launchctl", "load", "-w", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl load failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// launchctlUnload removes the agent from the user's GUI domain. Both verbs are
+// tried and a "not loaded" outcome is success — disabling must be idempotent.
+func launchctlUnload(path string) error {
+	uid := os.Getuid()
+	if _, err := exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/%s", uid, tapAgentLabel)).CombinedOutput(); err == nil {
+		return nil
+	}
+	if out, err := exec.Command("launchctl", "unload", path).CombinedOutput(); err != nil {
+		s := strings.TrimSpace(string(out))
+		if strings.Contains(s, "Could not find") || strings.Contains(s, "no such") || s == "" {
+			return nil // wasn't loaded
+		}
+		return fmt.Errorf("launchctl unload failed: %v: %s", err, s)
+	}
+	return nil
+}
+
+// waitForTap polls until the daemon answers, so install/enable can report a fact
+// rather than "probably started".
+func waitForTap(home string, d time.Duration) (tapState, bool) {
+	deadline := time.Now().Add(d)
+	for {
+		if st, ok := readTapState(home); ok && tapProbe(st, 300*time.Millisecond) {
+			return st, true
+		}
+		if time.Now().After(deadline) {
+			return tapState{}, false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
