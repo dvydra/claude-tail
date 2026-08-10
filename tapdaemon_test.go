@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -206,6 +207,92 @@ func TestTapHandlerNonStreamingAPIReply(t *testing.T) {
 	}
 }
 
+// A 429 through the tap is upstream rate-limiting, not a proxy fault — the log
+// line has to say which, and must still never leak request headers.
+func TestTapFailureDetailAndRetryPassThrough(t *testing.T) {
+	attempts := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("retry-after", "3")
+			w.Header().Set("anthropic-ratelimit-requests-remaining", "0")
+			w.Header().Set("request-id", "req_abc")
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = w.Write(questionStream())
+	}))
+	defer up.Close()
+	upURL, _ := url.Parse(up.URL)
+
+	tr, _ := tapTestTracker(t)
+	var logged []string
+	front := httptest.NewServer(newTapHandler(upURL, tr, func(f string, a ...any) {
+		logged = append(logged, fmt.Sprintf(f, a...))
+	}))
+	defer front.Close()
+
+	// First call: the 429 must reach the client verbatim, so the SDK can retry.
+	req, _ := http.NewRequest("POST", front.URL+"/v1/messages", strings.NewReader("{}"))
+	req.Header.Set("x-claude-code-session-id", "sess-429")
+	req.Header.Set("authorization", "Bearer super-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 429 {
+		t.Errorf("status = %d, want the upstream 429 passed through", resp.StatusCode)
+	}
+	if resp.Header.Get("retry-after") != "3" {
+		t.Error("retry-after must reach the client so the SDK can back off correctly")
+	}
+
+	all := strings.Join(logged, "\n")
+	if !strings.Contains(all, "-> 429") {
+		t.Errorf("log should record the status:\n%s", all)
+	}
+	for _, want := range []string{"retry-after=3", "anthropic-ratelimit-requests-remaining=0", "request-id=req_abc"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("log should explain the refusal (%s):\n%s", want, all)
+		}
+	}
+	if strings.Contains(all, "super-secret") || strings.Contains(all, "uthorization") {
+		t.Errorf("request headers must never be logged:\n%s", all)
+	}
+
+	// The retry then succeeds and is teed normally.
+	req2, _ := http.NewRequest("POST", front.URL+"/v1/messages", strings.NewReader("{}"))
+	req2.Header.Set("x-claude-code-session-id", "sess-429")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	_, _ = io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		t.Errorf("retry status = %d", resp2.StatusCode)
+	}
+	if _, err := os.Stat(tapSidecarPath(tr.home, "sess-429")); err != nil {
+		t.Errorf("the successful retry should still be teed: %v", err)
+	}
+}
+
+func TestTapFailureDetailQuietOnSuccess(t *testing.T) {
+	ok := &http.Response{StatusCode: 200, Header: http.Header{"retry-after": {"3"}}}
+	if got := tapFailureDetail(ok); got != "" {
+		t.Errorf("a 2xx must add nothing to the log line, got %q", got)
+	}
+	bare := &http.Response{StatusCode: 500, Header: http.Header{}}
+	if got := tapFailureDetail(bare); !strings.Contains(got, "no diagnostic headers") {
+		t.Errorf("a failure with no headers should say so, got %q", got)
+	}
+}
+
 func TestTapUpstreamResolution(t *testing.T) {
 	cases := []struct {
 		name string
@@ -287,8 +374,118 @@ func TestTapGeneratingIgnoresLeakedInFlight(t *testing.T) {
 	}
 }
 
+func TestTapAgentPlist(t *testing.T) {
+	p := tapAgentPlist("/usr/local/bin/entire-tail", 47555, "/home/u/.claude/entire-tail/tap/daemon.log")
+	for _, want := range []string{
+		"<key>Label</key><string>" + tapAgentLabel + "</string>",
+		"<string>/usr/local/bin/entire-tail</string>",
+		"<string>47555</string>",
+		"<key>KeepAlive</key><true/>",
+		"<key>RunAtLoad</key><true/>",
+		// A crash loop must not hammer launchd's 1s default.
+		"<key>ThrottleInterval</key><integer>10</integer>",
+		"<string>/home/u/.claude/entire-tail/tap/daemon.log</string>",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("plist missing %q:\n%s", want, p)
+		}
+	}
+}
+
+// A LaunchAgent outlives the shell that wrote it, so pinning it to a path that
+// disappears (a git worktree, a temp build) yields a daemon that silently stops
+// coming back.
+func TestLooksEphemeralBinary(t *testing.T) {
+	ephemeral := []string{
+		"/Users/d/src/proj/.claude/worktrees/api-tap/entire-tail",
+		"/tmp/entire-tail",
+		"/private/tmp/build/entire-tail",
+		"/var/folders/xf/T/go-build123/entire-tail",
+	}
+	stable := []string{
+		"/Users/d/.local/bin/entire-tail",
+		"/usr/local/bin/entire-tail",
+		"/opt/homebrew/bin/entire-tail",
+		"/Users/d/src/proj/entire-tail",
+	}
+	for _, p := range ephemeral {
+		if !looksEphemeralBinary(p) {
+			t.Errorf("%s should be flagged as temporary", p)
+		}
+	}
+	for _, p := range stable {
+		if looksEphemeralBinary(p) {
+			t.Errorf("%s should NOT be flagged", p)
+		}
+	}
+}
+
+func TestTapAgentBinaryPrefersInstalled(t *testing.T) {
+	found := func(string) (string, error) { return "/Users/d/.local/bin/entire-tail", nil }
+	missing := func(string) (string, error) { return "", errors.New("not found") }
+
+	// An explicit --binary always wins, and is absolutised.
+	got, err := tapAgentBinary("/opt/bin/entire-tail", found)
+	if err != nil || got != "/opt/bin/entire-tail" {
+		t.Errorf("explicit: got %q, %v", got, err)
+	}
+	// Otherwise the installed copy on PATH, which survives rebuilds of a checkout.
+	if got, _ = tapAgentBinary("", found); got != "/Users/d/.local/bin/entire-tail" {
+		t.Errorf("PATH: got %q", got)
+	}
+	// Last resort: this executable (whatever the test binary is).
+	got, err = tapAgentBinary("", missing)
+	if err != nil || got == "" {
+		t.Errorf("fallback: got %q, %v", got, err)
+	}
+}
+
+func TestInstallTapAgentWarnsOnEphemeralPath(t *testing.T) {
+	home := t.TempDir()
+	var out bytes.Buffer
+	worktree := "/Users/d/src/p/.claude/worktrees/x/entire-tail"
+	if _, err := installTapAgent(home, worktree, 47391, &out); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !strings.Contains(out.String(), "WARNING") || !strings.Contains(out.String(), worktree) {
+		t.Errorf("expected a warning naming the path, got:\n%s", out.String())
+	}
+
+	out.Reset()
+	if _, err := installTapAgent(home, "/usr/local/bin/entire-tail", 47391, &out); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if strings.Contains(out.String(), "WARNING") {
+		t.Errorf("a stable path must not warn, got:\n%s", out.String())
+	}
+	// The plist is written either way, pinned to the binary it was told about.
+	b, err := os.ReadFile(tapAgentPath(home))
+	if err != nil {
+		t.Fatalf("plist: %v", err)
+	}
+	if !strings.Contains(string(b), "/usr/local/bin/entire-tail") {
+		t.Errorf("plist should exec the resolved binary:\n%s", b)
+	}
+}
+
+// stubLaunchd replaces the three side-effecting steps of install/uninstall, so
+// the test drives the command without touching the real launchd.
+func stubLaunchd(t *testing.T) (loaded *bool, unloads *int) {
+	t.Helper()
+	l, u := false, 0
+	origLoad, origUnload, origWait := tapAgentLoad, tapAgentUnload, tapAgentWait
+	tapAgentLoad = func(string) error { l = true; return nil }
+	tapAgentUnload = func(string) error { u++; return nil }
+	tapAgentWait = func(home string, _ time.Duration) (tapState, bool) {
+		return tapState{Pid: 4242, Port: 47555}, true
+	}
+	t.Cleanup(func() { tapAgentLoad, tapAgentUnload, tapAgentWait = origLoad, origUnload, origWait })
+	return &l, &u
+}
+
 func TestRunTapStatusAndAgentInstall(t *testing.T) {
 	home := t.TempDir()
+	loaded, unloads := stubLaunchd(t)
 	var out bytes.Buffer
 	if err := runTap([]string{"status"}, home, func(string) string { return "" }, &out); err != nil {
 		t.Fatalf("status: %v", err)
@@ -298,17 +495,30 @@ func TestRunTapStatusAndAgentInstall(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runTap([]string{"install", "--port", "47555"}, home, func(string) string { return "" }, &out); err != nil {
+	if err := runTap([]string{"install", "--port", "47555", "--binary", "/usr/local/bin/entire-tail"}, home, func(string) string { return "" }, &out); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	plist, err := os.ReadFile(tapAgentPath(home))
 	if err != nil {
 		t.Fatalf("plist: %v", err)
 	}
-	for _, want := range []string{"<key>KeepAlive</key><true/>", "<string>47555</string>", tapAgentLabel} {
+	for _, want := range []string{"<key>KeepAlive</key><true/>", "<string>47555</string>", tapAgentLabel, "/usr/local/bin/entire-tail"} {
 		if !strings.Contains(string(plist), want) {
 			t.Errorf("plist missing %q", want)
 		}
+	}
+	// install must actually load it — writing a file and telling the user to run
+	// launchctl themselves was the old, half-done behaviour.
+	if !*loaded {
+		t.Error("install should load the agent")
+	}
+	// …and unload first, so re-running install is idempotent rather than "already
+	// bootstrapped".
+	if *unloads != 1 {
+		t.Errorf("install should unload before loading (got %d unloads)", *unloads)
+	}
+	if !strings.Contains(out.String(), "listening") {
+		t.Errorf("install should confirm it's listening:\n%s", out.String())
 	}
 
 	out.Reset()
@@ -318,8 +528,35 @@ func TestRunTapStatusAndAgentInstall(t *testing.T) {
 	if _, err := os.Stat(tapAgentPath(home)); !os.IsNotExist(err) {
 		t.Error("uninstall should remove the plist")
 	}
+	// The fallback promise, in the words the user reads.
+	if !strings.Contains(out.String(), "keeps working without the tap") {
+		t.Errorf("uninstall should say entire-tail still works:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "ALREADY routed") {
+		t.Errorf("uninstall should warn about live routed sessions:\n%s", out.String())
+	}
 
 	if err := runTap([]string{"bogus"}, home, func(string) string { return "" }, &out); err == nil {
 		t.Error("unknown subcommand should error")
+	}
+}
+
+// install must fail loudly when the agent loads but nothing answers — silently
+// reporting success would leave the user believing the tap is on.
+func TestRunTapInstallReportsDeadAgent(t *testing.T) {
+	home := t.TempDir()
+	origLoad, origUnload, origWait := tapAgentLoad, tapAgentUnload, tapAgentWait
+	tapAgentLoad = func(string) error { return nil }
+	tapAgentUnload = func(string) error { return nil }
+	tapAgentWait = func(string, time.Duration) (tapState, bool) { return tapState{}, false }
+	t.Cleanup(func() { tapAgentLoad, tapAgentUnload, tapAgentWait = origLoad, origUnload, origWait })
+
+	var out bytes.Buffer
+	err := runTap([]string{"install", "--binary", "/usr/local/bin/entire-tail"}, home, func(string) string { return "" }, &out)
+	if err == nil {
+		t.Fatal("install should error when nothing ends up listening")
+	}
+	if !strings.Contains(err.Error(), "nothing is listening") {
+		t.Errorf("error should name the symptom: %v", err)
 	}
 }

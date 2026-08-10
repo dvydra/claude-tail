@@ -411,6 +411,18 @@ needs to change.
   Do NOT drop it, and when debugging anything context-shaped under the tap, diff
   `--debug api` logs with and without the base URL before suspecting the proxy
   itself — the proxy is byte-transparent; the CLIENT behaves differently.
+- **`install-tap.sh` / `disable-tap.sh` + `tap install|uninstall` own the launchd
+  lifecycle**, and two things there are load-bearing. (1) The plist must be pinned
+  to a STABLE binary: it outlives the shell that wrote it, so a path under
+  `.claude/worktrees/` or `/tmp` yields a daemon that silently stops returning
+  once that path goes (`looksEphemeralBinary` warns, `tapAgentBinary` prefers the
+  installed `entire-tail` on PATH, `--binary` overrides). (2) `tap install` loads
+  the agent and then **waits for a real health check** before claiming success —
+  reporting "installed" for a dead agent is worse than failing. The three
+  side-effecting steps go through `tapAgentLoad`/`tapAgentUnload`/`tapAgentWait`
+  package vars ONLY so tests can stub them: an earlier version bootstrapped a real
+  KeepAlive agent pointing at the test binary during `go test`, i.e. a respawn
+  loop in the developer's launchd. Never call `launchctl*` directly from a test path.
 - **The tap daemon must never log or persist headers** — they carry the auth
   token. Only method/path/status and the assistant stream (which the transcript
   already stores in plaintext) are recorded; `TestTapHandlerTeesStreamAndPreservesBytes`
