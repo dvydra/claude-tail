@@ -93,8 +93,14 @@ check "card STILL shown once" 1 "Which do I build next" "$ROOT/out.txt"
 check "the answer rendered" 1 "Phase 4a + 4c\$" "$ROOT/out.txt"
 
 # A no-tap run must show the SAME content (from the transcript alone), proving the
-# suppression isn't just hiding the transcript unconditionally.
-HOME="$ROOT" timeout 3 $BIN --agent claude --no-pick --no-tap --tool-style dots "$T" > "$ROOT/notap.txt" 2>/dev/null || true
+# suppression isn't just hiding the transcript unconditionally. Backgrounded and
+# killed rather than wrapped in `timeout`, which isn't POSIX (and this repo has no
+# runtime deps) — the tail follows forever by design, so it has to be stopped.
+HOME="$ROOT" $BIN --agent claude --no-pick --no-tap --tool-style dots "$T" > "$ROOT/notap.txt" 2>/dev/null &
+NOTAP_PID=$!
+sleep 1.5
+kill $NOTAP_PID 2>/dev/null || true
+wait $NOTAP_PID 2>/dev/null || true
 check "--no-tap still renders the preamble from the transcript" 1 "cost model was wrong" "$ROOT/notap.txt"
 check "--no-tap still renders the card" 1 "Which do I build next" "$ROOT/notap.txt"
 
