@@ -68,7 +68,8 @@ func run(cfg Config) {
 	// it to color rows, and the picker runs before the session is resolved.
 	theme := mustLoadTheme(cfg)
 
-	// Which binary the workspace panes launch is a preference (`happy` by default);
+	// Which binary the workspace panes launch is a preference (plain `claude` by
+	// default);
 	// resolved once here so an explicit-but-missing choice is reported at startup
 	// rather than at the moment a pane silently runs the wrong thing.
 	claudeBin := resolveClaudeBin(cfg, exec.LookPath, os.Stderr)
@@ -815,7 +816,7 @@ OPTIONS:
                                       live tail, and a shell, all in the
                                       session's folder (macOS + iTerm2; falls
                                       back to tailing in place otherwise). The
-                                      agent is --claude-bin (default 'happy').
+                                      agent is --claude-bin (default 'claude').
                               p       preview the session's recent transcript.
                               i       summary card: an on-device Apple
                                       Intelligence summary (headline, summary,
@@ -868,12 +869,15 @@ OPTIONS:
                             transcript-only 'informational' record, so it shows on
                             resume without steering Claude.
       --claude-bin BIN      Which binary the workspace panes and 'handover'
-                            launch. Default 'happy' (Claude Code with mobile
-                            control) — it honors --session-id/--resume and
-                            writes the same ~/.claude transcripts, so the tail
-                            is unaffected. Pass 'claude' for plain Claude Code,
-                            or any other claude-compatible wrapper. Falls back
-                            to 'claude' when the named binary isn't on PATH.
+                            launch. Default 'claude'. Pass any claude-compatible
+                            wrapper instead ('happy' for mobile control, a shim
+                            script, an absolute path) — a wrapper writes the same
+                            ~/.claude transcripts, so the tail is unaffected, but
+                            one that drops --session-id costs the fresh
+                            workspace its pinned id (and happy resumes rather
+                            than starting clean, which is why it isn't the
+                            default). Falls back to 'claude' when the named
+                            binary isn't on PATH.
   -w, --workspace           Alias for the default: force the session tree. Its
                             Enter opens the iTerm workspace (macOS + iTerm2).
   -l, --list-themes         List available themes (with descriptions) and exit.

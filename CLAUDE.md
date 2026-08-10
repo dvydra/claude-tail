@@ -113,17 +113,27 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   sessions live in the same repo (replaces the racy `--wait-new` newest-file
   heuristic; `newSessionID` mints a v4 UUID via crypto/rand) — **but only for a
   launcher that forwards `--session-id`; see `pinsSessionID`**. `<bin>` is
-  `resolveClaudeBin` (config.go): **`happy` by default** (`--claude-bin` /
-  `ENTIRE_TAIL_CLAUDE_BIN`), falling back to `claude` when it isn't on PATH —
-  silently for the built-in default, with a warning when the choice was
-  explicit (`ClaudeBinSet`), so a typo isn't swallowed. happy is a *wrapper*, not
-  a different agent: it spawns the real Claude binary and its sessions land in the
-  same `~/.claude/projects/<slug>/<id>.jsonl`, so discovery/lineage/pending-hooks
-  and every golden are untouched. Auto-adopt needs no happy-specific code either —
-  `pgrep -x claude` matches happy's spawned `claude` and it passes
-  `--resume=<uuid>`, the equals form `scrapeSessionIDArg` already handles. The
+  `resolveClaudeBin` (config.go): **plain `claude` by default** (`--claude-bin` /
+  `ENTIRE_TAIL_CLAUDE_BIN` to pick another), falling back to `claude` when the
+  named binary isn't on PATH — silently for the built-in default, with a warning
+  when the choice was explicit (`ClaudeBinSet`), so a typo isn't swallowed. Any
+  such launcher is a *wrapper*, not a different agent: it spawns the real Claude
+  binary and its sessions land in the same
+  `~/.claude/projects/<slug>/<id>.jsonl`, so discovery/lineage/pending-hooks and
+  every golden are untouched. Auto-adopt needs no wrapper-specific code either —
+  `pgrep -x claude` matches the spawned `claude`, and a wrapper that passes
+  `--resume=<uuid>` hits the equals form `scrapeSessionIDArg` already handles. The
   same preference picks the agent `handover` execs (`launchClaude`).
-  **The `--session-id` trap (cost us a broken `n` workspace once):** happy
+  **happy was the default for one release (#47) and lost the job:** on a fresh
+  `n` workspace it handed back a session already at its context limit — first
+  turn dead with "Context limit reached · /compact or /clear to continue". Root
+  cause is the trap below: it drops `--session-id` and its spawn only pushes
+  `--resume`, so "new session here" silently became "resume something". Reverted
+  to `claude` in #49, which also restores the pinned-id contract (`pinsSessionID`
+  is true again, so the fresh workspace pins instead of racing `--wait-new`).
+  Don't re-promote a wrapper to the default without checking that a fresh
+  workspace actually yields a FRESH session.
+  **The `--session-id` trap (cost us a broken `n` workspace twice):** happy
   forwards `--resume` but *extracts and drops* `--session-id` — in the hook mode
   it runs interactive sessions under, the spawn only ever pushes `--resume`
   (`dist/index-*.mjs`). So `happy --session-id X` makes Claude mint its OWN id,
