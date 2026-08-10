@@ -412,6 +412,16 @@ func runTapDaemon(home string, port int, getenv func(string) string, out io.Writ
 	actual := ln.Addr().(*net.TCPAddr).Port
 
 	tr := newTapTracker(home, time.Now)
+	// Start from an empty activity table on disk. The tracker's in-memory map is
+	// empty at boot, so leaving the previous daemon's file in place would leave
+	// consumers reading activity this daemon never observed — a session could read
+	// as "recently active" from a table written before a restart, until the first
+	// request happened to overwrite it. If the daemon is up, the table describes
+	// only this daemon's lifetime; that's what makes "which session is generating"
+	// a fact rather than a leftover.
+	_ = writeJSONAtomic(tapActivePath(home), tapActive{
+		Updated: time.Now().UnixNano() / 1e6, Sessions: map[string]tapSessionStatus{},
+	})
 	logf := func(format string, a ...any) {
 		fmt.Fprintf(out, "entire-tail tap: "+format+"\n", a...)
 	}

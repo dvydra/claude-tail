@@ -427,6 +427,14 @@ needs to change.
   token. Only method/path/status and the assistant stream (which the transcript
   already stores in plaintext) are recorded; `TestTapHandlerTeesStreamAndPreservesBytes`
   asserts a token never reaches the sidecar.
+- **The activity table describes ONE daemon's lifetime.** `runTapDaemon` clears
+  `active.json` at start, because the tracker's in-memory map begins empty: a
+  leftover file would have the tree reporting activity this daemon never saw
+  (caught live — a 43-minute-old entry surviving a restart, still inside the
+  15-minute live window when it was written). If the daemon is up, the table is a
+  fact; if it's down, the table is simply absent. Don't "preserve history" across
+  restarts here — the whole value of this signal is that it's observed, not
+  remembered.
 - **`applyTapActivity` is strictly additive.** The tap knows *which* session is
   generating (`in_flight`), which `liveCwds` (pgrep+lsof) fundamentally cannot —
   it sees a claude process in a folder but not which transcript it's writing, so
