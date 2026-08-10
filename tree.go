@@ -40,6 +40,11 @@ type treeSession struct {
 	Live    bool   // a running claude process holds this session's folder
 	cwd     string // recovered .cwd (build-only; folder carries the display copy)
 
+	// Generating is set only from the tap daemon's activity table: this exact
+	// session has an API request in flight right now. Unlike Live (a
+	// process-and-folder guess), it is per-session fact.
+	Generating bool
+
 	// The PR this session opened (newest `pr-link` event); 0/"" when none.
 	PrNumber int
 	PrURL    string
@@ -143,6 +148,48 @@ func buildClaudeTree(home, pwd string, days int, now int64, liveCwds map[string]
 	}
 	sortFolders(tree.Folders)
 	return tree
+}
+
+// applyTapActivity overlays the tap daemon's per-session activity table onto a
+// built tree. The tap is the only source that knows WHICH session is working:
+// liveCwds (pgrep+lsof) can see a claude process in a folder but not which of
+// that folder's transcripts it's writing, so buildClaudeTree has to guess
+// "the newest N are the live ones".
+//
+// Strictly additive, on purpose. A session the tap knows had traffic inside the
+// live window is marked live even when the newest-N guess missed it, but a
+// session the tap has NOT heard from is left alone: no recent API traffic just
+// means the agent is waiting on its human, not that the pane is gone. Absence of
+// evidence never clears a marker here.
+func applyTapActivity(tree *sessionTree, act tapActive, nowMs int64) {
+	if len(act.Sessions) == 0 {
+		return
+	}
+	liveWindowMs := int64(recentLiveWindow) * 1000
+	for fi := range tree.Folders {
+		for si := range tree.Folders[fi].Sessions {
+			s := &tree.Folders[fi].Sessions[si]
+			st, ok := act.Sessions[s.ID]
+			if !ok {
+				continue
+			}
+			s.Generating = tapGenerating(st, nowMs)
+			last := max(st.LastEvent, st.LastEnd, st.LastStart)
+			if s.Generating || (last > 0 && nowMs-last < liveWindowMs) {
+				s.Live = true
+			}
+		}
+	}
+	for fi := range tree.Folders {
+		f := &tree.Folders[fi]
+		for _, s := range f.Sessions {
+			if s.Live && f.Live == 0 {
+				// A folder whose liveness pgrep missed (e.g. the agent runs under a
+				// wrapper) still deserves its live badge once the tap has proof.
+				f.Live = 1
+			}
+		}
+	}
 }
 
 // claudeFolderSessions returns the folder's sessions newer than cutoff,
@@ -782,6 +829,11 @@ func composeSessionRow(s treeSession, now int64) string {
 	bullet := "○"
 	if s.Live {
 		bullet = "●"
+	}
+	// The tap knows this session is mid-request — a stronger claim than Live, and
+	// worth its own glyph: this is the one that's thinking right now.
+	if s.Generating {
+		bullet = "◉"
 	}
 	branch := ""
 	if s.Branch != "" {

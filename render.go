@@ -103,6 +103,22 @@ type Renderer struct {
 	// reset() so a full re-render (r / rollover) shows JSONL cards normally.
 	pendingShown map[string]bool
 
+	// pendingAt records turnsRendered at the moment each marker card was drawn,
+	// and turnsRendered counts the user/assistant bodies actually printed. Their
+	// difference answers the one question the suppression needs: did a turn body
+	// land BETWEEN the alert card and the transcript record for the same
+	// question? If it did, the card is redrawn after it (see question()).
+	pendingAt     map[string]int
+	turnsRendered int
+
+	// earlyShown holds keys of assistant text already rendered from the API tap
+	// (render.go earlyTextKey), so the transcript record that lands later — after
+	// the user answers the question the text preceded — is suppressed instead of
+	// printed a second time. Keyed by provider message id + exact text, both of
+	// which appear identically in the wire stream and the JSONL, so the match is
+	// exact rather than a content-similarity guess. Cleared by reset().
+	earlyShown map[string]bool
+
 	// lastDoneMsgID is the message id whose done banner we last printed. One
 	// assistant message occasionally spans two jsonl text records (both carrying
 	// the same terminal stop_reason); this keeps the banner to one per message.
@@ -174,6 +190,8 @@ func newRendererWith(w io.Writer, theme Theme, toolStyle string, collapse int, r
 		claudeHdr:       theme.ClaudeANSI + claudeHdrBody + reset,
 		seenQuestions:   map[string]bool{},
 		pendingShown:    map[string]bool{},
+		pendingAt:       map[string]int{},
+		earlyShown:      map[string]bool{},
 	}
 	r.toolStyle.Store(int32(parseToolStyle(toolStyle)))
 	r.collapse.Store(int32(collapse))
@@ -204,6 +222,9 @@ func (r *Renderer) reset() {
 	r.lineOpen = false
 	r.lastDoneMsgID = ""
 	clear(r.pendingShown)
+	clear(r.pendingAt)
+	clear(r.earlyShown)
+	r.turnsRendered = 0
 }
 
 // toggleCollapse flips long-user-paste collapsing on/off (future events only).
@@ -220,9 +241,14 @@ func (r *Renderer) toggleCollapse() string {
 func (r *Renderer) emit(rec Record) {
 	switch rec.Kind {
 	case KindUser:
+		r.turnsRendered++
 		r.header(KindUser, rec.Ts)
 		r.body(collapseBody(rec.Body, int(r.collapse.Load())))
 	case KindAssistant:
+		if r.consumeEarlyText(rec) {
+			return // already shown from the tap, before the question it preceded
+		}
+		r.turnsRendered++
 		if r.live {
 			// BEL on each live assistant turn — lets the user wander off and
 			// get pinged when the agent responds. Backfill replays bypass this.
@@ -292,14 +318,73 @@ func questionsContentKey(qs []QuestionItem) string {
 	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
+// earlyTextKey identifies one assistant text block by the ids both the wire and
+// the transcript carry: the provider message id plus the block's exact text.
+// Byte-identical on both sides (the tap accumulates the same deltas the
+// transcript record is built from), so suppression can be exact — no hashing of
+// near-equal content, and two identical short texts in different messages never
+// collide.
+func earlyTextKey(msgID, body string) string { return "text:" + msgID + "\x00" + body }
+
+// tapPreamble renders a blocked question straight from the API tap: the text
+// blocks that led up to it, then the question card.
+//
+// This is the one place the tap renders anything. Claude Code withholds the
+// WHOLE message containing an AskUserQuestion — preamble text included — until
+// the user answers, so without this the card appears (from the hook marker) with
+// no sign of the reasoning that produced it, and the text only lands afterwards,
+// below the card, reading backwards. Rendering from the wire puts it in the
+// right order at the right time; each block is remembered in earlyShown so the
+// transcript twin is suppressed when it eventually arrives.
+func (r *Renderer) tapPreamble(p tapPendingPrompt, ts string) {
+	for _, body := range p.Preamble {
+		r.header(KindAssistant, ts)
+		r.body(body)
+		if p.MsgID != "" {
+			r.earlyShown[earlyTextKey(p.MsgID, body)] = true
+		}
+	}
+	r.pendingQuestion(p.Questions)
+	if p.QID != "" {
+		// The card is on screen and the bell has rung; record the id so the JSONL
+		// record doesn't ring again for an already-seen prompt.
+		r.seenQuestions[p.QID] = true
+	}
+}
+
+// consumeEarlyText reports whether this record was already rendered from the tap,
+// consuming the key one-shot so a later full re-render (r / T, which clears
+// earlyShown anyway) still shows it normally.
+func (r *Renderer) consumeEarlyText(rec Record) bool {
+	if rec.MsgID == "" || len(r.earlyShown) == 0 {
+		return false
+	}
+	key := earlyTextKey(rec.MsgID, rec.Body)
+	if !r.earlyShown[key] {
+		return false
+	}
+	delete(r.earlyShown, key)
+	return true
+}
+
 // pendingQuestion renders a question card from a live marker (before the JSONL
 // flush), always ringing the bell, and records its content key so the eventual
 // JSONL card is suppressed. Runs on the render goroutine like every other emit.
 func (r *Renderer) pendingQuestion(qs []QuestionItem) {
+	key := questionsContentKey(qs)
+	// There are now TWO early paths to the same card — the hook marker and the API
+	// tap — and a session with both live hits both: the tap sees the question at
+	// message_stop on the wire, then the hook fires when Claude Code dispatches the
+	// tool a moment later. Whichever arrives first owns the card; the second is a
+	// no-op. (Observed live as the card printed twice.)
+	if r.pendingShown[key] {
+		return
+	}
 	r.endLine()
 	io.WriteString(r.w, "\a")
 	io.WriteString(r.w, questionCard(qs))
-	r.pendingShown[questionsContentKey(qs)] = true
+	r.pendingShown[key] = true
+	r.pendingAt[key] = r.turnsRendered
 }
 
 // pendingPermission renders a one-line "waiting on a permission prompt" notice
@@ -317,10 +402,20 @@ func (r *Renderer) pendingPermission(summary string) {
 // already rendered this exact question (pendingQuestion), the JSONL card is
 // suppressed — the user already saw it — and the key is consumed one-shot so a
 // later full re-render (reload) shows the card normally again.
+//
+// The exception is when a turn body landed in between. Claude Code withholds the
+// whole message an AskUserQuestion belongs to — its preamble text included —
+// until the user answers, so on a session with no API tap the preamble arrives
+// AFTER the alert card and the pane reads backwards: question first, then the
+// reasoning that led to it. When that happens the card is redrawn below its
+// preamble, so the transcript ends up in wire order (text → card → answer). The
+// bell never rings again; only the card is repeated.
 func (r *Renderer) question(rec Record) {
 	key := questionsContentKey(rec.Questions)
 	if r.pendingShown[key] {
+		at, tracked := r.pendingAt[key]
 		delete(r.pendingShown, key)
+		delete(r.pendingAt, key)
 		// A live marker already showed this card AND rang the bell. Record the
 		// QID so a later full re-render (r / T, which clears pendingShown but not
 		// seenQuestions and replays with live=true) redraws the card without
@@ -328,7 +423,11 @@ func (r *Renderer) question(rec Record) {
 		if rec.QID != "" {
 			r.seenQuestions[rec.QID] = true
 		}
-		return
+		if !tracked || at == r.turnsRendered {
+			return // nothing came between the alert and this record — one card is right
+		}
+		// A deferred preamble (or another turn) printed in between: fall through
+		// and redraw the card so it follows the text it belongs to.
 	}
 	r.endLine()
 	if r.live && rec.QID != "" && !r.seenQuestions[rec.QID] {

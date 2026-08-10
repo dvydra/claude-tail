@@ -285,6 +285,22 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   binary). Wired via `PreToolUse` / `PostToolUse` matchers on `AskUserQuestion`,
   plus bare `PermissionRequest` / `PermissionDenied` hooks. Writes/removes marker
   files atomically; safely handles half-written files and missing session ids.
+- `tap.go` / `tapdaemon.go` — the **API tap**: an opt-in local reverse proxy
+  (`entire-tail tap start`, fixed `127.0.0.1:47391`) that agents launched from
+  the tree are pointed at via `ANTHROPIC_BASE_URL`, so the assistant stream is
+  visible as it streams. `tapdaemon.go` is the IO half (httputil.ReverseProxy,
+  `FlushInterval:-1` so SSE chunks forward immediately; the tee sits in the
+  response body's `Read` path — `tapTeeBody` — so the proxy stays
+  byte-transparent). `tap.go` is the pure half: `tapParser` turns SSE frames into
+  block-complete `tapEvent`s (text/thinking accumulated from deltas, tool_use
+  input reassembled from `input_json_delta` fragments and dropped unless it
+  parses), appended as NDJSON to
+  `~/.claude/entire-tail/tap/sessions/<session-id>.ndjson`. Sessions need **no
+  correlation heuristics** — every Claude Code request carries
+  `x-claude-code-session-id` (and `metadata.user_id` repeats it), verified live.
+  `tapWatcher` follows a sidecar with a byte offset like the transcript
+  follower, starting at EOF (never replays history) and rebinding across a
+  lineage flip. See the tap notes below for what it deliberately does NOT do.
 
 Adding a new agent = write a `normalize` + a discovery function. Nothing else
 needs to change.
@@ -345,6 +361,67 @@ needs to change.
   JSONL card suppresses itself once the marker already showed it. Both derive the
   key independently from their respective payloads, which differ slightly (marker
   lacks `tool_use_id`, JSONL may have it), so a raw-byte hash would never match.
+- **The tap renders exactly one thing, on purpose.** Measured, don't re-derive:
+  Claude Code appends an assistant message's transcript records at
+  `message_stop` — **~200ms** after the wire (proven with a `sleep 20` tool: text
+  + tool_use hit disk 194ms after the wire while the tool still had 20s to run).
+  So for ordinary turns the JSONL is already fast enough and the tap would only
+  duplicate/race it. The ONE case it can't cover is `AskUserQuestion`: Claude
+  Code withholds the **whole message** — preamble text included — until the user
+  answers (verified on a real session: 35+ minutes, zero bytes written). Hence
+  `tapPending` only fires for a message whose `stop_reason` is `tool_use` AND
+  whose last block is `AskUserQuestion`, and `Renderer.tapPreamble` is the only
+  tap render path. Do NOT "finish the job" by rendering all tap events — that
+  turns the tap into a second competing transcript with no latency win.
+- **Tap→JSONL dedup is exact, not fuzzy.** Both sides carry the provider ids, so
+  `earlyTextKey` = message id + the block's exact text (`earlyShown`, consumed
+  one-shot, cleared by `reset()`), and the question reuses the existing
+  `questionsContentKey`. Don't swap either for a similarity/hash-of-nearby-content
+  scheme: the wire text and the transcript text are byte-identical, and message
+  ids keep two identical short texts in different messages from colliding.
+- **The tap is opt-in AND fail-open, and that's a safety property.** A launched
+  agent gets `ANTHROPIC_BASE_URL` only when `tapBaseURL` health-checks the daemon
+  *and* the reply's pid matches the state file (so a stranger squatting the port
+  is never trusted). No daemon → empty string → the launch command is
+  byte-identical to the pre-tap one (`TestWorkspaceScriptsTapEnv`). The port is
+  **fixed** because a session bakes the URL in at launch: restarting on a
+  different port would break every live session, which is also why `tap install`
+  writes a `KeepAlive` LaunchAgent. A daemon that dies mid-session still takes
+  that session's API endpoint with it — the known, documented cost of routing.
+- **happy DOES inherit the tap's `ANTHROPIC_BASE_URL`** — verified live (`happy -p`
+  through the daemon produced a routed session). Worth stating because happy
+  advertises `--claude-env ANTHROPIC_BASE_URL=…` for custom endpoints, which
+  reads like ambient env gets scrubbed the way `--session-id` is (see the
+  `--session-id` trap above). It isn't: a plain env assignment reaches the claude
+  happy spawns, so `tapEnvPrefix` needs no happy-specific branch. If a future
+  happy sandbox starts filtering env, `--claude-env` is the escape hatch — but
+  don't add it speculatively.
+- **Routing through the tap CHANGES how Claude Code composes requests, and one
+  env var undoes it.** Setting `ANTHROPIC_BASE_URL` to anything that isn't a
+  first-party Anthropic host makes Claude Code **disable tool search** — it stops
+  deferring MCP tool schemas behind `tool_reference` blocks and ships every schema
+  inline, because it can't know a gateway forwards those blocks. On a machine with
+  a large MCP fleet that is the difference between a normal prompt and **"Prompt is
+  too long" on the second turn of a fresh session** (hit live, twice). Claude
+  Code's own `--debug api` log states it: `[ToolSearch:optimistic] disabled:
+  ANTHROPIC_BASE_URL=… is not a first-party Anthropic host. Set
+  ENABLE_TOOL_SEARCH=true …`. Hence `tapEnvPrefix` always emits
+  `ENABLE_TOOL_SEARCH=true` beside the base URL (verified to restore the
+  first-party decision exactly: `mode=tst, ENABLE_TOOL_SEARCH=true, result=true`).
+  Do NOT drop it, and when debugging anything context-shaped under the tap, diff
+  `--debug api` logs with and without the base URL before suspecting the proxy
+  itself — the proxy is byte-transparent; the CLIENT behaves differently.
+- **The tap daemon must never log or persist headers** — they carry the auth
+  token. Only method/path/status and the assistant stream (which the transcript
+  already stores in plaintext) are recorded; `TestTapHandlerTeesStreamAndPreservesBytes`
+  asserts a token never reaches the sidecar.
+- **`applyTapActivity` is strictly additive.** The tap knows *which* session is
+  generating (`in_flight`), which `liveCwds` (pgrep+lsof) fundamentally cannot —
+  it sees a claude process in a folder but not which transcript it's writing, so
+  `buildClaudeTree` guesses "the newest N". The overlay promotes what the tap
+  confirms (and adds the `◉` glyph) but never clears a marker for a session it
+  hasn't heard from: no recent API traffic means the agent is waiting on its
+  human, not that the pane is gone.
 - **This is the first feature that writes global config** (`~/.claude/settings.json`),
   opt-in and reversible. `shouldOfferHookInstall` gates the offer so it fires
   only on a fresh interactive Claude run with no explicit flags; `--no-hook-install`

@@ -161,6 +161,12 @@ func fetchEntireSessions() ([]entireSession, error) {
 //	--cloud   → refresh entire's metadata (slow once), then enrich.
 func buildSessionTree(home, pwd string, days int, now int64, forceLocal, cloud bool) sessionTree {
 	local := buildClaudeTree(home, pwd, days, now, claudeLiveCwds())
+	// Exact per-session activity, when the tap daemon is running. Reads one
+	// small cached file — no network, no process scanning, so the tree stays
+	// instant whether or not the daemon is up.
+	if act, ok := readTapActive(home); ok {
+		applyTapActivity(&local, act, now*1000)
+	}
 	if forceLocal {
 		ensureCurrentDirFolder(&local, pwd, now)
 		return local
