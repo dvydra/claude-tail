@@ -431,15 +431,19 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// lingering across ticks renders exactly once.
 	pendingWatch := agent == AgentClaude && isDir(pendingDir(home))
 	lastMarkerKey := ""
-	// Live API-tap watch (Claude only, and only for a session actually routed
-	// through the tap daemon — i.e. its sidecar exists). This is what surfaces a
-	// blocked question's preamble, which the transcript withholds until the user
-	// answers. Absent daemon → no sidecar → nil watcher → zero cost.
+	// Live API-tap watch (Claude only) — what surfaces a blocked question's
+	// preamble, which the transcript withholds until the user answers.
+	//
+	// Created unconditionally rather than gated on the sidecar existing: on a
+	// fresh session the transcript file appears BEFORE the first tap event (~200ms
+	// after the request starts vs. the first completed content block), so a
+	// start-up existence check is always false for exactly the flow the tap is for
+	// — and it would also miss a daemon started mid-session. A watcher whose
+	// sidecar never appears polls a missing path and does nothing, the same cheap
+	// per-tick stat as the pending-marker watch.
 	var tap *tapWatcher
 	if agent == AgentClaude && !cfg.NoTap {
-		if _, err := os.Stat(tapSidecarPath(home, sessionIDFromPath(cur))); err == nil {
-			tap = newTapWatcher(home, sessionIDFromPath(cur))
-		}
+		tap = newTapWatcher(home, sessionIDFromPath(cur))
 	}
 	for {
 		select {
