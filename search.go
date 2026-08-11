@@ -115,6 +115,11 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 			Branch:  h.repo, // reuse the branch column to show the repo
 			Repo:    h.repo, // for reconstructing a cloud-only transcript on select
 			Mtime:   h.mtime,
+			// Recovered from the path, since a hit isn't built by walking the
+			// roots: a personal hit still shows its @ and still resumes under the
+			// personal account. Cloud-only hits (no local path) get "" — correct,
+			// they carry no account of ours.
+			Profile: profileForPath(home, h.path),
 		})
 		if h.mtime > folder.Mtime {
 			folder.Mtime = h.mtime
@@ -161,9 +166,12 @@ func localSearchClaude(home, query string) map[string]*searchHit {
 // localCandidates lists session files that contain query anywhere (fast, via
 // ripgrep -l), or — without rg — every session file (conversationHit filters).
 func localCandidates(home, query string) []string {
-	root := claudeProjectsDir(home)
+	roots := claudeProjectsRoots(home)
 	if _, err := exec.LookPath("rg"); err == nil {
-		b, _ := exec.Command("rg", "-l", "-i", "-F", "-g", "*.jsonl", "--", query, root).Output()
+		// One rg invocation over every account's root — cheaper than one per root
+		// and it keeps rg's own ordering.
+		args := append([]string{"-l", "-i", "-F", "-g", "*.jsonl", "--", query}, roots...)
+		b, _ := exec.Command("rg", args...).Output()
 		var out []string
 		for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
 			if line != "" {
@@ -172,8 +180,12 @@ func localCandidates(home, query string) []string {
 		}
 		return out
 	}
-	m, _ := filepath.Glob(filepath.Join(root, "*", "*.jsonl"))
-	return m
+	var out []string
+	for _, root := range roots {
+		m, _ := filepath.Glob(filepath.Join(root, "*", "*.jsonl"))
+		out = append(out, m...)
+	}
+	return out
 }
 
 var sysReminderRe = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
@@ -298,9 +310,10 @@ func statMtime(path string) int64 {
 }
 
 func localPathForID(home, id string) string {
-	m, _ := filepath.Glob(filepath.Join(claudeProjectsDir(home), "*", id+".jsonl"))
-	if len(m) > 0 {
-		return m[0]
+	for _, root := range claudeProjectsRoots(home) {
+		if m, _ := filepath.Glob(filepath.Join(root, "*", id+".jsonl")); len(m) > 0 {
+			return m[0]
+		}
 	}
 	return ""
 }

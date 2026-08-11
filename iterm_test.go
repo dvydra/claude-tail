@@ -33,7 +33,7 @@ func TestAsEscape(t *testing.T) {
 }
 
 func TestWorkspaceScript(t *testing.T) {
-	s := workspaceScript("/work/proj", "abc-123", "/usr/local/bin/entire-tail", "claude", "")
+	s := workspaceScript("/work/proj", "abc-123", "/usr/local/bin/entire-tail", "claude", "", "")
 	checks := []string{
 		`tell application "iTerm2"`,
 		"tell current window",                                     // reuse current window, don't create one
@@ -57,7 +57,7 @@ func TestWorkspaceScript(t *testing.T) {
 }
 
 func TestNewWorkspaceScriptPinsSessionID(t *testing.T) {
-	s := newWorkspaceScript("/work/proj", "/usr/local/bin/entire-tail", "11111111-2222-4333-8444-555555555555", "claude", "")
+	s := newWorkspaceScript("/work/proj", "/usr/local/bin/entire-tail", "11111111-2222-4333-8444-555555555555", "claude", "", "")
 	checks := []string{
 		"'claude' --session-id '11111111-2222-4333-8444-555555555555'",                         // A pins the id
 		"'/usr/local/bin/entire-tail' --follow-session '11111111-2222-4333-8444-555555555555'", // B follows that exact id
@@ -81,11 +81,11 @@ func TestWorkspaceScriptsHonorClaudeBin(t *testing.T) {
 	id := "11111111-2222-4333-8444-555555555555"
 	self := "/usr/local/bin/entire-tail"
 
-	resume := workspaceScript("/work/proj", id, self, "happy", "")
+	resume := workspaceScript("/work/proj", id, self, "happy", "", "")
 	if !strings.Contains(resume, "cd '/work/proj' && 'happy' --resume '"+id+"'") {
 		t.Errorf("resume workspace should launch happy:\n%s", resume)
 	}
-	fresh := newWorkspaceScript("/work/proj", self, id, "happy", "")
+	fresh := newWorkspaceScript("/work/proj", self, id, "happy", "", "")
 	if !strings.Contains(fresh, "cd '/work/proj' && 'happy'") {
 		t.Errorf("fresh workspace should launch happy:\n%s", fresh)
 	}
@@ -98,7 +98,7 @@ func TestWorkspaceScriptsHonorClaudeBin(t *testing.T) {
 		}
 	}
 
-	spaced := workspaceScript("/work/proj", id, self, "/opt/my agents/happy", "")
+	spaced := workspaceScript("/work/proj", id, self, "/opt/my agents/happy", "", "")
 	if !strings.Contains(spaced, `&& '/opt/my agents/happy' --resume '`+id+`'`) {
 		t.Errorf("a launcher path with spaces must stay quoted:\n%s", spaced)
 	}
@@ -114,7 +114,7 @@ func TestNewWorkspaceScriptPinsOnlyForClaude(t *testing.T) {
 	id := "11111111-2222-4333-8444-555555555555"
 	self := "/usr/local/bin/entire-tail"
 
-	happy := newWorkspaceScript("/work/proj", self, id, "happy", "")
+	happy := newWorkspaceScript("/work/proj", self, id, "happy", "", "")
 	if strings.Contains(happy, "--session-id") {
 		t.Errorf("happy drops --session-id, so the script must not pass it:\n%s", happy)
 	}
@@ -130,7 +130,7 @@ func TestNewWorkspaceScriptPinsOnlyForClaude(t *testing.T) {
 
 	// Plain claude keeps the pinned-id contract, by name or by absolute path.
 	for _, bin := range []string{"claude", "/opt/homebrew/bin/claude"} {
-		s := newWorkspaceScript("/work/proj", self, id, bin, "")
+		s := newWorkspaceScript("/work/proj", self, id, bin, "", "")
 		if !strings.Contains(s, shQuote(bin)+" --session-id '"+id+"'") {
 			t.Errorf("%s: fresh workspace must still pin the id:\n%s", bin, s)
 		}
@@ -166,8 +166,8 @@ func TestWorkspaceScriptsTapEnv(t *testing.T) {
 	}
 
 	for name, s := range map[string]string{
-		"resume": workspaceScript("/work/proj", id, self, "claude", prefix),
-		"fresh":  newWorkspaceScript("/work/proj", self, id, "claude", prefix),
+		"resume": workspaceScript("/work/proj", id, self, "claude", "", prefix),
+		"fresh":  newWorkspaceScript("/work/proj", self, id, "claude", "", prefix),
 	} {
 		if !strings.Contains(s, "cd '/work/proj' && "+prefix+"'claude'") {
 			t.Errorf("%s: agent pane should carry the tap env:\n%s", name, s)
@@ -186,8 +186,8 @@ func TestWorkspaceScriptsTapEnv(t *testing.T) {
 
 	// Without a daemon, both scripts must match the pre-tap output exactly.
 	for name, pair := range map[string][2]string{
-		"resume": {workspaceScript("/work/proj", id, self, "claude", ""), "cd '/work/proj' && 'claude' --resume '" + id + "'"},
-		"fresh":  {newWorkspaceScript("/work/proj", self, id, "claude", ""), "cd '/work/proj' && 'claude' --session-id '" + id + "'"},
+		"resume": {workspaceScript("/work/proj", id, self, "claude", "", ""), "cd '/work/proj' && 'claude' --resume '" + id + "'"},
+		"fresh":  {newWorkspaceScript("/work/proj", self, id, "claude", "", ""), "cd '/work/proj' && 'claude' --session-id '" + id + "'"},
 	} {
 		if !strings.Contains(pair[0], pair[1]) {
 			t.Errorf("%s: fail-open command changed:\n%s", name, pair[0])

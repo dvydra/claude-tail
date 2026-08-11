@@ -147,7 +147,7 @@ func TestPrCellAndRowSurvivesTruncation(t *testing.T) {
 		t.Errorf("prCell should right-align: visible %q", stripANSI(cell))
 	}
 	// The PR cell sits before the branch in the row.
-	row := stripANSI(composeSessionRow(treeSession{PrNumber: 22, PrURL: s.PrURL, Branch: "feat/x", Snippet: "x"}, 1000))
+	row := stripANSI(composeSessionRow(treeSession{PrNumber: 22, PrURL: s.PrURL, Branch: "feat/x", Snippet: "x"}, 1000, ""))
 	if strings.Index(row, "#22") >= strings.Index(row, "[feat/x]") {
 		t.Errorf("PR number should precede the branch: %q", row)
 	}
@@ -156,7 +156,7 @@ func TestPrCellAndRowSurvivesTruncation(t *testing.T) {
 	// sequence must survive intact (both its opening and closing OSC-8 markers
 	// present), never sliced mid-escape. Width 40 cuts into the snippet, well
 	// after the link.
-	styled := styleRow(composeSessionRow(s, 1000), tierRecent, false, 40)
+	styled := styleRow(composeSessionRow(s, 1000, ""), tierRecent, false, 40)
 	openMark := "\x1b]8;;" + s.PrURL + "\x1b\\"
 	closeMark := "\x1b]8;;\x1b\\"
 	if !strings.Contains(styled, openMark) || !strings.Contains(styled, closeMark) {
@@ -528,7 +528,7 @@ func TestRenderListFormat(t *testing.T) {
 
 func TestComposeFolderRowEmpty(t *testing.T) {
 	// The injected current-dir group (no sessions) shows a fixed ▸ and an n hint.
-	row := composeFolderRow(treeFolder{Cwd: "/home/me/here", Dir: "/home/me/here"}, "/home/me", 1000)
+	row := composeFolderRow(treeFolder{Cwd: "/home/me/here", Dir: "/home/me/here"}, "/home/me", 1000, "")
 	if !strings.Contains(row, "~/here") || !strings.Contains(row, "no sessions") || !strings.Contains(row, "n to start") {
 		t.Errorf("empty folder row = %q", row)
 	}

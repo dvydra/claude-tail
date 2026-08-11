@@ -91,8 +91,13 @@ func osaRun(script string) error {
 //
 // All three cd into cwd. B follows the resumed session by id (--follow-session),
 // so a later worktree fork is followed too.
-func launchWorkspace(cwd, resumeID, bin string) error {
-	return osaRun(workspaceScript(cwd, resumeID, selfPath(), bin, tapEnvPrefix(tapBaseURL(homeDir()))))
+//
+// prof is the account that owns the session: resuming a personal session with
+// the work account's credentials would not be a resume at all, so A carries that
+// account's env (see accountEnvPrefix). B needs none — it globs every account's
+// projects root.
+func launchWorkspace(cwd, resumeID, bin string, prof claudeProfile) error {
+	return osaRun(workspaceScript(cwd, resumeID, selfPath(), bin, accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir()))))
 }
 
 // tapEnvPrefix returns the shell assignment that routes a launched agent's API
@@ -136,8 +141,10 @@ func homeDir() string { return firstNonEmpty(os.Getenv("HOME"), mustHome()) }
 // launchNewWorkspace opens the 3-pane workspace for a FRESH Claude session in
 // cwd (the tree's `n` key): A = a new agent with a pinned session id, B =
 // entire-tail following exactly that id, C = a shell.
-func launchNewWorkspace(cwd, bin string) error {
-	return osaRun(newWorkspaceScript(cwd, selfPath(), newSessionID(), bin, tapEnvPrefix(tapBaseURL(homeDir()))))
+// prof picks the account the new agent runs as — the tree's `n` uses the default
+// one, `@` the personal one.
+func launchNewWorkspace(cwd, bin string, prof claudeProfile) error {
+	return osaRun(newWorkspaceScript(cwd, selfPath(), newSessionID(), bin, accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir()))))
 }
 
 // pinsSessionID reports whether bin forwards Claude's `--session-id` to the
@@ -173,9 +180,12 @@ func pinsSessionID(bin string) bool {
 // latches onto exactly A's session even when other Claude sessions are live in
 // the same repo. That only works when bin forwards the flag — see pinsSessionID;
 // a launcher that doesn't gets no id and B falls back to --wait-new.
-func newWorkspaceScript(cwd, self, sessionID, bin, tapEnv string) string {
+// acctEnv (accountEnvPrefix) leads the assignments so the account decision reads
+// first in the queued command line; it is "" for the default account, leaving
+// that launch byte-identical to the pre-profiles one.
+func newWorkspaceScript(cwd, self, sessionID, bin, acctEnv, tapEnv string) string {
 	cd := "cd " + shQuote(cwd)
-	a := cd + " && " + tapEnv + shQuote(bin)
+	a := cd + " && " + acctEnv + tapEnv + shQuote(bin)
 	b := cd + " && " + shQuote(self)
 	if pinsSessionID(bin) {
 		a += " --session-id " + shQuote(sessionID)
@@ -213,9 +223,9 @@ end tell`, asEscape(a), asEscape(b), asEscape(c))
 // A's command is queued to its tty and runs the moment entire-tail exits. All
 // three panes cd into the picked session's folder. B follows by id (not the file
 // path) so a worktree fork of the resumed session is followed too.
-func workspaceScript(cwd, resumeID, self, bin, tapEnv string) string {
+func workspaceScript(cwd, resumeID, self, bin, acctEnv, tapEnv string) string {
 	cd := "cd " + shQuote(cwd)
-	a := cd + " && " + tapEnv + shQuote(bin) + " --resume " + shQuote(resumeID)
+	a := cd + " && " + acctEnv + tapEnv + shQuote(bin) + " --resume " + shQuote(resumeID)
 	b := cd + " && " + shQuote(self) + " --follow-session " + shQuote(resumeID)
 	c := cd
 	return fmt.Sprintf(`tell application "iTerm2"

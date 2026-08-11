@@ -40,7 +40,7 @@ func TestLiveTapActivityWiring(t *testing.T) {
 				continue
 			}
 			matched++
-			row := composeSessionRow(s, tree.Now)
+			row := composeSessionRow(s, tree.Now, "")
 			t.Logf("  %s live=%v generating=%v row=%q", shortID(s.ID), s.Live, s.Generating, strings.TrimSpace(row))
 			if s.Generating {
 				generating++

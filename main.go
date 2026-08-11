@@ -380,7 +380,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// dir). Follow it, KEEPING our byte offset — the moved file shares our
 			// content prefix, so appendStep resumes from there (and self-heals if it
 			// ever shrank). No r.reset(): it's the same session, stream it seamlessly.
-			rp := relocatedSession(claudeProjectsDir(home), sessionIDFromPath(cur), cur)
+			// The root is taken from the file we're following, not from home: a
+			// personal-account session lives under ~/.claude-personal/projects, and
+			// a worktree cwd switch relocates it within THAT root. Searching the
+			// work root for it would silently never find the move.
+			rp := relocatedSession(projectsRootOf(cur), sessionIDFromPath(cur), cur)
 			if rp == "" {
 				return false
 			}
@@ -526,20 +530,29 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 // dir that wasn't there at launch (and has content), then returns its path. Used
 // by the `n` workspace so entire-tail latches onto the session the freshly
 // launched `claude` creates, not whatever was newest before.
+// It watches every account's projects root, so the pane latches on whether the
+// agent beside it was launched as the work or the personal account.
 func waitForNewSession(home, pwd string) string {
-	pattern := filepath.Join(claudeProjectsDir(home), claudeSlug(pwd), "*.jsonl")
+	var patterns []string
+	for _, root := range claudeProjectsRoots(home) {
+		patterns = append(patterns, filepath.Join(root, claudeSlug(pwd), "*.jsonl"))
+	}
 	before := map[string]bool{}
-	for _, f := range globList(pattern) {
-		before[f] = true
+	for _, p := range patterns {
+		for _, f := range globList(p) {
+			before[f] = true
+		}
 	}
 	fmt.Fprintf(os.Stderr, "entire-tail: waiting for a new Claude session in %s … (Ctrl-C to cancel)\n", pwd)
 	for {
-		for _, f := range globList(pattern) {
-			if before[f] {
-				continue
-			}
-			if fi, err := os.Stat(f); err == nil && fi.Size() > 0 {
-				return f // the session the new `claude` just created
+		for _, p := range patterns {
+			for _, f := range globList(p) {
+				if before[f] {
+					continue
+				}
+				if fi, err := os.Stat(f); err == nil && fi.Size() > 0 {
+					return f // the session the new `claude` just created
+				}
 			}
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -551,15 +564,29 @@ func waitForNewSession(home, pwd string) string {
 // --session-id <id>` and `entire-tail --follow-session <id>` share the id, so
 // entire-tail latches onto exactly that file no matter how many other Claude
 // sessions are live in the same repo.
+// The id is watched under every account's projects root, so a pinned personal
+// workspace needs no extra flag to say which account it launched — the file
+// simply appears under whichever root its agent is writing to.
 func waitForSessionFile(home, pwd, id string) string {
-	path := filepath.Join(claudeProjectsDir(home), claudeSlug(pwd), id+".jsonl")
-	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
-		return path
+	var paths []string
+	for _, root := range claudeProjectsRoots(home) {
+		paths = append(paths, filepath.Join(root, claudeSlug(pwd), id+".jsonl"))
+	}
+	ready := func() string {
+		for _, p := range paths {
+			if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
+				return p
+			}
+		}
+		return ""
+	}
+	if p := ready(); p != "" {
+		return p
 	}
 	fmt.Fprintf(os.Stderr, "entire-tail: waiting for Claude session %s in %s … (Ctrl-C to cancel)\n", id, pwd)
 	for {
-		if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
-			return path
+		if p := ready(); p != "" {
+			return p
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

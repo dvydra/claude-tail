@@ -56,6 +56,49 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   (`git grep` the session id → largest `transcript.jsonl` → temp file), so search
   hits from pruned/other-machine sessions stay tailable when the repo is local
 - `adapter.go` — the `Record`/`Kind` types and the adapter interface
+- `profile.go` — **which Claude ACCOUNT a session belongs to.** A second Claude
+  subscription can't just `/login` on macOS (subscription logins live in the
+  shared Keychain, so the last login flips every session, running ones
+  included); it's pinned with a long-lived `claude setup-token` OAuth token and
+  its own `CLAUDE_CONFIG_DIR` — by convention `~/.claude-personal`. Since Claude
+  Code stores transcripts under `$CLAUDE_CONFIG_DIR/projects`, that's a SECOND
+  parallel projects tree everything here used to be blind to. `claudeProfiles`
+  returns the ordered roots (**default first — that order is the tiebreak** when
+  two roots offer an equally good match, preserving pre-profiles behaviour), and
+  the personal one appears **only when its `projects/` dir exists**, so a
+  single-account machine does exactly the work it always did. Everything that
+  used to derive a root from `home` now iterates `claudeProjectsRoots`:
+  `findSessionClaude` (per *tier*, so an exact-cwd hit in one account beats a
+  same-tree guess in the other), `detectAgentForFile`, `buildClaudeTree`,
+  `localCandidates`/`localPathForID`, `resolveClaudeSession` (auto-adopt),
+  `waitForNewSession`/`waitForSessionFile`, `localRepoDirs`. The one that must
+  NOT is relocation: `relocatedSession` takes `projectsRootOf(cur)` — the root is
+  already encoded in the path we're following, and re-deriving it from `home`
+  would silently never find a personal session's worktree hop. Tree grouping is
+  by **cwd, not cwd-and-account** (`buildClaudeTree` pools by slug across roots,
+  then `sortSessions` — concatenating two newest-first lists isn't newest-first,
+  and `sessions[0]` feeds `folder.Mtime`/`Cwd`/`Dir`). Marker: pink `@` per
+  session (`profileMark`, a fixed 2-col cell so ids stay aligned), and on folder
+  headers via `folderProfile` — `@` only when EVERY session is personal, dim `@`
+  when mixed, nothing for work-only (folder rows reserve no cell, so work rows
+  are unchanged). Both take a `restore` ANSI because `styleRow` colors the whole
+  row — without handing the tier color back, everything after the `@` renders
+  pink to EOL; `truncVisible` already skips CSI escapes uncounted, so truncation
+  is safe. Launch: `accountEnvPrefix` prepends `CLAUDE_CONFIG_DIR` +
+  `CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password …)"` to pane A only
+  (`workspaceScript`/`newWorkspaceScript` gained an `acctEnv` param, `""` for the
+  default account → byte-identical launch). **Both halves are load-bearing:**
+  `CLAUDE_CONFIG_DIR` alone moves the transcripts but not the credentials (the
+  Keychain login still decides the account, so a "personal" resume quietly runs
+  as work), and the token alone authenticates the right account into the wrong
+  projects tree. The token is a **shell** command substitution on purpose — it
+  never enters our memory, argv (`ps`-visible), or a log; the double quotes are
+  required. Pane B needs no account context — it watches every root, which is
+  also why `n`/`@` need no extra flag. Keys: `n` = default account (unchanged),
+  `@` = personal (a separate key, not inference from the cursor: "which account
+  am I starting as" is not a thing to guess). `/@` filters by account, matching
+  the visible marker rather than the word "personal" — substring-matching that
+  word would make a filter of `n` or `e` drag in every personal session
 - `discovery.go` — find the session file for `$PWD` per agent
 - `tree.go` — the interactive session **tree** picker (the DEFAULT): sessions
   grouped by repo/folder, arrow-key navigable, recency-colored, type-to-filter;
@@ -442,6 +485,17 @@ needs to change.
   confirms (and adds the `◉` glyph) but never clears a marker for a session it
   hasn't heard from: no recent API traffic means the agent is waiting on its
   human, not that the pane is gone.
+- **The pending hooks and the tap are already account-agnostic — verified, not
+  assumed.** The hook script writes `$HOME/.claude/entire-tail/pending`
+  (`hooks/entire-tail-pending.sh`), keyed on HOME rather than
+  `$CLAUDE_CONFIG_DIR`, and `~/.claude-personal/settings.json` is a symlink to
+  the work one, so a personal session's prompts already produce markers with no
+  profile-specific code. Same for `tapDir`. One thing that could have broken
+  this and doesn't: `hookinstall.go` writes settings with `os.WriteFile`, an
+  in-place truncate that follows the symlink — a temp-file+rename would replace
+  the symlink with a real file and silently fork the two accounts' configs (the
+  exact hazard `setup-claude-personal.sh`'s README warns about). Don't
+  "modernize" that write to an atomic rename without handling the symlink.
 - **This is the first feature that writes global config** (`~/.claude/settings.json`),
   opt-in and reversible. `shouldOfferHookInstall` gates the offer so it fires
   only on a fresh interactive Claude run with no explicit flags; `--no-hook-install`

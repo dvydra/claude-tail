@@ -219,22 +219,44 @@ func adoptPaneSession(home string, getenv func(string) string) (string, string) 
 // file. An id on the command line locates it exactly (by cwd, else by scanning
 // every project dir for that id); otherwise the actively-written .jsonl in the
 // cwd's project dir wins. "" when nothing resolves.
+// Every account's projects root is searched, in profile order, so a `claude` in
+// the sibling pane is adopted whether it was launched as the work or the
+// personal account. Order gives the default account ties, matching what a
+// single-root build used to do.
 func resolveClaudeSession(home, cwd, argv string) string {
-	projects := claudeProjectsDir(home)
+	roots := claudeProjectsRoots(home)
 	if id := scrapeSessionIDArg(argv); id != "" {
 		if cwd != "" {
-			if p := filepath.Join(projects, claudeSlug(cwd), id+".jsonl"); isFile(p) {
-				return p
+			for _, projects := range roots {
+				if p := filepath.Join(projects, claudeSlug(cwd), id+".jsonl"); isFile(p) {
+					return p
+				}
 			}
 		}
-		if p := newestGlob(filepath.Join(projects, "*", id+".jsonl")); p != "" {
+		var patterns []string
+		for _, projects := range roots {
+			patterns = append(patterns, filepath.Join(projects, "*", id+".jsonl"))
+		}
+		if p := newestAcross(patterns); p != "" {
 			return p
 		}
 	}
 	if cwd == "" {
 		return ""
 	}
-	return liveSessionInDir(filepath.Join(projects, claudeSlug(cwd)))
+	// No id on the command line: whichever root holds the actively-appended
+	// transcript for this cwd wins, newest first.
+	best, bestMtime := "", int64(-1)
+	for _, projects := range roots {
+		p := liveSessionInDir(filepath.Join(projects, claudeSlug(cwd)))
+		if p == "" {
+			continue
+		}
+		if mt := fileMtimeNano(p); mt > bestMtime {
+			best, bestMtime = p, mt
+		}
+	}
+	return best
 }
 
 // liveSessionInDir picks the live transcript among a project dir's .jsonl files:
