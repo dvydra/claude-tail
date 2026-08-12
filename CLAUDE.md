@@ -485,6 +485,22 @@ needs to change.
   confirms (and adds the `◉` glyph) but never clears a marker for a session it
   hasn't heard from: no recent API traffic means the agent is waiting on its
   human, not that the pane is gone.
+- **A finished worktree's sessions still group under their repo.** `repoForCwd`
+  asks git for the cwd's `origin`, and git cannot answer for a directory that no
+  longer exists — which is the NORMAL end state of a worktree (its dir is deleted
+  once the work merges). Every finished worktree therefore used to fall through to
+  the `tildify(cwd)` fallback and show as its own orphan group right beside the
+  repo group its sessions belong in. `worktreeParent` recovers the checkout from
+  the path instead of from git (`<checkout>/.claude/worktrees/<name>`, stripped at
+  the FIRST marker so a session run in a *subdirectory* of a worktree also
+  resolves), and `repoForCwd` retries the origin lookup there. Pure string work on
+  purpose: it has to keep working for a path that's gone, which is exactly when
+  it's needed. The knock-on is in `mergeEntire`'s `add` — a group's newest session
+  is now often one whose dir was deleted, so `g.Dir` (the `n` target) only accepts
+  a cwd that `isDir()`, or `n` would cd into nothing. `TestWorktreeParent`,
+  `TestMergeEntireSkipsDeadDirsForNewSessions`. Note this is the DEFAULT
+  repo-grouped tree only; `--local` groups by folder path by design and still
+  shows worktree paths as their own rows.
 - **The pending hooks and the tap are already account-agnostic — verified, not
   assumed.** The hook script writes `$HOME/.claude/entire-tail/pending`
   (`hooks/entire-tail-pending.sh`), keyed on HOME rather than

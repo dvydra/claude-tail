@@ -222,8 +222,12 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 		if s.Mtime > g.Mtime {
 			g.Mtime = s.Mtime
 		}
-		if g.Dir == "" && s.cwd != "" {
-			g.Dir = s.cwd // a real local dir for the repo group, for `n`
+		// A real local dir for the repo group, for `n`. It must still EXIST: now
+		// that finished worktrees collapse into their repo group (see
+		// worktreeParent), the newest session in a group is often one whose
+		// directory has since been deleted — and `n` there would cd into nothing.
+		if g.Dir == "" && s.cwd != "" && isDir(s.cwd) {
+			g.Dir = s.cwd
 		}
 		if s.Live {
 			g.Live++
@@ -317,10 +321,36 @@ func repoForCwd(cwd, home string, cache map[string]string) string {
 	}
 	repo := parseGitRemote(gitOriginURL(cwd))
 	if repo == "" {
+		// git can't answer for a directory that no longer exists, and a worktree's
+		// directory is DELETED once its work merges — so every finished worktree
+		// used to fall through to the path fallback below and become its own orphan
+		// group, right next to the repo group its sessions belong in.
+		//
+		// The parent checkout is still recoverable from the path itself, without
+		// asking git anything: worktrees live at `<checkout>/.claude/worktrees/<name>`
+		// by convention, and that checkout is usually still on disk.
+		if parent := worktreeParent(cwd); parent != "" {
+			repo = parseGitRemote(gitOriginURL(parent))
+		}
+	}
+	if repo == "" {
 		repo = tildify(cwd, home)
 	}
 	cache[cwd] = repo
 	return repo
+}
+
+// worktreeParent returns the checkout a worktree path was cut from, or "" when
+// cwd isn't inside one. It strips at the FIRST `.claude/worktrees/` segment, so a
+// session that ran in a subdirectory of a worktree
+// (`<checkout>/.claude/worktrees/<name>/sub/dir`) still resolves to the checkout.
+// Pure string work on purpose — it has to keep working for a path that's gone.
+func worktreeParent(cwd string) string {
+	const marker = "/.claude/worktrees/"
+	if i := strings.Index(cwd, marker); i > 0 {
+		return cwd[:i]
+	}
+	return ""
 }
 
 func gitOriginURL(cwd string) string {
