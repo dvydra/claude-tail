@@ -112,3 +112,53 @@ func TestMergeEntire(t *testing.T) {
 		t.Errorf("untracked snippet overwritten: %q", fallback.Sessions[0].Snippet)
 	}
 }
+
+func TestWorktreeParent(t *testing.T) {
+	cases := map[string]string{
+		// The reported case: a finished worktree whose directory is gone.
+		"/Users/me/tools/sched/.claude/worktrees/ios-install": "/Users/me/tools/sched",
+		// A session that ran in a SUBDIRECTORY of a worktree still resolves to the
+		// checkout, not to the worktree.
+		"/Users/me/src/eph/.claude/worktrees/tok/tasks/2026-split": "/Users/me/src/eph",
+		// Not a worktree path.
+		"/Users/me/src/plain":                   "",
+		"/Users/me/src/plain/.claude/settings":  "",
+		"/Users/me/src/plain/.claude/worktrees": "", // the dir itself, no <name>
+		"":                                      "",
+	}
+	for in, want := range cases {
+		if got := worktreeParent(in); got != want {
+			t.Errorf("worktreeParent(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestMergeEntireSkipsDeadDirsForNewSessions(t *testing.T) {
+	// Now that finished worktrees collapse into their repo group, a group's newest
+	// session is often one whose directory has since been deleted. `n` must not cd
+	// into it — Dir has to come from a session whose cwd still exists.
+	live := t.TempDir()
+	local := sessionTree{
+		Pwd: "/p",
+		Folders: []treeFolder{{
+			Cwd: "/home/me/work/infra",
+			Sessions: []treeSession{
+				{ID: "gone", Mtime: 200, cwd: "/home/me/work/infra/.claude/worktrees/merged-away"},
+				{ID: "here", Mtime: 100, cwd: live},
+			},
+		}},
+	}
+	entire := []entireSession{
+		{SessionID: "gone", Repo: "org/infra", LastActivityAt: "2026-07-10T00:59:00Z"},
+		{SessionID: "here", Repo: "org/infra", LastActivityAt: "2026-07-10T00:58:00Z"},
+	}
+	tree := mergeEntire(local, entire, "/home/me", 0, parseEntireTime("2026-07-10T01:00:00Z"))
+
+	infra := folderByCwd(tree, "org/infra")
+	if infra == nil {
+		t.Fatal("no org/infra group")
+	}
+	if infra.Dir != live {
+		t.Errorf("group Dir = %q, want the existing dir %q (a deleted worktree is not an `n` target)", infra.Dir, live)
+	}
+}
