@@ -26,7 +26,11 @@ func localRepoDirs(home string) map[string]string {
 	repoDirsOnce.Do(func() {
 		repoDirsMap = map[string]string{}
 		cache := map[string]string{}
-		dirs, _ := filepath.Glob(filepath.Join(claudeProjectsDir(home), "*"))
+		var dirs []string
+		for _, root := range claudeProjectsRoots(home) {
+			m, _ := filepath.Glob(filepath.Join(root, "*"))
+			dirs = append(dirs, m...)
+		}
 		for _, d := range dirs {
 			f := newestGlob(filepath.Join(d, "*.jsonl"))
 			if f == "" {

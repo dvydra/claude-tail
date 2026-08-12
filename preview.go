@@ -241,6 +241,11 @@ func summaryCardLines(s treeSession, ai aiSummary, haveAI bool, links []sessionL
 	}
 	add("")
 	add("  session    %s", s.ID)
+	// Only the non-default account is named. "account: work" on every other card
+	// would be noise for the many people who never set a second one up.
+	if s.Profile != "" {
+		add("  account    @ %s", s.Profile)
+	}
 	if s.Repo != "" {
 		add("  repo       %s", s.Repo)
 	}

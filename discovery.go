@@ -36,17 +36,46 @@ func claudeProjectsDir(home string) string {
 // exact-cwd match (lossless), then the nearest session in the same directory
 // tree (a parent or child of pwd — see claudeTreeDir), and finally the global
 // newest across all projects.
+//
+// Every tier is evaluated across ALL accounts' projects roots (see profile.go)
+// before falling to the next: an exact-cwd match in the personal account beats a
+// same-tree guess in the work account, because the tier is the stronger signal.
+// Within a tier the newest file wins, ties going to the default account.
 func findSessionClaude(home, pwd string) string {
-	root := claudeProjectsDir(home)
-	if f := newestGlob(filepath.Join(root, claudeSlug(pwd), "*.jsonl")); f != "" {
+	roots := claudeProjectsRoots(home)
+	var exact, sameTree, global []string
+	for _, root := range roots {
+		exact = append(exact, filepath.Join(root, claudeSlug(pwd), "*.jsonl"))
+		if d := claudeTreeDir(root, home, pwd); d != "" {
+			sameTree = append(sameTree, filepath.Join(d, "*.jsonl"))
+		}
+		global = append(global, filepath.Join(root, "*", "*.jsonl"))
+	}
+	if f := newestAcross(exact); f != "" {
 		return f
 	}
-	if d := claudeTreeDir(root, home, pwd); d != "" {
-		if f := newestGlob(filepath.Join(d, "*.jsonl")); f != "" {
-			return f
+	if f := newestAcross(sameTree); f != "" {
+		return f
+	}
+	return newestAcross(global)
+}
+
+// newestAcross returns the newest file matching any of the patterns. Ties go to
+// the EARLIEST pattern (the comparison is strictly >), which is how profile
+// order — default account first — survives two roots holding equally fresh
+// sessions.
+func newestAcross(patterns []string) string {
+	best, bestMtime := "", int64(-1)
+	for _, p := range patterns {
+		f := newestGlob(p)
+		if f == "" {
+			continue
+		}
+		if mt := fileMtimeNano(f); mt > bestMtime {
+			best, bestMtime = f, mt
 		}
 	}
-	return newestGlob(filepath.Join(root, "*", "*.jsonl"))
+	return best
 }
 
 // claudeAncestors yields pwd's ancestor directories from nearest (its parent)
@@ -225,9 +254,12 @@ var upperEnumRe = regexp.MustCompile(`^[A-Z_]+$`)
 // detectAgentForFile identifies which agent owns a session path: by location
 // first, then by sniffing the first line's shape.
 func detectAgentForFile(home, path string) Agent {
+	for _, root := range claudeProjectsRoots(home) {
+		if strings.HasPrefix(path, root+string(os.PathSeparator)) {
+			return AgentClaude
+		}
+	}
 	switch {
-	case strings.HasPrefix(path, filepath.Join(home, ".claude", "projects")+string(os.PathSeparator)):
-		return AgentClaude
 	case strings.HasPrefix(path, filepath.Join(home, ".codex", "sessions")+string(os.PathSeparator)):
 		return AgentCodex
 	case strings.HasPrefix(path, filepath.Join(home, ".gemini", "antigravity-cli")+string(os.PathSeparator)):

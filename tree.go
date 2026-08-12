@@ -40,6 +40,11 @@ type treeSession struct {
 	Live    bool   // a running claude process holds this session's folder
 	cwd     string // recovered .cwd (build-only; folder carries the display copy)
 
+	// Profile names the Claude account that owns this session — "" for the
+	// default one, "personal" for the second config dir (see profile.go). It
+	// drives both the pink @ and which credentials the workspace launches with.
+	Profile string
+
 	// Generating is set only from the tap daemon's activity table: this exact
 	// session has an API request in flight right now. Unlike Live (a
 	// process-and-folder guess), it is per-session fact.
@@ -91,13 +96,17 @@ type claudeMetaEvent struct {
 
 // ── build ─────────────────────────────────────────────────────────────────
 
-// buildClaudeTree scans ~/.claude/projects for Claude sessions active within the
-// last `days` days (0 = uncapped), grouped by folder. liveCwds maps a live cwd to
-// its running-process count; a folder whose cwd is live is kept regardless of age.
+// buildClaudeTree scans every account's projects root (see profile.go — normally
+// just ~/.claude, plus ~/.claude-personal when that second account is set up) for
+// Claude sessions active within the last `days` days (0 = uncapped), grouped by
+// folder. liveCwds maps a live cwd to its running-process count; a folder whose
+// cwd is live is kept regardless of age.
+//
+// Grouping is by cwd, NOT by cwd-and-account: the same directory worked in from
+// both accounts is one folder holding both sets of sessions, each tagged with its
+// own Profile. Which account a session belongs to is a property of the session;
+// which directory it ran in is what the user is looking for.
 func buildClaudeTree(home, pwd string, days int, now int64, liveCwds map[string]int) sessionTree {
-	root := claudeProjectsDir(home)
-	entries, _ := os.ReadDir(root)
-
 	var cutoff int64
 	if days > 0 {
 		cutoff = now - int64(days)*86400
@@ -109,26 +118,48 @@ func buildClaudeTree(home, pwd string, days int, now int64, liveCwds map[string]
 		forceKeep[claudeSlug(cwd)] = true
 	}
 
+	// Pool by slug across accounts before building any folder, so a cwd present in
+	// both roots yields one merged folder rather than two competing ones.
+	pooled := map[string][]treeSession{}
+	var order []string // first-seen slug order; sortFolders has the final say
+	for _, prof := range claudeProfiles(home) {
+		root := prof.projects()
+		entries, _ := os.ReadDir(root)
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			slug := e.Name()
+			dir := filepath.Join(root, slug)
+			// Cheap gate: skip cold folders without opening a single session file.
+			if cutoff > 0 && !forceKeep[slug] {
+				fi, err := os.Stat(dir)
+				if err != nil || fi.ModTime().Unix() < cutoff {
+					continue
+				}
+			}
+			sessions := claudeFolderSessions(dir, cutoff, forceKeep[slug])
+			if len(sessions) == 0 {
+				continue
+			}
+			for i := range sessions {
+				sessions[i].Profile = prof.Name
+			}
+			if _, seen := pooled[slug]; !seen {
+				order = append(order, slug)
+			}
+			pooled[slug] = append(pooled[slug], sessions...)
+		}
+	}
+
 	tree := sessionTree{Now: now, Pwd: pwd, Home: home}
 	pwdSlug := claudeSlug(pwd)
 
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		slug := e.Name()
-		dir := filepath.Join(root, slug)
-		// Cheap gate: skip cold folders without opening a single session file.
-		if cutoff > 0 && !forceKeep[slug] {
-			fi, err := os.Stat(dir)
-			if err != nil || fi.ModTime().Unix() < cutoff {
-				continue
-			}
-		}
-		sessions := claudeFolderSessions(dir, cutoff, forceKeep[slug])
-		if len(sessions) == 0 {
-			continue
-		}
+	for _, slug := range order {
+		sessions := pooled[slug]
+		// claudeFolderSessions returns each root newest-first; concatenating two of
+		// them does not, so re-sort before anything reads sessions[0].
+		sortSessions(sessions)
 		folder := treeFolder{
 			Slug:     slug,
 			Sessions: sessions,
@@ -140,7 +171,8 @@ func buildClaudeTree(home, pwd string, days int, now int64, liveCwds map[string]
 		folder.Live = liveCwds[folder.Cwd]
 		// Mark the newest N sessions live, where N is the running-process count —
 		// those are the panes actively writing. Older sessions in a live folder
-		// are colored by their own age, not painted live wholesale.
+		// are colored by their own age, not painted live wholesale. pgrep can't
+		// tell the accounts apart either, so this stays a pooled newest-N guess.
 		for i := range folder.Sessions {
 			folder.Sessions[i].Live = i < folder.Live
 		}
@@ -148,6 +180,18 @@ func buildClaudeTree(home, pwd string, days int, now int64, liveCwds map[string]
 	}
 	sortFolders(tree.Folders)
 	return tree
+}
+
+// sortSessions orders sessions newest-first, ties broken by path descending —
+// the same ordering globWithMtime produces, so a single-account tree comes out
+// of the pooling step byte-identical to the pre-profiles build.
+func sortSessions(ss []treeSession) {
+	sort.Slice(ss, func(i, j int) bool {
+		if ss[i].Mtime != ss[j].Mtime {
+			return ss[i].Mtime > ss[j].Mtime
+		}
+		return ss[i].Path > ss[j].Path
+	})
 }
 
 // applyTapActivity overlays the tap daemon's per-session activity table onto a
@@ -487,6 +531,14 @@ func flattenRows(t sessionTree, filter string) []treeRow {
 }
 
 func sessionMatches(s treeSession, f string) bool {
+	// A filter starting with @ selects by account: "@" alone (or any prefix of
+	// "@personal") keeps only personal sessions. It matches the marker the rows
+	// actually show, rather than substring-matching the word "personal" — which
+	// would make an ordinary filter like "n" or "e" drag in every personal
+	// session alongside the real hits.
+	if strings.HasPrefix(f, "@") {
+		return s.Profile == personalProfile && strings.HasPrefix(personalProfile, strings.TrimPrefix(f, "@"))
+	}
 	return strings.Contains(strings.ToLower(s.Snippet), f) ||
 		strings.Contains(strings.ToLower(s.ID), f) ||
 		strings.Contains(strings.ToLower(s.Branch), f)
@@ -505,14 +557,16 @@ type treeUI struct {
 	Filter          string
 	Filtering       bool
 	Quit            bool
-	NewWorkspace    bool        // 'n' → fresh session workspace; ends the loop
+	NewWorkspace    bool        // 'n'/'@' → fresh session workspace; ends the loop
 	NewWorkspaceDir string      // folder under the cursor when 'n' pressed ("" = $PWD)
+	NewWorkspaceAcc string      // account for the fresh session: "" = default, "personal" = '@'
 	SummaryReq      bool        // 'i' → show the highlighted session's combined info view
 	Sel             treeSession // the session captured for the info view
 	Chosen          string      // selected session path; non-empty ends the loop
 	ChosenCwd       string      // folder cwd of the selection (for the iTerm launcher)
 	ChosenID        string      // session id of the selection (for claude --resume)
 	ChosenRepo      string      // repo of the selection (to reconstruct a cloud-only transcript)
+	ChosenAcc       string      // account owning the selection (which credentials to resume with)
 	Workspace       bool        // selection should open the iTerm workspace, not tail
 }
 
@@ -602,7 +656,13 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 		case ' ':
 			ui.Cursor += ui.pageStep() // pager convention: space = page down
 		case 'n', 'N':
-			ui.startNewWorkspace()
+			ui.startNewWorkspace("")
+		case '@':
+			// Same workspace, second account. A separate key rather than inferring
+			// the account from the cursor: `n` must keep meaning exactly what it
+			// always meant, and "which account am I about to start as" is not a
+			// thing to guess at.
+			ui.startNewWorkspace(personalProfile)
 		case 'i', 'I':
 			if s, ok := ui.currentSession(); ok {
 				ui.Sel, ui.SummaryReq = s, true
@@ -657,16 +717,18 @@ func (ui *treeUI) activate() {
 		return
 	}
 	if row.Session == -1 {
-		ui.startNewWorkspace() // Enter on a folder → fresh session workspace (same as `n`)
+		ui.startNewWorkspace("") // Enter on a folder → fresh session workspace (same as `n`)
 		return
 	}
 	ui.selectSession(true) // Enter on a session → open the iTerm workspace
 }
 
 // startNewWorkspace requests a fresh session workspace in the highlighted
-// folder's dir (else $PWD). Bound to both `n` and Enter-on-a-folder.
-func (ui *treeUI) startNewWorkspace() {
+// folder's dir (else $PWD), running as account `acc` ("" = the default one).
+// Bound to `n` and Enter-on-a-folder (default account) and `@` (personal).
+func (ui *treeUI) startNewWorkspace(acc string) {
 	ui.NewWorkspace = true
+	ui.NewWorkspaceAcc = acc
 	if row, ok := ui.current(); ok {
 		ui.NewWorkspaceDir = ui.Tree.Folders[row.Folder].Dir
 	}
@@ -687,6 +749,7 @@ func (ui *treeUI) selectSession(workspace bool) {
 	ui.ChosenCwd = folder.Cwd
 	ui.ChosenID = s.ID
 	ui.ChosenRepo = s.Repo
+	ui.ChosenAcc = s.Profile
 	ui.Workspace = workspace
 }
 
@@ -790,7 +853,11 @@ func liveBadge(n int) string {
 	}
 }
 
-func composeFolderRow(f treeFolder, home string, now int64) string {
+// composeFolderRow renders a group header. The account tag sits between the
+// arrow and the path and is only emitted for a folder that holds personal
+// sessions — folder rows have no columns to keep aligned (paths vary in length),
+// so a work-only folder renders exactly as it did before profiles existed.
+func composeFolderRow(f treeFolder, home string, now int64, restore string) string {
 	if len(f.Sessions) == 0 {
 		// The always-shown current directory with no sessions yet — a fixed ▸ (there's
 		// nothing to expand) and a hint that `n` starts one here.
@@ -800,7 +867,8 @@ func composeFolderRow(f treeFolder, home string, now int64) string {
 	if f.Expanded {
 		arrow = "▾"
 	}
-	return fmt.Sprintf("%s %s  (%d)  %s%s", arrow, tildify(f.Cwd, home), len(f.Sessions), relAge(f.Mtime, now), liveBadge(f.Live))
+	tag := profileTag(folderProfile(f.Sessions), restore)
+	return fmt.Sprintf("%s %s%s  (%d)  %s%s", arrow, tag, tildify(f.Cwd, home), len(f.Sessions), relAge(f.Mtime, now), liveBadge(f.Live))
 }
 
 // prColWidth is the fixed width of the PR column: `#` + up to five digits.
@@ -825,7 +893,7 @@ func prCell(s treeSession) string {
 	return strings.Repeat(" ", pad) + label
 }
 
-func composeSessionRow(s treeSession, now int64) string {
+func composeSessionRow(s treeSession, now int64, restore string) string {
 	bullet := "○"
 	if s.Live {
 		bullet = "●"
@@ -839,9 +907,11 @@ func composeSessionRow(s treeSession, now int64) string {
 	if s.Branch != "" {
 		branch = "[" + s.Branch + "] "
 	}
+	// The account marker is a fixed two-column cell (blank for the default
+	// account) so ids stay in one column in a folder holding both.
 	// Age is %-8s so the longest label ("just now") still pads to a fixed column —
 	// a %-7s would let "just now" overflow and push everything right by one.
-	return fmt.Sprintf("    %s %-8s  %-8s  %s  %s%s", bullet, shortID(s.ID), relAge(s.Mtime, now), prCell(s), branch, s.Snippet)
+	return fmt.Sprintf("    %s %s%-8s  %-8s  %s  %s%s", bullet, profileMark(s.Profile, restore), shortID(s.ID), relAge(s.Mtime, now), prCell(s), branch, s.Snippet)
 }
 
 // styleRow applies the cursor marker, recency color, and width truncation.
@@ -869,15 +939,15 @@ func renderRow(ui treeUI, i int) string {
 	cursor := i == ui.Cursor
 	if row.Session == -1 {
 		tier := classifyTier(folder.Mtime, ui.Tree.Now, folder.Live > 0)
-		return styleRow(composeFolderRow(folder, ui.Tree.Home, ui.Tree.Now), tier, cursor, ui.Width)
+		return styleRow(composeFolderRow(folder, ui.Tree.Home, ui.Tree.Now, tierColor(tier)), tier, cursor, ui.Width)
 	}
 	s := folder.Sessions[row.Session]
 	tier := classifyTier(s.Mtime, ui.Tree.Now, s.Live)
-	return styleRow(composeSessionRow(s, ui.Tree.Now), tier, cursor, ui.Width)
+	return styleRow(composeSessionRow(s, ui.Tree.Now, tierColor(tier)), tier, cursor, ui.Width)
 }
 
 func composeHeader() string {
-	return "  CLAUDE SESSIONS  ↑↓ · → expand · ⏎ workspace↗ · i info · t tail · n new↗ · / filter · q"
+	return "  CLAUDE SESSIONS  ↑↓ · → expand · ⏎ workspace↗ · i info · t tail · n new↗ · @ new personal↗ · / filter · q"
 }
 
 func composeFooter(ui treeUI) string {
@@ -921,16 +991,27 @@ func renderTree(ui treeUI) string {
 // renderList writes the tree as a flat, greppable ls-style dump. Color is used
 // only when writing to a terminal.
 func renderList(w io.Writer, t sessionTree, color bool) {
+	// restore returns the ANSI an inline marker should hand the row back to, or ""
+	// when the dump is piped — where the @ still prints, just uncolored, so the
+	// output stays greppable for it.
+	restore := func(tier recencyTier) string {
+		if !color {
+			return ""
+		}
+		return tierColor(tier)
+	}
 	for _, folder := range t.Folders {
-		hdr := tildify(folder.Cwd, t.Home) + liveBadge(folder.Live)
-		writeColored(w, hdr, classifyTier(folder.Mtime, t.Now, folder.Live > 0), color)
+		ftier := classifyTier(folder.Mtime, t.Now, folder.Live > 0)
+		hdr := profileTag(folderProfile(folder.Sessions), restore(ftier)) + tildify(folder.Cwd, t.Home) + liveBadge(folder.Live)
+		writeColored(w, hdr, ftier, color)
 		for _, s := range folder.Sessions {
 			branch := ""
 			if s.Branch != "" {
 				branch = "[" + s.Branch + "] "
 			}
-			line := fmt.Sprintf("  %-8s  %-8s  %s  %s%s", shortID(s.ID), relAge(s.Mtime, t.Now), prCell(s), branch, s.Snippet)
-			writeColored(w, line, classifyTier(s.Mtime, t.Now, s.Live), color)
+			stier := classifyTier(s.Mtime, t.Now, s.Live)
+			line := fmt.Sprintf("  %s%-8s  %-8s  %s  %s%s", profileMark(s.Profile, restore(stier)), shortID(s.ID), relAge(s.Mtime, t.Now), prCell(s), branch, s.Snippet)
+			writeColored(w, line, stier, color)
 		}
 	}
 }
@@ -980,6 +1061,10 @@ type treeChoice struct {
 	Cwd    string
 	ID     string
 	Repo   string
+	// Account is the profile Name the launched agent must run as: "" for the
+	// default one, "personal" for the second config dir. For a resume it comes
+	// from the session; for a fresh workspace, from which key was pressed.
+	Account string
 }
 
 // runClaudeTree builds and runs the interactive tree. A treeNone result means the
@@ -1043,14 +1128,14 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 			continue
 		}
 		if ui.NewWorkspace {
-			return treeChoice{Result: treeNewWorkspace, Cwd: firstNonEmpty(ui.NewWorkspaceDir, ui.Tree.Pwd)}
+			return treeChoice{Result: treeNewWorkspace, Cwd: firstNonEmpty(ui.NewWorkspaceDir, ui.Tree.Pwd), Account: ui.NewWorkspaceAcc}
 		}
 		if ui.Chosen != "" {
 			res := treeChosen
 			if ui.Workspace {
 				res = treeWorkspace
 			}
-			return treeChoice{Result: res, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID, Repo: ui.ChosenRepo}
+			return treeChoice{Result: res, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID, Repo: ui.ChosenRepo, Account: ui.ChosenAcc}
 		}
 	}
 }

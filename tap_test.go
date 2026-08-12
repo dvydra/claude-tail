@@ -234,9 +234,9 @@ func TestApplyTapActivity(t *testing.T) {
 
 func TestComposeSessionRowGeneratingGlyph(t *testing.T) {
 	now := int64(1786318800)
-	plain := composeSessionRow(treeSession{ID: "abc12345", Mtime: now}, now)
-	live := composeSessionRow(treeSession{ID: "abc12345", Mtime: now, Live: true}, now)
-	gen := composeSessionRow(treeSession{ID: "abc12345", Mtime: now, Live: true, Generating: true}, now)
+	plain := composeSessionRow(treeSession{ID: "abc12345", Mtime: now}, now, "")
+	live := composeSessionRow(treeSession{ID: "abc12345", Mtime: now, Live: true}, now, "")
+	gen := composeSessionRow(treeSession{ID: "abc12345", Mtime: now, Live: true, Generating: true}, now, "")
 
 	if !strings.Contains(plain, "○") || strings.Contains(plain, "●") {
 		t.Errorf("idle row = %q", plain)

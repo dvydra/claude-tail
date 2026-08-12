@@ -305,11 +305,11 @@ to tail, it opens an interactive tree of your sessions, grouped by **repo**:
   CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · t tail · / filter · q quit
 
 ▾ entirehq/infra  (4)  20h ago
-    ○ 8babea4d  20h ago  Monitor Kubernetes Node Disk Usage
-    ○ 3f23dd13  4d ago   Investigate ENT-977 telemetry regression
-    ○ 9de20fff  4d ago   Fix AWS Server Nodegroup Telemetry Installer
+    ○   8babea4d  20h ago  Monitor Kubernetes Node Disk Usage
+    ○   3f23dd13  4d ago   Investigate ENT-977 telemetry regression
+    ○ @ 9de20fff  4d ago   Rewire the greenhouse thermostat
 ▸ entirehq/entiredb  (7)  27h ago
-▸ entirehq/entire.io  (4)  2d ago
+▸ @ dvydra/side-quest  (3)  2d ago
 
   4 repos · 16 sessions
 ```
@@ -373,10 +373,60 @@ quits. The most recent group starts expanded. On a session:
   session even with other Claude sessions live in the same repo. Under a wrapper
   that doesn't forward `--session-id` (happy included — see below) the pane
   instead uses `--wait-new` and waits for whatever session the agent creates.
+- **`@`** → the same workspace, but for a new session on your **second Claude
+  account** — see [Two Claude accounts](#two-claude-accounts-the-pink-) below.
 
 The **current directory always appears** in the tree — even with no sessions yet
 (shown as `▸ path  (no sessions — n to start one)`), so you can always land on
 "here" and hit `n` to start one.
+
+### Two Claude accounts (the pink `@`)
+
+If you run a second Claude subscription alongside your main one, its sessions
+live in a **different config dir** — `~/.claude-personal` — and, before this,
+were invisible here: entire-tail only ever looked in `~/.claude`.
+
+Both accounts are now scanned and **merged into the same tree**. Grouping is by
+directory, not by account, so a repo you've worked in from both shows one group
+holding both sets of sessions. Personal ones are marked with a **pink `@`**:
+
+```
+▾ dvydra/greenhouse  (3)  2h ago
+    ● @ 892d905c  8m ago    [main] rewire the thermostat
+    ○ @ 3dc641de  47m ago   [main] order the new sensors
+    ○   b364d6d2  2d ago    [main] the work-account one
+```
+
+A group header gets the `@` when **every** session in it is personal, and a
+dimmer `@` when it holds both — so a collapsed group never claims to be more
+personal than it is. The marker also shows in `--list` (plain `@` when piped, so
+it stays greppable) and the `i` card names the account.
+
+**Filtering by account:** `/@` keeps only personal sessions. (It matches the `@`
+you can see, not the word "personal" — otherwise filtering for `n` would drag in
+every personal session.)
+
+**Launching.** `⏎` on a personal session resumes it **as that account**:
+entire-tail sets `CLAUDE_CONFIG_DIR` and pins the account's OAuth token for the
+agent pane. `n` always starts a session on your main account; **`@`** starts one
+on the personal account. The tail pane needs no account context — it watches both
+config dirs, so it latches on either way.
+
+The token is looked up from the **macOS Keychain by the launched shell**, in a
+command substitution — it never passes through entire-tail's memory, never lands
+in `argv` (where any process could read it via `ps`), and is never logged. If
+it's missing, entire-tail prints a one-line warning and launches anyway (the
+agent will just show its login screen).
+
+None of this activates unless `~/.claude-personal/projects` exists: with one
+account, entire-tail scans exactly the one root it always did.
+
+**Setting the second account up** is out of scope for entire-tail — the short
+version is `claude setup-token` with the personal account, store the token in the
+Keychain under `claude-personal-token`, and point `CLAUDE_CONFIG_DIR` at
+`~/.claude-personal`. (On macOS subscription logins live in the shared Keychain,
+so two accounts using `/login` flip each other; a long-lived token is what keeps
+them apart.)
 
 **Recency at a glance** — rows are colored on a four-step scale by last activity:
 
@@ -719,6 +769,12 @@ Everything downstream — turn headers, glamour rendering, tool-dot coloring —
 agent-agnostic and consumes only the `Record`. Discovery (`discovery.go`) and
 the live picker (`picker.go`) are likewise per-agent. Adding a new agent means
 writing a `normalize` + a discovery function.
+
+Which Claude *account* a session belongs to is a separate axis, owned by
+`profile.go`: an ordered list of config dirs (`~/.claude`, plus
+`~/.claude-personal` when it exists) that discovery, the tree, search and
+auto-adopt all iterate instead of assuming one root — plus the pink `@` and the
+env prefix that launches a session back under its own account.
 
 The rendering state machine (`render.go`) is one path shared by backfill and
 live: it tracks the previous participant (so consecutive same-participant turns

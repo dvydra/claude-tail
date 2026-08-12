@@ -136,7 +136,9 @@ func resolveTreeChoice(home, claudeBin string, c treeChoice) (string, bool) {
 	switch c.Result {
 	case treeNewWorkspace:
 		if itermAvailable() {
-			if err := launchNewWorkspace(c.Cwd, claudeBin); err != nil {
+			prof := profileByName(home, c.Account)
+			warnMissingToken(prof)
+			if err := launchNewWorkspace(c.Cwd, claudeBin, prof); err != nil {
 				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 			}
 			os.Exit(0)
@@ -154,7 +156,9 @@ func resolveTreeChoice(home, claudeBin string, c treeChoice) (string, bool) {
 			os.Exit(0)
 		}
 		if c.Result == treeWorkspace && itermAvailable() && itermSinglePane() && validSessionID(c.ID) {
-			if err := launchWorkspace(sessionCwd(c.Path), c.ID, claudeBin); err != nil {
+			prof := profileByName(home, c.Account)
+			warnMissingToken(prof)
+			if err := launchWorkspace(sessionCwd(c.Path), c.ID, claudeBin, prof); err != nil {
 				fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 				return c.Path, true // launch failed → tail in-place instead
 			}
