@@ -58,30 +58,30 @@ func TestLoadClaudeMeta(t *testing.T) {
 		`{"type":"ai-title","aiTitle":"the title"}`,
 		user, asst,
 	}, 100)
-	snip, branch, msgs, cwd, _, _ := loadClaudeMeta(p)
-	if snip != "THE SUMMARY" {
-		t.Errorf("snippet = %q, want summary", snip)
+	m := loadClaudeMeta(p)
+	if m.Snippet != "THE SUMMARY" {
+		t.Errorf("snippet = %q, want summary", m.Snippet)
 	}
-	if branch != "feat/x" {
-		t.Errorf("branch = %q", branch)
+	if m.Branch != "feat/x" {
+		t.Errorf("branch = %q", m.Branch)
 	}
-	if msgs < 1 {
-		t.Errorf("msgs = %d, want >= 1 (head-bounded count)", msgs)
+	if m.Msgs < 1 {
+		t.Errorf("msgs = %d, want >= 1 (head-bounded count)", m.Msgs)
 	}
-	if cwd != "/tmp/proj" {
-		t.Errorf("cwd = %q", cwd)
+	if m.Cwd != "/tmp/proj" {
+		t.Errorf("cwd = %q", m.Cwd)
 	}
 
 	// no summary → ai-title.
 	p = writeSession(t, dir, "b", []string{`{"type":"ai-title","aiTitle":"just a title"}`, user}, 100)
-	if snip, _, _, _, _, _ := loadClaudeMeta(p); snip != "just a title" {
-		t.Errorf("snippet = %q, want ai-title", snip)
+	if m := loadClaudeMeta(p); m.Snippet != "just a title" {
+		t.Errorf("snippet = %q, want ai-title", m.Snippet)
 	}
 
 	// no summary/title → first user prompt.
 	p = writeSession(t, dir, "c", []string{user, asst}, 100)
-	if snip, _, _, _, _, _ := loadClaudeMeta(p); snip != "first prompt here" {
-		t.Errorf("snippet = %q, want first prompt", snip)
+	if m := loadClaudeMeta(p); m.Snippet != "first prompt here" {
+		t.Errorf("snippet = %q, want first prompt", m.Snippet)
 	}
 
 	// the newest last-prompt (current message) wins over summary/title/first prompt,
@@ -93,15 +93,15 @@ func TestLoadClaudeMeta(t *testing.T) {
 		user, asst,
 		`{"type":"last-prompt","lastPrompt":"what I asked most recently"}`,
 	}, 100)
-	if snip, _, _, _, _, _ := loadClaudeMeta(p); snip != "what I asked most recently" {
-		t.Errorf("snippet = %q, want newest last-prompt", snip)
+	if m := loadClaudeMeta(p); m.Snippet != "what I asked most recently" {
+		t.Errorf("snippet = %q, want newest last-prompt", m.Snippet)
 	}
 
 	// ai-title is reached as a fallback even when the first user event (which sets
 	// cwd/branch) precedes it — the early-out must not stop on firstUser alone.
 	p = writeSession(t, dir, "e", []string{user, asst, `{"type":"ai-title","aiTitle":"late title"}`}, 100)
-	if snip, _, _, _, _, _ := loadClaudeMeta(p); snip != "late title" {
-		t.Errorf("snippet = %q, want late title (early-out must not skip it)", snip)
+	if m := loadClaudeMeta(p); m.Snippet != "late title" {
+		t.Errorf("snippet = %q, want late title (early-out must not skip it)", m.Snippet)
 	}
 
 	// branch reflects where the session ENDED, not where it started — a session
@@ -111,8 +111,8 @@ func TestLoadClaudeMeta(t *testing.T) {
 		`{"type":"assistant","cwd":"/tmp/proj","gitBranch":"main","message":{"content":[{"type":"text","text":"ok"}]}}`,
 		`{"type":"user","cwd":"/tmp/proj","gitBranch":"feature/wt","message":{"content":"end"}}`,
 	}, 100)
-	if _, br, _, _, _, _ := loadClaudeMeta(p); br != "feature/wt" {
-		t.Errorf("branch = %q, want end branch feature/wt", br)
+	if m := loadClaudeMeta(p); m.Branch != "feature/wt" {
+		t.Errorf("branch = %q, want end branch feature/wt", m.Branch)
 	}
 
 	// the newest pr-link (number + url) is picked up from the tail, even when a
@@ -124,8 +124,8 @@ func TestLoadClaudeMeta(t *testing.T) {
 		`{"type":"pr-link","prNumber":22,"prUrl":"https://github.com/o/r/pull/22"}`,
 		`{"type":"last-prompt","lastPrompt":"after the PR"}`,
 	}, 100)
-	if _, _, _, _, prNum, prURL := loadClaudeMeta(p); prNum != 22 || prURL != "https://github.com/o/r/pull/22" {
-		t.Errorf("pr = %d %q, want 22 + pull/22 url", prNum, prURL)
+	if m := loadClaudeMeta(p); m.PrNumber != 22 || m.PrURL != "https://github.com/o/r/pull/22" {
+		t.Errorf("pr = %d %q, want 22 + pull/22 url", m.PrNumber, m.PrURL)
 	}
 }
 
@@ -565,5 +565,100 @@ func TestResolveDays(t *testing.T) {
 		if (err != nil) != c.err || got != c.want {
 			t.Errorf("resolveDays(%q,%d) = (%d,%v), want (%d,err=%v)", c.in, c.def, got, err, c.want, c.err)
 		}
+	}
+}
+
+// ── content filter (`/` matches transcript text) ────────────────────────────
+
+func TestExtractTailContent(t *testing.T) {
+	user := `{"type":"user","message":{"content":"Hello WORLD from the user"}}`
+	asst := `{"type":"assistant","message":{"content":[{"type":"text","text":"The Assistant REPLY"}]}}`
+	noise := `{"type":"summary","summary":"summary noise"}`
+	toolResult := `{"type":"user","message":{"content":[{"type":"tool_result","content":"tool noise"}]}}`
+	buf := []byte(strings.Join([]string{noise, user, toolResult, asst}, "\n"))
+
+	got := extractTailContent(splitLines(buf), 8192)
+	if !strings.Contains(got, "hello world from the user") {
+		t.Errorf("user text missing or not lowercased: %q", got)
+	}
+	if !strings.Contains(got, "the assistant reply") {
+		t.Errorf("assistant text missing or not lowercased: %q", got)
+	}
+	if strings.Contains(got, "summary noise") || strings.Contains(got, "tool noise") {
+		t.Errorf("non-message text leaked in: %q", got)
+	}
+}
+
+func TestExtractTailContentBudgetKeepsNewest(t *testing.T) {
+	old := `{"type":"user","message":{"content":"` + strings.Repeat("aardvark ", 100) + `"}}`
+	newest := `{"type":"assistant","message":{"content":[{"type":"text","text":"the newest needle"}]}}`
+	buf := []byte(old + "\n" + newest)
+
+	got := extractTailContent(splitLines(buf), 20)
+	if len(got) > 20 {
+		t.Errorf("content exceeds budget: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "needle") {
+		t.Errorf("newest text dropped: %q", got)
+	}
+	if strings.Contains(got, "aardvark") {
+		t.Errorf("oldest text should be trimmed away: %q", got)
+	}
+}
+
+func TestExtractTailContentSkipsPartialFirstLine(t *testing.T) {
+	// A tail window rarely starts on a line boundary — the partial line must be
+	// skipped, not crash or pollute the content.
+	partial := `ge","message":{"content":"garbage prefix"}}`
+	whole := `{"type":"user","message":{"content":"the real text"}}`
+	got := extractTailContent(splitLines([]byte(partial+"\n"+whole)), 8192)
+	if !strings.Contains(got, "the real text") {
+		t.Errorf("valid line missing: %q", got)
+	}
+	if strings.Contains(got, "garbage prefix") {
+		t.Errorf("partial line leaked in: %q", got)
+	}
+}
+
+func TestSessionMatchesContent(t *testing.T) {
+	s := treeSession{Snippet: "add login form", Content: "we discussed the flux capacitor"}
+	if !sessionMatches(s, "flux capacitor") {
+		t.Error("content match missed")
+	}
+	if sessionMatches(s, "zzzzz") {
+		t.Error("matched a filter present nowhere")
+	}
+}
+
+func TestFlattenRowsContentFilter(t *testing.T) {
+	tr := sessionTree{Now: 1000, Folders: []treeFolder{
+		{Cwd: "/home/me/x", Slug: claudeSlug("/home/me/x"), Mtime: 900, Sessions: []treeSession{
+			{ID: "aaaa1111", Mtime: 900, Snippet: "add login", Content: "we talked about capybaras"},
+			{ID: "bbbb2222", Mtime: 800, Snippet: "fix bug", Content: "nothing relevant"},
+		}},
+	}}
+	rows := flattenRows(tr, "capybara")
+	if len(rows) != 2 || rows[1].Session != 0 {
+		t.Errorf("content filter should keep only the matching session: %+v", rows)
+	}
+}
+
+func TestLoadClaudeMetaContent(t *testing.T) {
+	dir := t.TempDir()
+	p := writeSession(t, dir, "h", []string{
+		`{"type":"user","cwd":"/tmp/proj","gitBranch":"main","message":{"content":"Find the Purple Elephant"}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Located the ELEPHANT"}]}}`,
+	}, 100)
+	m := loadClaudeMeta(p)
+	if !strings.Contains(m.Content, "find the purple elephant") {
+		t.Errorf("user text missing from content: %q", m.Content)
+	}
+	if !strings.Contains(m.Content, "located the elephant") {
+		t.Errorf("assistant text missing from content: %q", m.Content)
+	}
+	// And it reaches the built session, so the tree's filter can see it.
+	s := sessionFromMeta(fileMeta{path: p, mtime: 100})
+	if !strings.Contains(s.Content, "purple elephant") {
+		t.Errorf("Content not wired into treeSession: %q", s.Content)
 	}
 }

@@ -393,7 +393,7 @@ func parseEntireTime(s string) int64 {
 // sessionCwd reads a Claude session's recorded working directory (for cd'ing the
 // iTerm workspace), falling back to the file's parent dir.
 func sessionCwd(path string) string {
-	if _, _, _, cwd, _, _ := loadClaudeMeta(path); cwd != "" {
+	if cwd := loadClaudeMeta(path).Cwd; cwd != "" {
 		return cwd
 	}
 	return filepath.Dir(path)
