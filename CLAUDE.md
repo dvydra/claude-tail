@@ -101,7 +101,11 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   word would make a filter of `n` or `e` drag in every personal session
 - `discovery.go` — find the session file for `$PWD` per agent
 - `tree.go` — the interactive session **tree** picker (the DEFAULT): sessions
-  grouped by repo/folder, arrow-key navigable, recency-colored, type-to-filter;
+  grouped by repo/folder, arrow-key navigable, recency-colored, type-to-filter
+  (`/` matches name/title/id/branch AND recent transcript content — each
+  session's newest ~8KB of message text, extracted by `extractTailContent` from
+  the tail window `loadClaudeMeta` already reads, so the filter costs no extra
+  I/O);
   also the static `--list` dump. Pure build/reduce/render split from a thin tty
   driver (alt-screen + `setRaw`), so navigation/render are unit-tested without a tty
 - `entire.go` — builds the DEFAULT tree, tuned to stay instant + local:

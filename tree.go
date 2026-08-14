@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,6 +54,12 @@ type treeSession struct {
 	// The PR this session opened (newest `pr-link` event); 0/"" when none.
 	PrNumber int
 	PrURL    string
+
+	// Content is the session's recent message text (user + assistant, lowercased,
+	// newest ~8KB), extracted from the same tail window loadClaudeMeta already
+	// reads. It's what lets the `/` filter match what a session was ABOUT, not
+	// just its title/branch/id. Empty for cloud-only rows with no local file.
+	Content string
 
 	// entire cloud metadata (0/empty for untracked local sessions) — for the token
 	// column and the summary card.
@@ -260,9 +267,27 @@ func sessionFromMeta(m fileMeta) treeSession {
 		ID:    strings.TrimSuffix(filepath.Base(m.path), ".jsonl"),
 		Mtime: m.mtime,
 	}
-	s.Snippet, s.Branch, s.Msgs, s.cwd, s.PrNumber, s.PrURL = loadClaudeMeta(m.path)
+	meta := loadClaudeMeta(m.path)
+	s.Snippet, s.Branch, s.Msgs, s.cwd = meta.Snippet, meta.Branch, meta.Msgs, meta.Cwd
+	s.PrNumber, s.PrURL, s.Content = meta.PrNumber, meta.PrURL, meta.Content
 	return s
 }
+
+// claudeMeta is what loadClaudeMeta recovers from a session file.
+type claudeMeta struct {
+	Snippet  string
+	Branch   string
+	Msgs     int
+	Cwd      string
+	PrNumber int
+	PrURL    string
+	Content  string // lowercased tail-window message text, for the `/` filter
+}
+
+// contentBudget caps how much extracted message text a session contributes to
+// the `/` filter — the newest 8KB, plenty to match on without bloating a
+// many-hundred-session tree.
+const contentBudget = 8 * 1024
 
 // loadClaudeMeta extracts a display snippet, git branch, and cwd from a Claude
 // session. Snippet precedence: the current message (the newest `last-prompt`),
@@ -271,10 +296,11 @@ func sessionFromMeta(m fileMeta) treeSession {
 // early-out head scan); the current message lives at the tail, read via a single
 // bounded ReadAt on the same handle. Both reads are O(window), not O(file), so a
 // full-tree build stays cheap no matter how large individual transcripts are.
-func loadClaudeMeta(path string) (snippet, branch string, msgs int, cwd string, prNumber int, prURL string) {
+func loadClaudeMeta(path string) claudeMeta {
+	var meta claudeMeta
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", 0, "", 0, ""
+		return meta
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -301,12 +327,12 @@ func loadClaudeMeta(path string) (snippet, branch string, msgs int, cwd string, 
 				aiTitle = ev.AiTitle
 			}
 		case "user", "assistant":
-			msgs++
-			if cwd == "" && ev.Cwd != "" {
-				cwd = ev.Cwd
+			meta.Msgs++
+			if meta.Cwd == "" && ev.Cwd != "" {
+				meta.Cwd = ev.Cwd
 			}
-			if branch == "" && ev.GitBranch != "" {
-				branch = ev.GitBranch
+			if meta.Branch == "" && ev.GitBranch != "" {
+				meta.Branch = ev.GitBranch
 			}
 			if ev.Type == "user" && firstUser == "" {
 				firstUser = claudeUserText(ev.Message)
@@ -315,36 +341,33 @@ func loadClaudeMeta(path string) (snippet, branch string, msgs int, cwd string, 
 		// Early-out once we have the identifying fields AND a real title. The
 		// first user event (which sets cwd/branch) usually precedes the ai-title
 		// event, so we must NOT stop on firstUser alone or the title is skipped.
-		if cwd != "" && branch != "" && (summary != "" || aiTitle != "") {
+		if meta.Cwd != "" && meta.Branch != "" && (summary != "" || aiTitle != "") {
 			break
 		}
 	}
 	// From the tail: the current message (newest `last-prompt`), the branch the
 	// session ended on (a session can hop branches — e.g. main → a worktree — so
-	// the head's first branch is misleading), and the PR it opened. Tail branch
-	// wins when present.
-	current, tailBranch, prNumber, prURL := tailMeta(f)
+	// the head's first branch is misleading), the PR it opened, and the message
+	// text the `/` filter searches. Tail branch wins when present.
+	window := splitLines(tailWindow(f))
+	current, tailBranch, prNumber, prURL := tailMeta(window)
 	if tailBranch != "" {
-		branch = tailBranch
+		meta.Branch = tailBranch
 	}
-	return collapsePreview(firstNonEmpty(current, summary, aiTitle, firstUser)), branch, msgs, cwd, prNumber, prURL
+	meta.PrNumber, meta.PrURL = prNumber, prURL
+	meta.Content = extractTailContent(window, contentBudget)
+	meta.Snippet = collapsePreview(firstNonEmpty(current, summary, aiTitle, firstUser))
+	return meta
 }
 
-// tailMeta reads a bounded tail window and walks it backward to recover the
-// end-of-session facts a row shows: `current` is the newest `last-prompt` (Claude
-// appends one per submission, so the last is what's in flight now); `branch` is
-// the gitBranch of the newest user/assistant event (the branch the session ended
-// on); `prNumber`/`prURL` are the newest `pr-link`. The ReadAt is independent of
-// the head scanner's offset and the walk is O(window). A cheap bytes.Contains
-// pre-filter skips lines that can't carry a still-wanted field, so the common
-// bulk (assistant/tool events) is never JSON-parsed. A partial first line (the
-// window rarely starts on a boundary) just fails to parse and is skipped. Any
-// field is left zero if the window doesn't contain it — the caller then falls
-// back to the head-scan title/first-prompt/branch.
-func tailMeta(f *os.File) (current, branch string, prNumber int, prURL string) {
+// tailWindow reads the file's bounded tail window (independent of any scanner
+// offset) — the shared input for tailMeta and extractTailContent, split into
+// lines once by the caller (a second Split of a 128KB window per session would
+// double the tree build's allocations).
+func tailWindow(f *os.File) []byte {
 	fi, err := f.Stat()
 	if err != nil || fi.Size() == 0 {
-		return "", "", 0, ""
+		return nil
 	}
 	const window = 128 * 1024
 	start := int64(0)
@@ -353,9 +376,22 @@ func tailMeta(f *os.File) (current, branch string, prNumber int, prURL string) {
 	}
 	buf := make([]byte, fi.Size()-start)
 	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
-		return "", "", 0, ""
+		return nil
 	}
-	lines := bytes.Split(buf, []byte{'\n'})
+	return buf
+}
+
+// tailMeta walks a tail window backward to recover the end-of-session facts a
+// row shows: `current` is the newest `last-prompt` (Claude appends one per
+// submission, so the last is what's in flight now); `branch` is the gitBranch
+// of the newest user/assistant event (the branch the session ended on);
+// `prNumber`/`prURL` are the newest `pr-link`. The walk is O(window). A cheap
+// bytes.Contains pre-filter skips lines that can't carry a still-wanted field,
+// so the common bulk (assistant/tool events) is never JSON-parsed. A partial
+// first line (the window rarely starts on a boundary) just fails to parse and
+// is skipped. Any field is left zero if the window doesn't contain it — the
+// caller then falls back to the head-scan title/first-prompt/branch.
+func tailMeta(lines [][]byte) (current, branch string, prNumber int, prURL string) {
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := bytes.TrimSpace(lines[i])
 		if len(line) == 0 {
@@ -386,6 +422,48 @@ func tailMeta(f *os.File) (current, branch string, prNumber int, prURL string) {
 		}
 	}
 	return current, branch, prNumber, prURL
+}
+
+// extractTailContent pulls the user/assistant message text out of a tail
+// window, newest-first until `budget` bytes are covered, and returns it in
+// chronological order, lowercased — the blob the `/` filter substring-matches.
+// Extracted text (not raw JSONL) on purpose: raw lines are full of field names
+// ("user", "gitBranch", ...) and tool payloads, which would make short filters
+// match every session. Non-message lines and the window's partial first line
+// simply fail the parse/type checks and are skipped.
+func extractTailContent(lines [][]byte, budget int) string {
+	var parts []string
+	total := 0
+	for i := len(lines) - 1; i >= 0 && total < budget; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 || !bytes.Contains(line, []byte(`"message"`)) {
+			continue
+		}
+		// Tool-result records are the bulk of a transcript's tail and carry no
+		// message text — skip them without paying for a JSON parse.
+		if bytes.Contains(line, []byte(`"toolUseResult"`)) {
+			continue
+		}
+		var ev claudeMetaEvent
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		if ev.Type != "user" && ev.Type != "assistant" {
+			continue
+		}
+		text := claudeUserText(ev.Message)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+		total += len(text) + 1
+	}
+	slices.Reverse(parts) // walked newest-first; join oldest-first
+	joined := strings.ToLower(strings.Join(parts, "\n"))
+	if len(joined) > budget {
+		joined = joined[len(joined)-budget:] // keep the newest budget bytes
+	}
+	return joined
 }
 
 // claudeUserText pulls plain text from a user message (a bare string, or the
@@ -541,7 +619,8 @@ func sessionMatches(s treeSession, f string) bool {
 	}
 	return strings.Contains(strings.ToLower(s.Snippet), f) ||
 		strings.Contains(strings.ToLower(s.ID), f) ||
-		strings.Contains(strings.ToLower(s.Branch), f)
+		strings.Contains(strings.ToLower(s.Branch), f) ||
+		strings.Contains(s.Content, f) // Content is stored lowercased
 }
 
 // ── UI state + reducer (pure) ────────────────────────────────────────────────

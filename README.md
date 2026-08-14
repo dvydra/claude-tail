@@ -343,8 +343,10 @@ Each session row shows its id (the session uuid), age, **token spend**
 the local view adds the git branch and live markers.
 
 **Navigation:** arrow keys or `hjkl` move; `→` expands a group and `←`
-collapses; `/` filters by name/title/id as you type (`Esc` clears); `q`/`Esc`
-quits. The most recent group starts expanded. On a session:
+collapses; `/` filters as you type (`Esc` clears) — matching name/title/id/branch
+**and the session's recent transcript content** (the newest ~8KB of message
+text), so you can find a session by what you talked about, not just what it's
+called; `q`/`Esc` quits. The most recent group starts expanded. On a session:
 
 - **`Enter`** → open the **iTerm workspace** for it (see below).
 - **`i`** → the combined **info view**: an info card fixed at the top, a divider,
