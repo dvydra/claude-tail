@@ -21,6 +21,8 @@ const (
 	keyQuit
 	keyBackToTree
 	keyHelp
+	keyYank
+	keyToggleMrkdwn
 )
 
 // keyActionFor maps a raw input byte to an action. Ctrl-C is left to the signal
@@ -43,6 +45,10 @@ func keyActionFor(b byte) keyAction {
 		return keyBackToTree
 	case '?':
 		return keyHelp
+	case 'y', 'Y':
+		return keyYank
+	case 'm', 'M':
+		return keyToggleMrkdwn
 	}
 	return keyNone
 }
@@ -64,7 +70,7 @@ func keyActionFor(b byte) keyAction {
 // the caller's live loop restores the tty and re-enters the picker. When false
 // (non-Claude session / no tree in scope), Ctrl-X is ignored — the tree is
 // Claude-only, so there's nothing to go back to.
-func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh chan<- struct{}, themeCh chan<- struct{}, treeCh chan<- struct{}, focusCh chan<- struct{}, helpCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
+func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh chan<- struct{}, themeCh chan<- struct{}, treeCh chan<- struct{}, focusCh chan<- struct{}, helpCh chan<- struct{}, yankCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
 	if !isCharDevice(os.Stdin) {
 		return func() {}, nil
 	}
@@ -136,6 +142,14 @@ func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh ch
 				case themeCh <- struct{}{}:
 				default: // a theme cycle is already pending; coalesce
 				}
+			case keyYank:
+				// The yank reads the renderer's turn buffer and writes the tty
+				// (OSC 52 fallback), so it runs on the render goroutine. Signalled,
+				// not coalesced-away: a second `y` MEANS "extend by another turn",
+				// so a dropped press would silently copy the wrong thing.
+				yankCh <- struct{}{}
+			case keyToggleMrkdwn:
+				fmt.Fprintln(os.Stderr, "entire-tail: "+r.toggleMrkdwn()+" (press r to re-render history)")
 			case keyToggleCollapse:
 				fmt.Fprintln(os.Stderr, "entire-tail: "+r.toggleCollapse()+" (press r to re-render history)")
 			case keyReload:

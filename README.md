@@ -124,6 +124,8 @@ events show as they stream:
 | key            | effect                                                        |
 |----------------|---------------------------------------------------------------|
 | `?`            | **help** — a modal with the startup banner's context (agent/session/theme/backfill/tools/collapse), the full key map, and the dot legend; any key closes it |
+| `y`            | **copy the last agent message as Slack mrkdwn** — press again within 3s to add the one before it |
+| `m`            | toggle agent text between rendered markdown and **Slack mrkdwn source** |
 | `t`            | cycle tool-call rendering: **full → dots → hidden**           |
 | `T`            | cycle the color **theme** — steps through the bundled themes and re-renders the whole transcript in the new theme |
 | `c`            | toggle collapsing of long user pastes                         |
@@ -143,6 +145,45 @@ rich diffs." A one-line `keys:` legend prints in the startup banner, and **`?`**
 brings the whole banner back as a modal at any point — with the live values, so
 it also answers "which tool style / theme am I in now?" after a few `t`/`T`
 presses have scrolled the banner away.
+
+### Getting text out into Slack
+
+Most of what you copy out of a tail ends up pasted into Slack, so `y` copies it
+already converted: **`y` puts the last agent message on the clipboard as Slack
+mrkdwn.** Press it again within 3 seconds and it extends backwards one message
+at a time (`copied 2 messages as slack mrkdwn`).
+
+The unit is one *message*, not everything since your last prompt — a working
+turn can be twenty minutes of narration around tool calls, and what you want in
+Slack is almost always the last thing the agent actually said. A message that
+arrives as two records still yanks as one (they share a message id).
+
+It converts from the transcript's **raw markdown**, not from the screen — a
+mouse-drag gets you glamour's soft-wrapped, indented, ANSI-colored rendering,
+while `y` gets the text itself. `**bold**` becomes `*bold*`, `*italic*` becomes
+`_italic_`, `~~strike~~` becomes `~strike~`, headings become bold lines, bullets
+become `•`. Links stay as `[text](url)` — the composer understands that form.
+
+**Code is never rewritten.** Anything inside a fence or backticks is passed
+through byte-for-byte, and a fence keeps its fence (minus the language tag,
+which mrkdwn ignores) — so a command you copy still runs when you paste it into
+a terminal, and in Slack it lands in a code box you can copy back out of. Each
+` ``` ` is put on a line of its own, since a one-line ` ```code``` ` renders in
+Slack as literal backticks.
+
+The conversion targets the Slack **composer** — a human pasting into the message
+box — not the Web API. So no HTML escaping (`&amp;` would paste literally) and
+never `<url|text>` (that form is only parsed for API-posted messages, so it
+would paste literally too).
+
+`m` is the same conversion applied to the screen: agent text renders as mrkdwn
+source instead of glamour, so whatever you drag-select with the mouse already
+*is* mrkdwn. Handy when you want one paragraph rather than a whole turn. User
+turns keep rendering normally, and like `t`/`c` it affects new events — press
+`r` to redraw the history.
+
+Clipboard access is `pbcopy` on macOS (`wl-copy`/`xclip` on Linux), falling back
+to OSC 52 through the terminal, which is what makes `y` work over ssh/tmux.
 
 `T` (shift-`t`) cycles the color theme. Unlike `t`/`c`, it re-renders the whole
 transcript itself — glamour body colors already in the scrollback can't be

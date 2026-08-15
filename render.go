@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/muesli/termenv"
@@ -78,8 +79,17 @@ type Renderer struct {
 	// while the render goroutine reads them in emit).
 	toolStyle atomic.Int32 // current toolStyleKind
 	collapse  atomic.Int32 // current paste-collapse threshold (0 = off)
+	mrkdwn    atomic.Bool  // `m`: render agent bodies as Slack mrkdwn, not glamour
 	// Immutable threshold to restore when re-enabling collapse.
 	collapseDefault int32
+
+	// The `y` yank buffer: the raw markdown of recent agent messages, so a copy
+	// is made from the source text rather than from glamour's wrapped, colored
+	// rendering of it. Touched only on the render goroutine — the keyboard
+	// signals yankCh and never reads this.
+	yankMsgs   []yankMsg
+	yankN      int       // messages the last `y` copied (a repeat extends it)
+	lastYankAt time.Time // when that press was, for the extend window
 
 	userHdr   string // full USER box header line (color + body + reset)
 	claudeHdr string // full AGENT box header line
@@ -225,6 +235,21 @@ func (r *Renderer) reset() {
 	clear(r.pendingAt)
 	clear(r.earlyShown)
 	r.turnsRendered = 0
+	// A reset always precedes a full re-emit of the transcript (reload, theme
+	// swap, rollover), which would otherwise append every message to the yank
+	// buffer a second time.
+	r.yankMsgs = nil
+}
+
+// toggleMrkdwn flips agent bodies between glamour and Slack mrkdwn source
+// (future events only). Returns a short status for the user.
+func (r *Renderer) toggleMrkdwn() string {
+	on := !r.mrkdwn.Load()
+	r.mrkdwn.Store(on)
+	if on {
+		return "agent text as slack mrkdwn (select with the mouse to copy it)"
+	}
+	return "agent text rendered normally"
 }
 
 // toggleCollapse flips long-user-paste collapsing on/off (future events only).
@@ -254,6 +279,7 @@ func (r *Renderer) emit(rec Record) {
 			// get pinged when the agent responds. Backfill replays bypass this.
 			io.WriteString(r.w, "\a")
 		}
+		r.recordYank(rec.Body, rec.MsgID)
 		r.header(KindAssistant, rec.Ts)
 		r.doneBanner(rec)
 		r.body(rec.Body)
@@ -458,11 +484,19 @@ func (r *Renderer) header(kind Kind, ts string) {
 // trailing blank lines stripped — so the header above and next event below hug
 // it directly.
 func (r *Renderer) body(mdText string) {
-	out, err := r.render(mdText)
-	if err != nil {
-		out = mdText
+	var out string
+	// `m` mode: agent bodies print as Slack mrkdwn source instead of glamour, so
+	// a mouse drag-select copies mrkdwn straight out of the terminal. User turns
+	// keep rendering normally — it's the agent's text that gets pasted onward.
+	if r.mrkdwn.Load() && r.lastKind == KindAssistant {
+		out = toSlackMrkdwn(mdText)
+	} else {
+		rendered, err := r.render(mdText)
+		if err != nil {
+			rendered = mdText
+		}
+		out = stripTerminalNoise(rendered)
 	}
-	out = stripTerminalNoise(out)
 
 	lines := strings.Split(out, "\n")
 	start, end := 0, len(lines)-1

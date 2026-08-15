@@ -1,0 +1,30 @@
+─── ▶ USER ─────────────────────────────── 2026-01-02 15:04:05
+Check the build and bump the version.
+─── ◀ AGENT ────────────────────────────── 2026-01-02 15:04:06
+Sure. Reading, building, then bumping the version. [...]
+  ⋯ 2026-01-02 15:04:10
+Here is what I found:
+
+• item one
+• item two
+
+```
+func main() {}
+```
+
+Done.
+⏺ ▸ agent: Investigate the flaky test (general-purpose)
+⁉ WAITING FOR YOUR ANSWER
+Scope: Which approach?
+  1. Fast — quick but rough
+  2. Careful
+─── ▶ USER ─────────────────────────────── 2026-01-02 15:04:12
+chose Careful
+  ⋯ 2026-01-02 15:04:13
+here is a long paste:
+line1
+line2
+line3
+line4
+
+… 3 more lines — re-run with --no-collapse to expand

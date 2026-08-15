@@ -290,6 +290,18 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   a modal that echoed the stale banner would be worse than no modal. Pure
   `helpLines`/`drawHelp`/`visWidth`/`padVisible` split from the tty driver
   `runHelp`, so content and box geometry are unit-tested without a tty
+- `mrkdwn.go` / `yank.go` — **getting text out into Slack.** `y` copies the last
+  agent turn as Slack mrkdwn (repeat within `yankExtendWindow` extends backwards
+  a turn at a time); `m` renders agent bodies as mrkdwn source on screen so a
+  mouse drag-select is already mrkdwn. Both convert from the transcript's RAW
+  markdown, which is the whole point — the screen text has glamour's wrapping,
+  indentation and ANSI baked in, so a screen scrape can never be as clean.
+  The yank buffer lives on the `Renderer` (`yankTurns`, one entry per agent turn,
+  closed by a user message) and is touched ONLY on the render goroutine — the
+  keyboard signals `yankCh`, which is buffered rather than coalesced because a
+  second `y` MEANS "one more turn" and a dropped press would copy the wrong
+  thing. `reset()` clears it: a reload/theme-swap/rollover re-emits the whole
+  transcript, which would otherwise buffer every turn twice
 - `theme.go` / `config.go` / `main.go` — themes, flags+env, wiring
 - `keyboard.go` — live single-key toggles via cbreak (`t`/`c`/`r`/`q`), plus `→`
   which signals the render goroutine to run the focus overlay and parks until it
@@ -530,6 +542,25 @@ needs to change.
   suppresses it, and the choice is remembered in `~/.claude/entire-tail/hook-choice`
   so the user is never nagged again. The hook script itself is embedded in the
   binary and installed atomically.
+- **The mrkdwn conversion targets the Slack COMPOSER, not the Web API**, and
+  that inverts two rules the Slack docs state. (1) **No HTML escaping** —
+  `&amp;`/`&lt;` are how the API accepts `&`/`<`; pasted into the message box
+  they show as the literal five characters. (2) **Never `<url|text>`** — that
+  form is parsed for API-posted messages, but a user-typed `<` is escaped
+  server-side, so it renders literally; markdown's own `[text](url)` is passed
+  through instead, which the composer understands (the URL is held out of the
+  emphasis passes so a path with `__` isn't eaten; the label still converts).
+  `TestToSlackMrkdwnAvoidsAPIOnlyForms` pins both.
+  **Code is passed through byte-for-byte** (fences keep their fence, minus the
+  language tag mrkdwn ignores): the reason to copy a command is that it still
+  runs when pasted, so nothing inside a fence or backticks may be rewritten.
+  **Every ``` gets its own line** — Slack renders a one-line ```` ```code````
+  ```` as literal backticks, so a one-line fence is split into three
+  (`TestToSlackMrkdwnSplitsOneLineFence`; an earlier version dropped the body).
+- **`clipboardWrite` is a package var so tests can stub it.** The real path runs
+  `pbcopy`; a test that exercised it would silently replace whatever the
+  developer had on their clipboard. Same rule as the `launchctl` stubs — a
+  `go test` must not touch the machine's real state.
 - **Word wrap is off** (`glamour.WithWordWrap(0)`): each paragraph is one logical
   line the terminal soft-wraps, so resizing reflows on the next render. Don't
   re-enable wrap.
