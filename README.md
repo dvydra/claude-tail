@@ -116,6 +116,32 @@ dir. Worktree-fork and `/clear` rollovers are then followed as usual (see
 Force the tree instead with `-p`. Off iTerm (or non-macOS) this is inert and the
 tree/`--no-pick` behavior is unchanged.
 
+## The status bar
+
+The bottom row of the terminal is a status bar:
+
+```
+ claude · claude-tail · ac2925b3 · 14 turns · 45s ago    dots · tokyo-night · collapse 5 · ? help
+```
+
+Left is which session you're following and what it's doing — `45s ago` is how
+long since the transcript last grew, and it's replaced by **`⁉ waiting for you`**
+the moment the agent blocks on a question or a permission prompt. Right is how
+it's being rendered. It narrows gracefully: the render settings give way first,
+then the fields on the left, so the session id survives to about 40 columns.
+
+Press `t`, `T`, `c`, `m` or `y` and the whole row turns **yellow with what just
+happened** for three seconds, then goes back to normal:
+
+```
+ copied 2 messages as slack mrkdwn (1.2k chars — press y again to add the one before)
+```
+
+The row is real estate taken from the terminal, not repainted by us: the
+scrolling region is shrunk by one line (`DECSTBM`) so the transcript scrolls
+underneath a row entire-tail owns. Scrollback is untouched. `--no-status` turns
+it off, and it's automatically absent when output is piped.
+
 ## Live keys
 
 While following on an interactive terminal, single keypresses adjust what new
@@ -130,18 +156,24 @@ events show as they stream:
 | `T`            | cycle the color **theme** — steps through the bundled themes and re-renders the whole transcript in the new theme |
 | `c`            | toggle collapsing of long user pastes                         |
 | `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
-| `r`            | reload — re-render the whole transcript with current settings |
+| `r`            | re-render the whole transcript with current settings (`t`/`T`/`c`/`m` already do this themselves) |
 | Ctrl-X         | **back to the tree** — pop out of the live tail into the session tree picker (Claude only); pick another with `t` to tail it in this same pane, or `Enter`/`n` for a workspace |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 
 `t`/`c` declutter the view on the fly — handy when an agent goes on a long
-tool-call spree and you just want the prose. They affect events rendered **from
-now on** (this is a streaming view, not an alt-screen TUI, so it never repaints
-in place — your terminal's / Zellij's native scrollback keeps working). To apply
-them to the **history**, press **`r`**: it re-renders the whole current
-transcript with the live settings, appending a fresh copy to the scrollback. So
-the usual flow is "cycle to full with `t`, then `r` to redraw everything as
-rich diffs." A one-line `keys:` legend prints in the startup banner, and **`?`**
+tool-call spree and you just want the prose. Each of `t`/`T`/`c`/`m`
+**re-renders as it goes**, so what's on screen reflects the new setting
+immediately. This is a streaming view, not an alt-screen TUI, so a re-render
+appends a fresh copy rather than repainting in place — your terminal's /
+Zellij's native scrollback keeps working.
+
+A toggle re-renders **one screenful**, not the whole session (`⟳ tool calls
+hidden · showing the last 22 lines`). Dumping a long transcript on every
+keypress buries the screen in scrollback, and since the tail of the new copy
+looks much like the tail of the old one, it reads as though nothing happened.
+Press **`r`** for the full re-render when you want the whole history in the new
+style.
+A one-line `keys:` legend prints in the startup banner, and **`?`**
 brings the whole banner back as a modal at any point — with the live values, so
 it also answers "which tool style / theme am I in now?" after a few `t`/`T`
 presses have scrolled the banner away.

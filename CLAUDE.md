@@ -302,19 +302,41 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   second `y` MEANS "one more turn" and a dropped press would copy the wrong
   thing. `reset()` clears it: a reload/theme-swap/rollover re-emits the whole
   transcript, which would otherwise buffer every turn twice
+- `status.go` — the **bottom status bar**. The tail is a streaming view, so a
+  row pinned to the bottom has to come from the terminal rather than from us
+  repainting: `DECSTBM` (`ESC [ 1 ; h-1 r`) shrinks the scrolling region and the
+  transcript scrolls underneath a row we own. Three things there are
+  load-bearing. (1) **DECSTBM homes the cursor** — every region change is wrapped
+  in `ESC 7`/`ESC 8` or the next line of transcript overwrites the backfill.
+  (2) **The row must be free before the region shrinks**: after a full-screen
+  backfill the cursor is ON the last row, which is about to stop scrolling, so
+  `reserveRow` asks the terminal where the cursor is (DSR `ESC [ 6 n`) and
+  scrolls one line if needed — and that query is why `openControlTTY` is split
+  from `startKeyboardOn`, since a running reader goroutine would swallow the
+  reply. It also means `r.endLine()` runs before the bar is created (the only
+  place the deferred trailing newline is settled early). (3) **`close()` before
+  restoring the terminal modes**, or the shell inherits a terminal that can only
+  scroll h-1 rows. The alt-screen overlays get the whole screen back via
+  `suspend`/`resume`. Pure `statusLine`/`statusLefts`/`statusRights` (widest
+  variant that fits — the render settings give way before the session id) and
+  `parseCursorReport` are unit-tested; a nil `*statusBar` is inert, which is the
+  piped / `--no-status` path
 - `theme.go` / `config.go` / `main.go` — themes, flags+env, wiring
-- `keyboard.go` — live single-key toggles via cbreak (`t`/`c`/`r`/`q`), plus `→`
-  which signals the render goroutine to run the focus overlay and parks until it
-  returns, and `Ctrl-X` (0x18) which signals `treeCh` and STOPS reading so
-  `tailSession` returns and `run`'s picker↔tail loop re-enters the tree
-  (Claude-only, gated by `treeEnabled`; a no-op on codex/agy). Returns the tty fd
-  so the overlay reuses it (single reader). **`T` (shift-`t`) cycles the theme**
-  (`t` alone stays tools): unlike the atomic `t`/`c` toggles the keyboard flips
-  directly, a theme swap rebuilds the glamour render fn + header strings (the
-  non-atomic `Renderer` theme fields), so it can't be done off the render
-  goroutine — `T` only signals `themeCh` (coalesced buffered 1), and the live
-  loop's `cycleTheme` does the `nextTheme`→`applyTheme`→re-render on the render
-  goroutine (see render.go `applyTheme`)
+- `keyboard.go` — live single-key controls via cbreak. **The keyboard only ever
+  signals; the render goroutine does all of it.** Every display key
+  (`t`/`T`/`c`/`m`/`r`/`y`) goes to `actionCh` and the live loop applies it, then
+  re-renders and writes the status bar — the keyboard used to flip the atomic
+  toggles itself and print to stderr, which stopped working the moment those keys
+  had to re-render (a theme swap rebuilds the non-atomic glamour fn + header
+  strings) and write a bar (only one goroutine may touch the screen). `actionCh`
+  is buffered but NEVER coalesced: two `t` presses are two steps through the
+  cycle and a second `y` means one more message, so a dropped press lands on the
+  wrong state. The two alt-screen overlays (`→` focus, `?` help) go to
+  `overlayCh` and the goroutine parks on `resumeCh` (single tty reader), and
+  `Ctrl-X` (0x18) signals `treeCh` and STOPS reading so `tailSession` returns and
+  `run`'s picker↔tail loop re-enters the tree (Claude-only, gated by
+  `treeEnabled`; a no-op on codex/agy). `openControlTTY` is split from
+  `startKeyboardOn` for the status bar's DSR query — see `status.go`
 - `jqutil.go` — tiny JSON-value-to-string helpers (replaces shelling out to `jq`)
 - `handover.go` — the `entire-tail handover` subcommand: `todaysSessions`
   enumerates this machine's Claude sessions active since local midnight
@@ -561,6 +583,14 @@ needs to change.
   `pbcopy`; a test that exercised it would silently replace whatever the
   developer had on their clipboard. Same rule as the `launchctl` stubs — a
   `go test` must not touch the machine's real state.
+- **A toggle re-renders one SCREENFUL; only `r` re-renders everything.**
+  `rerender(banner, keep)` renders the whole transcript into a buffer — the
+  renderer's state (turn boundaries, dot streaks, the yank buffer) must see every
+  record — and then prints only the last `keep` lines. Dumping a long session on
+  every keypress buries the screen in scrollback, and because the tail of the new
+  copy looks much like the tail of the old one it reads as though the key did
+  nothing (reported live). `keep` is the terminal height minus two, from the
+  status bar; `r` passes 0 for all of it.
 - **Word wrap is off** (`glamour.WithWordWrap(0)`): each paragraph is one logical
   line the terminal soft-wraps, so resizing reflows on the next render. Don't
   re-enable wrap.

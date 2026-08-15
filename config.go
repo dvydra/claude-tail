@@ -30,6 +30,7 @@ type Config struct {
 	ClaudeBin        string // --claude-bin: the binary the workspace panes + handover launch
 	ClaudeBinSet     bool   // ClaudeBin came from a flag/env, not the built-in default
 	NoTap            bool   // --no-tap: ignore the API-stream tap even when its daemon is up
+	NoStatus         bool   // --no-status: don't reserve the bottom row for the status bar
 	TapArgs          []string
 }
 
@@ -279,6 +280,8 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.NoHookInstall = true
 		case a == "--no-tap":
 			c.NoTap = true
+		case a == "--no-status":
+			c.NoStatus = true
 		case a == "--claude-bin":
 			v, err := needValue(i, a)
 			if err != nil {

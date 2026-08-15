@@ -280,18 +280,39 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 
 	// ── phase 2: live follow until Ctrl-C / Ctrl-D / Ctrl-X ──
 	r.live = true
-	reloadCh := make(chan struct{}, 1) // keyboard 'r'; coalesced (buffered 1)
-	themeCh := make(chan struct{}, 1)  // keyboard 'T'; cycle theme, coalesced (buffered 1)
-	treeCh := make(chan struct{}, 1)   // keyboard Ctrl-X; back to the tree picker
-	focusCh := make(chan struct{}, 1)  // keyboard '→'; the render goroutine runs the overlay
-	helpCh := make(chan struct{}, 1)   // keyboard '?'; ditto for the help modal
-	// keyboard 'y'; buffered rather than coalesced — each press extends the copy
-	// by one more turn, so a dropped one would copy the wrong thing.
-	yankCh := make(chan struct{}, 4)
-	resumeCh := make(chan struct{}) // handed back to unpark the keyboard after the overlay
+	// Display toggles (t/T/c/m/r/y): applied on the render goroutine, never
+	// coalesced — two `t` presses are two steps through the cycle and a second
+	// `y` means one more message, so a dropped press lands on the wrong state.
+	actionCh := make(chan keyAction, 8)
+	overlayCh := make(chan keyAction, 1) // '→' focus / '?' help; both park the keyboard
+	treeCh := make(chan struct{}, 1)     // keyboard Ctrl-X; back to the tree picker
+	resumeCh := make(chan struct{})      // handed back to unpark the keyboard after the overlay
+	winchCh := installWinch()            // terminal resized → the status bar re-claims its row
 	treeEnabled := agent == AgentClaude
-	restoreTTY, kbTTY := startKeyboard(r, treeEnabled, codeCh, reloadCh, themeCh, treeCh, focusCh, helpCh, yankCh, resumeCh)
-	defer restoreTTY() // panic safety; the normal paths restore explicitly below
+
+	// The status bar has to run its DSR query on the tty after cbreak is on but
+	// before the reader goroutine could swallow the reply, so the tty is opened
+	// here rather than inside startKeyboardOn.
+	kbTTY, ttySaved, haveTTY := openControlTTY()
+	var status *statusBar
+	restoreTTY := func() {}
+	if haveTTY {
+		if !cfg.NoStatus && isCharDevice(os.Stdout) {
+			// The bar claims a row, which means knowing the cursor isn't already
+			// on it — so settle the backfill's deferred trailing newline first and
+			// start the live phase on a line of its own. (Without a bar the line
+			// is deliberately left open, so a dot streak can ride it.)
+			r.endLine()
+			out.Flush()
+			status = newStatusBar(kbTTY)
+		}
+		restoreTTY = startKeyboardOn(kbTTY, ttySaved, treeEnabled, codeCh, actionCh, overlayCh, treeCh, resumeCh)
+	}
+	// restoreTerm always runs the status bar's teardown FIRST: it has to hand the
+	// full scrolling region back before the terminal modes are restored, or the
+	// shell inherits a terminal that can only scroll h-1 rows.
+	restoreTerm := func() { status.close(); restoreTTY() }
+	defer restoreTerm() // panic safety; the normal paths restore explicitly below
 
 	emit := func(line []byte) {
 		for _, rec := range normalize(agent, line, loc) {
@@ -332,11 +353,20 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			offset = appendStep(cur, offset, emit)
 		}
 	}
-	// rerender re-renders the entire current transcript with the live settings —
-	// the streaming-native way to apply t/c/theme changes retrospectively. banner
-	// is the dim divider line printed before the fresh copy (it reads r.theme, so
-	// a theme swap must land BEFORE this runs to colour the banner in the new theme).
-	rerender := func(banner string) {
+	// rerender re-renders the current transcript with the live settings — the
+	// streaming-native way to apply t/T/c/m retrospectively, since printed lines
+	// can't be repainted in place. banner is the dim divider printed before the
+	// fresh copy (it reads r.theme, so a theme swap must land BEFORE this runs to
+	// colour the banner in the new theme).
+	//
+	// keep caps how many rendered LINES are actually printed, newest last (0 =
+	// all of them). A toggle only needs to refresh what you can see: dumping a
+	// whole session on every keypress buries the screen in scrollback and — since
+	// the tail of it looks much like the tail of the old copy — reads as if
+	// nothing happened. The transcript is still rendered in full so the renderer's
+	// state (turn boundaries, the yank buffer, dot streaks) stays exact; only the
+	// output is trimmed. `r` passes 0 and re-renders everything.
+	rerender := func(banner string, keep int) {
 		d, err := os.ReadFile(cur)
 		if err != nil {
 			return
@@ -344,29 +374,51 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		all := splitLines(d)
 		r.endLine() // close any open dot-streak bracket before wiping state
 		r.reset()
-		io.WriteString(out, "\n"+r.theme.DimANSI+banner+reset+"\n\n")
+		// Render into a buffer so the tail can be taken; r.w is only ever touched
+		// on this goroutine.
+		var buf bytes.Buffer
+		prevW := r.w
+		r.w = &buf
 		for _, l := range all {
 			emit(l)
 		}
+		r.w = prevW
+
+		body, trimmed := tailLinesOf(buf.String(), keep)
+		if trimmed {
+			banner += " · showing the last " + fmt.Sprint(keep) + " lines (r for all)"
+		}
+		io.WriteString(out, "\n"+r.theme.DimANSI+banner+reset+"\n\n")
+		io.WriteString(out, body)
 		offset = liveOffset(d)
 		agyKeep = newAgyDedup(maxStepIndex(all))
 		agyLastSize, agyLastMtime = -1, -1 // force a re-stat next tick
 	}
-	// reload is the `r` key: re-render with the current settings unchanged.
-	reload := func() { rerender("⟳ reloaded") }
+	// reload is the `r` key: re-render the WHOLE transcript, settings unchanged.
+	reload := func() { rerender("⟳ reloaded", 0) }
+	// screenful is how much a toggle re-renders: enough to refresh what's on
+	// screen, and no more. Without a status bar there's no measured height, so
+	// fall back to a conservative screen.
+	screenful := func() int {
+		if status == nil {
+			return 40
+		}
+		return max(status.h-2, 8)
+	}
 	// cycleTheme is the `T` key: swap to the next bundled theme, then re-render so
 	// the whole visible transcript recolours at once (glamour body colours already
 	// in scrollback can't be recoloured in place). A rebuild failure is a no-op.
-	cycleTheme := func() {
+	cycleTheme := func() string {
 		next, err := nextTheme(theme.Name)
 		if err != nil {
-			return
+			return "no other theme to switch to"
 		}
 		if err := r.applyTheme(next); err != nil {
-			return
+			return "cannot load theme " + next.Name
 		}
 		theme = next // so a later focus overlay (runFocus) uses the new theme too
-		rerender("⟳ theme: " + next.Name)
+		rerender("⟳ theme: "+next.Name, screenful())
+		return "theme: " + next.Name
 	}
 	// rollover follows the session across a Claude worktree fork. When the
 	// current file has gone quiet and a sibling in the same project dir forked
@@ -431,6 +483,39 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		return true
 	}
 
+	// Status-bar state. lastEventAt answers the question a tail is actually for
+	// — "when did anything last happen" — so it moves on transcript growth, not
+	// on wall-clock ticks. pendingNow mirrors the pending-prompt marker.
+	lastEventAt := time.Now()
+	lastTurns := r.turnsRendered
+	pendingNow := false
+	statusNow := func() statusInfo {
+		return statusInfo{
+			Agent:    agent,
+			Repo:     statusRepo(pwd),
+			Session:  sessionIDFromPath(cur),
+			Turns:    r.turnsRendered,
+			LastAt:   lastEventAt,
+			Pending:  pendingNow,
+			Tools:    toolStyleKind(r.toolStyle.Load()),
+			Theme:    theme.Name,
+			Collapse: int(r.collapse.Load()),
+			Mrkdwn:   r.mrkdwn.Load(),
+		}
+	}
+	// note shows a keypress result. With a status bar it's the yellow transient
+	// line; without one (piped output, --no-status) it falls back to stderr,
+	// which is where these messages used to go.
+	note := func(msg string) {
+		if status == nil {
+			fmt.Fprintln(os.Stderr, "entire-tail: "+msg)
+			return
+		}
+		status.setMessage(msg, time.Now())
+		status.update(statusNow(), time.Now())
+	}
+	status.update(statusNow(), time.Now())
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	idle := 0 // consecutive ticks the current Claude file hasn't grown
@@ -458,7 +543,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		case code := <-codeCh:
 			// Quit: restore the terminal and do the final flush here, on the
 			// sole writer goroutine (130 for Ctrl-C/SIGINT, 0 for q/Ctrl-D/SIGTERM).
-			restoreTTY()
+			restoreTerm()
 			r.endLine() // terminate a deferred body/dots line so exit lands on a fresh row
 			out.Flush()
 			fmt.Fprintln(os.Stderr)
@@ -470,46 +555,76 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// abortLine (not endLine) leaves the trailing newline unwritten so the
 			// flip to the picker's alt-screen doesn't leave a blank line behind;
 			// run() writes it before the next session's banner.
-			restoreTTY()
+			restoreTerm()
 			r.abortLine()
 			out.Flush()
 			return
-		case <-reloadCh:
-			reload()
+		case act := <-actionCh:
+			// Every display toggle lands here, on the one goroutine allowed to
+			// render. Each applies its change, re-renders the history so the whole
+			// transcript reflects it (this is a streaming view — already-printed
+			// lines can't be repainted in place, so "apply" means "append a fresh
+			// copy"), and reports through the status bar.
+			msg := ""
+			switch act {
+			case keyCycleTools:
+				msg = r.cycleTools()
+				rerender("⟳ "+msg, screenful())
+			case keyCycleTheme:
+				msg = cycleTheme()
+			case keyToggleCollapse:
+				msg = r.toggleCollapse()
+				rerender("⟳ "+msg, screenful())
+			case keyToggleMrkdwn:
+				msg = r.toggleMrkdwn()
+				rerender("⟳ "+msg, screenful())
+			case keyReload:
+				reload()
+				msg = "re-rendered"
+			case keyYank:
+				// No re-render: a yank copies, it doesn't change the view. It runs
+				// here rather than on the keyboard goroutine because it reads the
+				// renderer's message buffer and may write OSC 52 to the tty.
+				msg = r.yank(kbTTY, time.Now())
+			}
+			// Flush the transcript before the bar: the bar goes straight to the
+			// tty, so a buffered re-render still sitting in `out` would land after
+			// it and the two would interleave.
 			out.Flush()
-		case <-themeCh:
-			cycleTheme()
-			out.Flush()
-		case <-focusCh:
+			note(msg)
+		case act := <-overlayCh:
 			// The keyboard goroutine is parked on resumeCh; we're the sole tty
-			// owner. Run the alt-screen subagent overlay on its SAME fd, then
-			// unpark it. Only Claude sessions have subagents; runFocus no-ops
-			// (with a hint) otherwise.
+			// owner. The overlays draw full-height, so the status bar hands the
+			// scrolling region back for the duration.
 			out.Flush()
-			runFocus(kbTTY, cur, home, theme)
+			status.suspend()
+			switch act {
+			case keyFocus:
+				// Only Claude sessions have subagents; runFocus no-ops (with a
+				// hint) otherwise.
+				runFocus(kbTTY, cur, home, theme)
+			case keyHelp:
+				// The state shown is sampled HERE, not at startup: t/T/c/m may have
+				// moved since the banner was printed.
+				runHelp(kbTTY, helpInfo{
+					Agent:       agent,
+					Session:     tildify(cur, home),
+					Theme:       theme.Name,
+					Backfill:    cfg.Backfill,
+					From:        backfillFrom,
+					Total:       total,
+					Tools:       toolStyleKind(r.toolStyle.Load()),
+					Collapse:    int(r.collapse.Load()),
+					Mrkdwn:      r.mrkdwn.Load(),
+					TreeEnabled: treeEnabled,
+				}, theme)
+			}
+			status.resume()
+			status.update(statusNow(), time.Now())
 			resumeCh <- struct{}{}
-		case <-yankCh:
-			// Runs here, not on the keyboard goroutine: it reads the renderer's
-			// turn buffer (written by this goroutine) and may write OSC 52 to the
-			// tty. The status goes to stderr like the other toggles.
-			fmt.Fprintln(os.Stderr, "entire-tail: "+r.yank(kbTTY, time.Now()))
-		case <-helpCh:
-			// Same hand-off as the focus overlay. The state shown is sampled HERE,
-			// not at startup: t/T/c may have moved since the banner was printed.
-			out.Flush()
-			runHelp(kbTTY, helpInfo{
-				Agent:       agent,
-				Session:     tildify(cur, home),
-				Theme:       theme.Name,
-				Backfill:    cfg.Backfill,
-				From:        backfillFrom,
-				Total:       total,
-				Tools:       toolStyleKind(r.toolStyle.Load()),
-				Collapse:    int(r.collapse.Load()),
-				Mrkdwn:      r.mrkdwn.Load(),
-				TreeEnabled: treeEnabled,
-			}, theme)
-			resumeCh <- struct{}{}
+		case <-winchCh:
+			status.resize()
+			status.update(statusNow(), time.Now())
 		case <-ticker.C:
 			before := offset
 			poll()
@@ -546,10 +661,26 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					}
 				}
 				lastMarkerKey = key
+				pendingNow = ok
 			}
 			out.Flush()
+			// The bar is written straight to the tty, so the transcript writer
+			// has to be flushed first or the two interleave.
+			if offset != before || r.turnsRendered != lastTurns {
+				lastEventAt, lastTurns = time.Now(), r.turnsRendered
+			}
+			status.update(statusNow(), time.Now())
 		}
 	}
+}
+
+// installWinch reports terminal resizes. SIGWINCH is delivered to the process,
+// but the scrolling region and the bar's row both have to be recomputed on the
+// render goroutine, so it arrives as a channel the live loop selects on.
+func installWinch() <-chan os.Signal {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGWINCH)
+	return ch
 }
 
 // waitForNewSession blocks until a Claude session file appears in pwd's project
@@ -705,7 +836,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		if agent == AgentClaude {
 			back = "Ctrl-X=back to tree  "
 		}
-		fmt.Fprintln(w, "  keys:     ?=help  y=copy last msg as slack mrkdwn  m=mrkdwn view  t=cycle tools  T=cycle theme  c=toggle collapse  →=focus subagents  r=reload  "+back+"q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     ?=help  y=copy as slack mrkdwn  m=mrkdwn view  t=tools  T=theme  c=collapse  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
@@ -971,6 +1102,9 @@ OPTIONS:
                             through it (see the 'tap' subcommand) — a blocked
                             question then shows the card alone, with its
                             preamble arriving after you answer.
+      --no-status           Don't reserve the bottom row for the status bar.
+                            The bar shrinks the terminal's scrolling region by
+                            one row; use this if that upsets your terminal.
       --claude-bin BIN      Which binary the workspace panes and 'handover'
                             launch. Default 'claude'. Pass any claude-compatible
                             wrapper instead ('happy' for mobile control, a shim
@@ -988,17 +1122,23 @@ OPTIONS:
   -V, --version             Show version and exit.
 
 LIVE KEYS (while following, on an interactive terminal):
-  t                         Cycle tool-call rendering for new events:
-                            full → dots → hidden → full.
-  c                         Toggle collapsing of long user pastes for new
-                            events.
+  ?                         Help: a modal with this session's settings, the key
+                            map and the dot legend. Any key closes it.
+  t                         Cycle tool-call rendering: full → dots → hidden.
+  c                         Toggle collapsing of long user pastes.
+  T                         Cycle the colour theme.
+  m                         Toggle agent text between rendered markdown and
+                            Slack mrkdwn source (so a mouse-select copies
+                            mrkdwn).
+  y                         Copy the last agent message to the clipboard as
+                            Slack mrkdwn. Press again within 3s to add the
+                            message before it.
   →                         Focus subagents: open an alt-screen view of the
                             session's subagent transcripts. ←/→ cycles between
                             them, ↑↓ scrolls, r reloads, q/Esc returns to the
                             tail. (Claude sessions only; no-op when none.)
   r                         Reload: re-render the whole current transcript with
-                            the current settings — applies t/c retrospectively
-                            by appending a fresh copy to the scrollback.
+                            the current settings.
   Ctrl-X                    Back to the tree: pop out of the live tail and
                             re-open the session tree picker (Claude sessions
                             only). Pick another session with t to tail it in
@@ -1006,9 +1146,15 @@ LIVE KEYS (while following, on an interactive terminal):
                             tree quits entire-tail.
   q, Ctrl-D, Ctrl-C         Quit.
 
-  t/c affect events rendered from now on; press r to re-render the history with
-  the new settings (this is a streaming view, not an alt-screen TUI, so it
-  appends rather than repainting in place).
+  t/T/c/m re-render the history themselves, so the whole transcript reflects the
+  change. This is a streaming view, not an alt-screen TUI: re-rendering appends
+  a fresh copy rather than repainting in place, and your terminal's own
+  scrollback keeps working. r does the same on demand.
+
+  The bottom row is a status bar: which session is being followed, how long it
+  has been quiet (or whether the agent is blocked on you), and the current
+  render settings. A keypress reports there in yellow for three seconds.
+  --no-status turns it off.
 
 ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_AGENT         Same as --agent.
