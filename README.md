@@ -123,6 +123,7 @@ events show as they stream:
 
 | key            | effect                                                        |
 |----------------|---------------------------------------------------------------|
+| `?`            | **help** — a modal with the startup banner's context (agent/session/theme/backfill/tools/collapse), the full key map, and the dot legend; any key closes it |
 | `t`            | cycle tool-call rendering: **full → dots → hidden**           |
 | `T`            | cycle the color **theme** — steps through the bundled themes and re-renders the whole transcript in the new theme |
 | `c`            | toggle collapsing of long user pastes                         |
@@ -138,7 +139,10 @@ in place — your terminal's / Zellij's native scrollback keeps working). To app
 them to the **history**, press **`r`**: it re-renders the whole current
 transcript with the live settings, appending a fresh copy to the scrollback. So
 the usual flow is "cycle to full with `t`, then `r` to redraw everything as
-rich diffs." A one-line `keys:` legend prints in the startup banner.
+rich diffs." A one-line `keys:` legend prints in the startup banner, and **`?`**
+brings the whole banner back as a modal at any point — with the live values, so
+it also answers "which tool style / theme am I in now?" after a few `t`/`T`
+presses have scrolled the banner away.
 
 `T` (shift-`t`) cycles the color theme. Unlike `t`/`c`, it re-renders the whole
 transcript itself — glamour body colors already in the scrollback can't be

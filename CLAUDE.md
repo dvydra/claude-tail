@@ -282,6 +282,14 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   on `resumeCh`, sharing the SAME tty fd (two fds on one tty race for input).
   **Gotcha:** a raw timed read reports a 0-byte timeout as `(0, io.EOF)` — treat
   that as a follow tick, not end-of-input, or the overlay exits instantly
+- `help.go` — the `?` help modal: a centered bordered box in an alt-screen
+  showing the startup banner's context plus the full key map and the dot legend.
+  Same hand-off as `focus.go` (keyboard signals `helpCh` and parks on `resumeCh`;
+  the render goroutine draws on the SAME tty fd), so there's one tty reader. The
+  state is sampled when `?` is pressed, not at startup — `t`/`T`/`c` move it, and
+  a modal that echoed the stale banner would be worse than no modal. Pure
+  `helpLines`/`drawHelp`/`visWidth`/`padVisible` split from the tty driver
+  `runHelp`, so content and box geometry are unit-tested without a tty
 - `theme.go` / `config.go` / `main.go` — themes, flags+env, wiring
 - `keyboard.go` — live single-key toggles via cbreak (`t`/`c`/`r`/`q`), plus `→`
   which signals the render goroutine to run the focus overlay and parks until it

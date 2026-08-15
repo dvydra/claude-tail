@@ -284,9 +284,10 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	themeCh := make(chan struct{}, 1)  // keyboard 'T'; cycle theme, coalesced (buffered 1)
 	treeCh := make(chan struct{}, 1)   // keyboard Ctrl-X; back to the tree picker
 	focusCh := make(chan struct{}, 1)  // keyboard '→'; the render goroutine runs the overlay
+	helpCh := make(chan struct{}, 1)   // keyboard '?'; ditto for the help modal
 	resumeCh := make(chan struct{})    // handed back to unpark the keyboard after the overlay
 	treeEnabled := agent == AgentClaude
-	restoreTTY, kbTTY := startKeyboard(r, treeEnabled, codeCh, reloadCh, themeCh, treeCh, focusCh, resumeCh)
+	restoreTTY, kbTTY := startKeyboard(r, treeEnabled, codeCh, reloadCh, themeCh, treeCh, focusCh, helpCh, resumeCh)
 	defer restoreTTY() // panic safety; the normal paths restore explicitly below
 
 	emit := func(line []byte) {
@@ -484,6 +485,22 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			out.Flush()
 			runFocus(kbTTY, cur, home, theme)
 			resumeCh <- struct{}{}
+		case <-helpCh:
+			// Same hand-off as the focus overlay. The state shown is sampled HERE,
+			// not at startup: t/T/c may have moved since the banner was printed.
+			out.Flush()
+			runHelp(kbTTY, helpInfo{
+				Agent:       agent,
+				Session:     tildify(cur, home),
+				Theme:       theme.Name,
+				Backfill:    cfg.Backfill,
+				From:        backfillFrom,
+				Total:       total,
+				Tools:       toolStyleKind(r.toolStyle.Load()),
+				Collapse:    int(r.collapse.Load()),
+				TreeEnabled: treeEnabled,
+			}, theme)
+			resumeCh <- struct{}{}
 		case <-ticker.C:
 			before := offset
 			poll()
@@ -679,7 +696,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		if agent == AgentClaude {
 			back = "Ctrl-X=back to tree  "
 		}
-		fmt.Fprintln(w, "  keys:     t=cycle tools  T=cycle theme  c=toggle collapse  →=focus subagents  r=reload  "+back+"q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     ?=help  t=cycle tools  T=cycle theme  c=toggle collapse  →=focus subagents  r=reload  "+back+"q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
