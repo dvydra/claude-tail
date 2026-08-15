@@ -20,6 +20,7 @@ const (
 	keyReload
 	keyQuit
 	keyBackToTree
+	keyHelp
 )
 
 // keyActionFor maps a raw input byte to an action. Ctrl-C is left to the signal
@@ -40,6 +41,8 @@ func keyActionFor(b byte) keyAction {
 		return keyQuit
 	case 0x18: // Ctrl-X
 		return keyBackToTree
+	case '?':
+		return keyHelp
 	}
 	return keyNone
 }
@@ -61,7 +64,7 @@ func keyActionFor(b byte) keyAction {
 // the caller's live loop restores the tty and re-enters the picker. When false
 // (non-Claude session / no tree in scope), Ctrl-X is ignored — the tree is
 // Claude-only, so there's nothing to go back to.
-func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh chan<- struct{}, themeCh chan<- struct{}, treeCh chan<- struct{}, focusCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
+func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh chan<- struct{}, themeCh chan<- struct{}, treeCh chan<- struct{}, focusCh chan<- struct{}, helpCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
 	if !isCharDevice(os.Stdin) {
 		return func() {}, nil
 	}
@@ -119,6 +122,11 @@ func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh ch
 					treeCh <- struct{}{}
 					return
 				}
+			case keyHelp:
+				// Same hand-off as the focus overlay: the render goroutine draws
+				// the modal on this fd while we park, so there's one tty reader.
+				helpCh <- struct{}{}
+				<-resumeCh
 			case keyCycleTools:
 				fmt.Fprintln(os.Stderr, "entire-tail: "+r.cycleTools()+" (press r to re-render history)")
 			case keyCycleTheme:
