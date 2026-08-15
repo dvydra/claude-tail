@@ -26,6 +26,7 @@ type helpInfo struct {
 	From, Total int    // backfill range, as the banner reports it
 	Tools       toolStyleKind
 	Collapse    int  // current paste-collapse threshold (0 = off)
+	Mrkdwn      bool // agent bodies rendering as Slack mrkdwn source
 	TreeEnabled bool // Ctrl-X is Claude-only
 }
 
@@ -47,6 +48,10 @@ func helpLines(info helpInfo) []string {
 	if info.Collapse > 0 {
 		collapse = fmt.Sprintf("user pastes > %d lines", info.Collapse)
 	}
+	bodyMode := "rendered markdown"
+	if info.Mrkdwn {
+		bodyMode = "slack mrkdwn source (m)"
+	}
 	L := []string{
 		kv("agent", string(info.Agent)),
 		kv("session", info.Session),
@@ -54,8 +59,12 @@ func helpLines(info helpInfo) []string {
 		kv("backfill", fmt.Sprintf("%s (%d..%d of %d)", info.Backfill, info.From, info.Total, info.Total)),
 		kv("tools", info.Tools.label()),
 		kv("collapse", collapse),
+		kv("bodies", bodyMode),
 		"",
 		"keys",
+		kv("y", "copy the last agent message as Slack mrkdwn"),
+		kv("", "(press again within 3s to add the one before it)"),
+		kv("m", "toggle agent text ↔ Slack mrkdwn source"),
 		kv("t", "cycle tool style (full → dots → hidden)"),
 		kv("T", "cycle theme"),
 		kv("c", "toggle user-paste collapse"),
