@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -23,6 +22,7 @@ const (
 	keyHelp
 	keyYank
 	keyToggleMrkdwn
+	keyFocus // not a keyActionFor result: the `→` escape sequence decodes to it
 )
 
 // keyActionFor maps a raw input byte to an action. Ctrl-C is left to the signal
@@ -53,37 +53,44 @@ func keyActionFor(b byte) keyAction {
 	return keyNone
 }
 
-// startKeyboard wires single-key live controls when stdin is a terminal: it puts
-// the controlling tty into cbreak mode (single-key, no echo, but output
-// processing and signals left intact, so the stream doesn't staircase and Ctrl-C
-// still signals), then reads keys and flips the renderer's display flags (which
-// are atomic, so this is race-free with the render goroutine). A quit key
-// reports exit code 0 on codeCh. Returns a restore func the caller must run
-// before exit; it's a no-op when there's no usable tty.
-// The returned *os.File is the controlling tty the keyboard goroutine reads (nil
-// when there's no usable tty). The focus overlay reuses this SAME fd — while it
-// runs, the keyboard goroutine is parked on resumeCh, so there's a single tty
-// reader at all times (two fds on the same tty race for input).
+// openControlTTY opens the controlling terminal in cbreak mode (single-key, no
+// echo, but output processing and signals left intact, so the stream doesn't
+// staircase and Ctrl-C still signals). Returns ok=false when there's no usable
+// tty.
+//
+// Split from startKeyboardOn because the status bar has to talk to the terminal
+// (a DSR query, and it needs the answer) in the window after cbreak is on and
+// before the reader goroutine exists — with a reader running, the terminal's
+// reply is swallowed by it.
+func openControlTTY() (tty *os.File, saved string, ok bool) {
+	if !isCharDevice(os.Stdin) {
+		return nil, "", false
+	}
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return nil, "", false
+	}
+	saved, ok = setCbreak(tty)
+	if !ok {
+		tty.Close()
+		return nil, "", false
+	}
+	return tty, saved, true
+}
+
+// startKeyboardOn reads keys off an already-cbreak tty and reports them to the
+// render goroutine, which is the only thing that ever renders: display toggles
+// go to actionCh, the two alt-screen overlays to overlayCh (and the goroutine
+// parks on resumeCh until they return, so there is one tty reader at all times
+// — two fds on one tty race for input), and a quit key reports exit code 0 on
+// codeCh. Returns a restore func the caller must run before exit.
 //
 // When treeEnabled is true, Ctrl-X signals treeCh and the goroutine RETURNS
 // (stops reading), so the tree picker that follows is the sole reader of the tty;
 // the caller's live loop restores the tty and re-enters the picker. When false
 // (non-Claude session / no tree in scope), Ctrl-X is ignored — the tree is
 // Claude-only, so there's nothing to go back to.
-func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh chan<- struct{}, themeCh chan<- struct{}, treeCh chan<- struct{}, focusCh chan<- struct{}, helpCh chan<- struct{}, yankCh chan<- struct{}, resumeCh <-chan struct{}) (func(), *os.File) {
-	if !isCharDevice(os.Stdin) {
-		return func() {}, nil
-	}
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return func() {}, nil
-	}
-	saved, ok := setCbreak(tty)
-	if !ok {
-		tty.Close()
-		return func() {}, nil
-	}
-
+func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<- int, actionCh chan<- keyAction, overlayCh chan<- keyAction, treeCh chan<- struct{}, resumeCh <-chan struct{}) func() {
 	var once sync.Once
 	restore := func() {
 		once.Do(func() {
@@ -111,12 +118,12 @@ func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh ch
 				if k, _ := decodeKey(buf[:n]); k == kRight {
 					// Hand the tty to the render goroutine's overlay and park
 					// until it's done — one tty reader at a time.
-					focusCh <- struct{}{}
+					overlayCh <- keyFocus
 					<-resumeCh
 				}
 				continue
 			}
-			switch keyActionFor(buf[0]) {
+			switch act := keyActionFor(buf[0]); act {
 			case keyQuit:
 				codeCh <- 0
 				return
@@ -131,37 +138,21 @@ func startKeyboard(r *Renderer, treeEnabled bool, codeCh chan<- int, reloadCh ch
 			case keyHelp:
 				// Same hand-off as the focus overlay: the render goroutine draws
 				// the modal on this fd while we park, so there's one tty reader.
-				helpCh <- struct{}{}
+				overlayCh <- keyHelp
 				<-resumeCh
-			case keyCycleTools:
-				fmt.Fprintln(os.Stderr, "entire-tail: "+r.cycleTools()+" (press r to re-render history)")
-			case keyCycleTheme:
-				// Theme swap + re-render must run on the render goroutine (it
-				// rebuilds the non-atomic render fn / header state); just signal it.
-				select {
-				case themeCh <- struct{}{}:
-				default: // a theme cycle is already pending; coalesce
-				}
-			case keyYank:
-				// The yank reads the renderer's turn buffer and writes the tty
-				// (OSC 52 fallback), so it runs on the render goroutine. Signalled,
-				// not coalesced-away: a second `y` MEANS "extend by another turn",
-				// so a dropped press would silently copy the wrong thing.
-				yankCh <- struct{}{}
-			case keyToggleMrkdwn:
-				fmt.Fprintln(os.Stderr, "entire-tail: "+r.toggleMrkdwn()+" (press r to re-render history)")
-			case keyToggleCollapse:
-				fmt.Fprintln(os.Stderr, "entire-tail: "+r.toggleCollapse()+" (press r to re-render history)")
-			case keyReload:
-				// Signal the render goroutine; never write stdout from here.
-				select {
-				case reloadCh <- struct{}{}:
-				default: // a reload is already pending; coalesce
-				}
+			case keyNone:
+			default:
+				// Every display toggle is applied by the RENDER goroutine: each one
+				// now re-renders the history and writes the status bar, and only
+				// that goroutine may touch the screen. Never coalesced — a second
+				// `y` means "one more message", and two `t` presses are two steps
+				// through the cycle, so a dropped press would land on the wrong
+				// state.
+				actionCh <- act
 			}
 		}
 	}()
-	return restore, tty
+	return restore
 }
 
 // setCbreak puts tty into cbreak mode via stty (which handles the BSD/Linux

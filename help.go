@@ -68,7 +68,8 @@ func helpLines(info helpInfo) []string {
 		kv("t", "cycle tool style (full → dots → hidden)"),
 		kv("T", "cycle theme"),
 		kv("c", "toggle user-paste collapse"),
-		kv("r", "re-render the history"),
+		kv("", "t/T/c/m re-render the history as they go"),
+		kv("r", "re-render the history on demand"),
 		kv("→", "focus subagents"),
 	}
 	if info.TreeEnabled {
