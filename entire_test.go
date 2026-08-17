@@ -162,3 +162,36 @@ func TestMergeEntireSkipsDeadDirsForNewSessions(t *testing.T) {
 		t.Errorf("group Dir = %q, want the existing dir %q (a deleted worktree is not an `n` target)", infra.Dir, live)
 	}
 }
+
+func TestMergeEntirePwdWinsOverNewestSessionDir(t *testing.T) {
+	// A session records the cwd it STARTED in, so one that opened in a
+	// subdirectory and then moved into a worktree hands the repo group that
+	// subdirectory as its Dir. Standing in the checkout, `n` must cd to $PWD.
+	pwd := t.TempDir()
+	sub := t.TempDir()
+	local := sessionTree{
+		Pwd: pwd,
+		Folders: []treeFolder{{
+			Cwd:      pwd + "/.claude/worktrees/reimport",
+			Sessions: []treeSession{{ID: "moved", Mtime: 200, cwd: sub}},
+		}},
+	}
+	entire := []entireSession{{SessionID: "moved", Repo: "org/infra", LastActivityAt: "2026-07-10T00:59:00Z"}}
+	tree := mergeEntire(local, entire, "/home/me", 0, parseEntireTime("2026-07-10T01:00:00Z"))
+
+	// $PWD isn't in a git repo here, so its group is the tilde'd path, not org/infra.
+	cur := folderByCwd(tree, tree.CurrentGroup)
+	if cur == nil || cur.Dir != pwd {
+		t.Fatalf("current group Dir = %+v, want %q", cur, pwd)
+	}
+	// The same group, reached the second way: sessions already present in it.
+	local.Folders[0].Cwd = pwd
+	tree = mergeEntire(local, nil, "/home/me", 0, parseEntireTime("2026-07-10T01:00:00Z"))
+	cur = folderByCwd(tree, tree.CurrentGroup)
+	if cur == nil || cur.Dir != pwd {
+		t.Errorf("group with sessions: Dir = %+v, want $PWD %q, not the session's %q", cur, pwd, sub)
+	}
+	if len(cur.Sessions) != 1 {
+		t.Errorf("session dropped: %+v", cur.Sessions)
+	}
+}

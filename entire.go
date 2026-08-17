@@ -286,7 +286,15 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 	curRepo := repoForCwd(local.Pwd, home, repoCache)
 	// Always surface the current directory's group, even with zero sessions, so it
 	// can be `n`-ed straight from the picker. Dir points at the real cwd for `n`.
-	if _, ok := groups[curRepo]; !ok {
+	//
+	// When the group already exists, $PWD still wins over the newest session's cwd:
+	// a group's Dir is whichever cwd was recorded first, and a session's recorded
+	// cwd is the one it STARTED in — a session that later moved into a worktree
+	// leaves behind the unrelated subdirectory it opened in, and `n` on the repo
+	// you're standing in would cd there instead of here.
+	if g, ok := groups[curRepo]; ok {
+		g.Dir = local.Pwd
+	} else {
 		groups[curRepo] = &treeFolder{Cwd: curRepo, Slug: curRepo, Dir: local.Pwd, Mtime: now}
 		order = append(order, curRepo)
 	}
