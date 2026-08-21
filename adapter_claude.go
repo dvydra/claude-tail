@@ -20,6 +20,13 @@ type claudeEvent struct {
 	// IsSidechain marks a subagent's records, which are interleaved into the
 	// main transcript. A subagent finishing is not the main agent finishing.
 	IsSidechain bool `json:"isSidechain"`
+	// PromptSource/Origin distinguish a message the human typed ("typed"/"queued",
+	// origin.kind "human") from one Claude Code injected on their behalf
+	// ("system") — see isTaskNote.
+	PromptSource string `json:"promptSource"`
+	Origin       struct {
+		Kind string `json:"kind"`
+	} `json:"origin"`
 }
 
 type claudeMessage struct {
@@ -70,6 +77,15 @@ func normalizeClaude(line []byte, loc *time.Location) []Record {
 		// blocks (tool results, and sometimes an AskUserQuestion answer).
 		var s string
 		if json.Unmarshal(ev.Message.Content, &s) == nil {
+			// A background-task notification is a `user` record the human never
+			// typed; show it as a marker, not as their turn.
+			if isTaskNote(ev.Origin.Kind, ev.PromptSource, s) {
+				line := taskNoteLine(s)
+				if line == "" {
+					return nil
+				}
+				return []Record{{Kind: KindTaskNote, Ts: ts, Body: line}}
+			}
 			return []Record{{Kind: KindUser, Ts: ts, Body: s}}
 		}
 		var blocks []claudeBlock

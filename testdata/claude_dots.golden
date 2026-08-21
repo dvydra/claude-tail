@@ -11,6 +11,7 @@ Here is what I found:
 func main() {}
 
 Done.
+  ⧗ Monitor event: "CI on #3304" · lint: pass, test: pass, Entire Gates: fail
 ⏺ ▸ agent: Investigate the flaky test (general-purpose)
 ⁉ WAITING FOR YOUR ANSWER
 Scope: Which approach?
@@ -26,3 +27,4 @@ line3
 line4
 
 … 3 more lines — re-run with --no-collapse to expand
+  ⧗ Monitor "CI on #3304" stream ended

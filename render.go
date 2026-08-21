@@ -291,7 +291,18 @@ func (r *Renderer) emit(rec Record) {
 		r.agentSpawn(rec.AgentDesc, rec.AgentType)
 	case KindQuestion:
 		r.question(rec)
+	case KindTaskNote:
+		r.taskNote(rec.Body)
 	}
+}
+
+// taskNote renders a background-task notification as one dim line. Shown in
+// every tool style: it isn't a tool call, it's the reason the agent woke up —
+// and one dim line is cheap enough that hiding it would only cost context. The
+// glyph matches the "waiting on something else" sense of a pending task.
+func (r *Renderer) taskNote(body string) {
+	r.endLine()
+	io.WriteString(r.w, r.theme.DimANSI+"  ⧗ "+body+reset+"\n")
 }
 
 // Done-banner colors (fixed bright green, prominent on light and dark themes).

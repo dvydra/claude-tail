@@ -17,6 +17,11 @@ const (
 	// KindQuestion is an AskUserQuestion tool_use — rendered as a prominent card
 	// (and, live, rings the bell once) so a waiting prompt is noticed.
 	KindQuestion Kind = "QUESTION"
+	// KindTaskNote is a background-task notification (a Monitor tick, a task
+	// ending). Claude Code injects these as `user` records, but the human never
+	// typed them — rendered as a dim one-line marker, never a USER turn. See
+	// tasknote.go.
+	KindTaskNote Kind = "TASKNOTE"
 )
 
 // Record is one renderable unit. Which fields are populated depends on Kind:
@@ -26,6 +31,7 @@ const (
 //	TOOLRESULT    → N, and (full mode, when available) Result
 //	AGENTSPAWN    → Ts, AgentDesc, AgentType
 //	QUESTION      → Ts, QID, Questions
+//	TASKNOTE      → Body (already reduced to one line)
 type Record struct {
 	Kind    Kind
 	Ts      string      // "YYYY-MM-DD HH:MM:SS" local time
