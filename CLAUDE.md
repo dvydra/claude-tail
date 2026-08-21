@@ -444,6 +444,25 @@ needs to change.
   followed" — that isn't knowable until the next event lands, which is exactly
   the latency the marker exists to remove. Other agents never set `Done`, so the
   goldens for claude/codex/agy are untouched.
+- **Not every `type:"user"` record is the user** (`tasknote.go`). Claude Code
+  injects a background task's progress — a `Monitor` tick, a task ending — as a
+  `user` record it wrote itself. Rendered as a USER turn that is worse than
+  noise: a box header attributing to the human a task id, a temp output-file
+  path, a pile of CI statuses, and an instruction addressed to the AGENT ("send a
+  PushNotification if…"). The `<task-notification>` wrapper doesn't even survive
+  to hint at what it is — **glamour eats it as an HTML tag**, so the guts spill
+  out bare. `isTaskNote` classifies on `promptSource`/`origin.kind` (the payload
+  tag is only a fallback for transcripts predating `origin`) → `KindTaskNote` →
+  one dim `⧗` line. **`promptSource` is what decides, not the tag**: a human who
+  pastes a notification is still a human (`TestIsTaskNote`). Two things in
+  `taskNoteLine` are deliberate. (1) It keeps ONLY `<summary>` + `<event>` — ids,
+  paths and the agent-directed instruction are plumbing, and the tests assert
+  they never leak. (2) The **summary is budgeted separately** from the line
+  (`taskNoteSummaryMaxRunes` vs `taskNoteMaxRunes`), because the summary is the
+  Monitor's title repeated verbatim on every tick while the event is the only
+  part that changed — budgeting the line as one string spends it on the title and
+  elides the news (seen live: a title long enough to leave exactly one check
+  visible). An empty result renders NOTHING rather than a bare marker.
 - **Instant pending-prompt alert dedup** — the marker-file render path and the
   eventual JSONL card both compute the SAME `contentKey` (questions via
   `claudeParseQuestions`→`questionsContentKey`, permissions via sha256) so the

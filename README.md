@@ -373,6 +373,31 @@ subagent's `end_turn` is ignored (that's the subagent finishing, not the agent),
 and transcripts predating `stop_reason` simply render as before. Also
 **Claude-only**: Codex and Antigravity don't report the signal.
 
+### Background-task notes (Claude)
+
+When the agent is watching something in the background — a `Monitor` on a CI
+run, say — Claude Code feeds each update back into the transcript as a `user`
+record, even though you never typed it. Rendered naively that's a full USER box
+header over a task id, a temp output-file path, a pile of check statuses, and an
+instruction addressed to the agent ("send a PushNotification if…"), all
+attributed to you.
+
+entire-tail recognises those records (`promptSource: "system"`) and renders one
+dim line instead:
+
+```
+─── ◀ AGENT ────────────────────────────── 2026-08-21 15:45:28
+✔ DONE — over to you
+integration + test-db green — only lint left. Merge fires on the settle.
+  ⧗ Monitor event: "CI on #3304 workload-rename — settle then I… · Entire Gates: fail, lint: pass, test: pass…
+  ⧗ Monitor "CI on #3304 workload-rename — settle then I merge (authorized)" stream ended
+```
+
+Kept: the notification's own summary and the event body. Dropped: the task id,
+the tool-use id, the output-file path, and the agent-directed instruction. When
+the line has to be cut, the **title** gives way rather than the event — the
+title repeats on every tick of the same Monitor, the checks are what changed.
+
 ## The session tree (default)
 
 Can't remember which session that was? Just run `entire tail` — with no session
