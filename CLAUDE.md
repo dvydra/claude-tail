@@ -324,7 +324,7 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
 - `theme.go` / `config.go` / `main.go` — themes, flags+env, wiring
 - `keyboard.go` — live single-key controls via cbreak. **The keyboard only ever
   signals; the render goroutine does all of it.** Every display key
-  (`t`/`T`/`c`/`m`/`r`/`y`) goes to `actionCh` and the live loop applies it, then
+  (`t`/`T`/`c`/`m`/`w`/`r`/`y`) goes to `actionCh` and the live loop applies it, then
   re-renders and writes the status bar — the keyboard used to flip the atomic
   toggles itself and print to stderr, which stopped working the moment those keys
   had to re-render (a theme swap rebuilds the non-atomic glamour fn + header

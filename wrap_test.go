@@ -21,6 +21,30 @@ func TestWinchSettled(t *testing.T) {
 	}
 }
 
+// The `w` toggle suspends wrapping for a copy. It's a separate flag from
+// cfg.NoWrap so it composes: with either set, the width is 0.
+func TestWrapWidthToggleComposesWithFlag(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		flag, toggle bool
+	}{
+		{"--no-wrap", true, false},
+		{"the w toggle", false, true},
+		{"both", true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// wrapWidth reads the real stdout, which isn't a tty under `go test`,
+			// so exercise the composition the live loop performs.
+			if got := wrapWidthFor(120, !(c.flag || c.toggle)); got != 0 {
+				t.Errorf("%s left wrapping on (width %d)", c.name, got)
+			}
+		})
+	}
+	if got := wrapWidthFor(120, true); got == 0 {
+		t.Error("neither flag nor toggle set, but wrapping is off")
+	}
+}
+
 // wrap_test.go covers word wrapping: the width calculation, that a wrapped body
 // breaks between words rather than mid-word, and that wrap 0 (piped output,
 // --no-wrap) still emits one logical line per paragraph.

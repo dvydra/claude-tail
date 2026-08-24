@@ -489,6 +489,10 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	lastEventAt := time.Now()
 	lastTurns := r.turnsRendered
 	pendingNow := false
+	// wrapOff is the `w` toggle: wrapping suspended so a mouse drag-select copies
+	// whole paragraphs. Kept separate from cfg.NoWrap so a resize while it's on
+	// doesn't re-wrap behind the user's back — every wrapWidth call ORs the two.
+	wrapOff := false
 	statusNow := func() statusInfo {
 		return statusInfo{
 			Agent:    agent,
@@ -501,6 +505,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			Theme:    theme.Name,
 			Collapse: int(r.collapse.Load()),
 			Mrkdwn:   r.mrkdwn.Load(),
+			NoWrap:   wrapOff,
 		}
 	}
 	// note shows a keypress result. With a status bar it's the yellow transient
@@ -580,6 +585,18 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			case keyToggleMrkdwn:
 				msg = r.toggleMrkdwn()
 				rerender("⟳ "+msg, screenful())
+			case keyToggleWrap:
+				// The copy escape hatch. Wrapped prose reads better but a mouse
+				// drag-select copies the breaks with it; unwrapped, each paragraph
+				// is one logical line the terminal soft-wraps and rejoins on copy.
+				// So: press w, drag out the paragraph you want, press w again.
+				wrapOff = !wrapOff
+				r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff))
+				msg = "wrap: on"
+				if wrapOff {
+					msg = "wrap: off — drag-select now copies whole paragraphs"
+				}
+				rerender("⟳ "+msg, screenful())
 			case keyReload:
 				reload()
 				msg = "re-rendered"
@@ -618,6 +635,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					Tools:       toolStyleKind(r.toolStyle.Load()),
 					Collapse:    int(r.collapse.Load()),
 					Mrkdwn:      r.mrkdwn.Load(),
+					Wrap:        r.wrap,
 					TreeEnabled: treeEnabled,
 				}, theme)
 			}
@@ -639,7 +657,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// edge (height only) costs nothing.
 			if winchSettled(winchAt, time.Now()) {
 				winchAt = time.Time{}
-				if r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap)) {
+				if r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff)) {
 					rerender("⟳ resized", screenful())
 				}
 			}
@@ -878,7 +896,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		if agent == AgentClaude {
 			back = "Ctrl-X=back to tree  "
 		}
-		fmt.Fprintln(w, "  keys:     ?=help  y=copy as slack mrkdwn  m=mrkdwn view  t=tools  T=theme  c=collapse  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     ?=help  y=copy as slack mrkdwn  m=mrkdwn view  w=wrap  t=tools  T=theme  c=collapse  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
@@ -1178,6 +1196,10 @@ LIVE KEYS (while following, on an interactive terminal):
   m                         Toggle agent text between rendered markdown and
                             Slack mrkdwn source (so a mouse-select copies
                             mrkdwn).
+  w                         Toggle word wrap. Off, each paragraph is one long
+                            logical line the terminal soft-wraps and rejoins on
+                            copy — so press w, drag out the paragraph you want,
+                            press w again. The bar shows 'nowrap' meanwhile.
   y                         Copy the last agent message to the clipboard as
                             Slack mrkdwn. Press again within 3s to add the
                             message before it.
@@ -1194,8 +1216,8 @@ LIVE KEYS (while following, on an interactive terminal):
                             tree quits entire-tail.
   q, Ctrl-D, Ctrl-C         Quit.
 
-  t/T/c/m re-render the history themselves, so the whole transcript reflects the
-  change. This is a streaming view, not an alt-screen TUI: re-rendering appends
+  t/T/c/m/w re-render the history themselves, so the whole transcript reflects
+  the change. This is a streaming view, not an alt-screen TUI: re-rendering appends
   a fresh copy rather than repainting in place, and your terminal's own
   scrollback keeps working. r does the same on demand.
 

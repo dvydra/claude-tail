@@ -58,6 +58,7 @@ type statusInfo struct {
 	Theme    string
 	Collapse int
 	Mrkdwn   bool
+	NoWrap   bool // the `w` toggle: wrapping suspended so a drag-select copies clean
 }
 
 type statusBar struct {
@@ -271,13 +272,20 @@ func statusRights(info statusInfo) []string {
 	if info.Collapse > 0 {
 		collapse = "collapse " + fmt.Sprint(info.Collapse)
 	}
+	// nowrap rides beside mrkdwn down to the narrowest variant: both are
+	// off-normal modes you've toggled into, and prose suddenly running off the
+	// right edge is exactly the thing you'd otherwise mistake for a bug.
+	nowrap := ""
+	if info.NoWrap {
+		nowrap = "nowrap"
+	}
 	var out []string
 	for _, fields := range [][]string{
-		{tools, theme, collapse, mrk, "? help"},
-		{tools, theme, mrk, "? help"},
-		{tools, mrk, "? help"},
-		{tools, mrk, "?"},
-		{mrk, "?"},
+		{tools, theme, collapse, mrk, nowrap, "? help"},
+		{tools, theme, mrk, nowrap, "? help"},
+		{tools, mrk, nowrap, "? help"},
+		{tools, mrk, nowrap, "?"},
+		{mrk, nowrap, "?"},
 	} {
 		out = append(out, strings.Join(nonEmpty(fields), " · ")+" ")
 	}

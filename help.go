@@ -27,6 +27,7 @@ type helpInfo struct {
 	Tools       toolStyleKind
 	Collapse    int  // current paste-collapse threshold (0 = off)
 	Mrkdwn      bool // agent bodies rendering as Slack mrkdwn source
+	Wrap        int  // current wrap column limit (0 = unwrapped)
 	TreeEnabled bool // Ctrl-X is Claude-only
 }
 
@@ -52,6 +53,10 @@ func helpLines(info helpInfo) []string {
 	if info.Mrkdwn {
 		bodyMode = "slack mrkdwn source (m)"
 	}
+	wrap := "off — paragraphs are one line (copies unbroken)"
+	if info.Wrap > 0 {
+		wrap = fmt.Sprintf("%d columns", info.Wrap)
+	}
 	L := []string{
 		kv("agent", string(info.Agent)),
 		kv("session", info.Session),
@@ -60,15 +65,18 @@ func helpLines(info helpInfo) []string {
 		kv("tools", info.Tools.label()),
 		kv("collapse", collapse),
 		kv("bodies", bodyMode),
+		kv("wrap", wrap),
 		"",
 		"keys",
 		kv("y", "copy the last agent message as Slack mrkdwn"),
 		kv("", "(press again within 3s to add the one before it)"),
 		kv("m", "toggle agent text ↔ Slack mrkdwn source"),
+		kv("w", "toggle word wrap off/on"),
+		kv("", "(off = a drag-select copies whole paragraphs)"),
 		kv("t", "cycle tool style (full → dots → hidden)"),
 		kv("T", "cycle theme"),
 		kv("c", "toggle user-paste collapse"),
-		kv("", "t/T/c/m re-render the history as they go"),
+		kv("", "t/T/c/m/w re-render the history as they go"),
 		kv("r", "re-render the history on demand"),
 		kv("→", "focus subagents"),
 	}
