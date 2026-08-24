@@ -132,7 +132,7 @@ func TestMrkdwnModeGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	var b bytes.Buffer
-	r, err := newRenderer(&b, th, "dots", 5)
+	r, err := newRenderer(&b, th, "dots", 5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

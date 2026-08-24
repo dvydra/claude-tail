@@ -263,7 +263,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	printBanner(cfg, agent, session, backfillFrom, total, collapse)
 
 	out := bufio.NewWriter(os.Stdout)
-	r, err := newRenderer(out, theme, cfg.ToolStyle, collapse)
+	r, err := newRenderer(out, theme, cfg.ToolStyle, collapse, wrapWidth(os.Stdout, cfg.NoWrap))
 	if err != nil {
 		die("cannot init renderer: " + err.Error())
 	}
@@ -519,6 +519,8 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	idle := 0 // consecutive ticks the current Claude file hasn't grown
+	// winchAt is the last SIGWINCH; zero when there's no re-wrap owed.
+	var winchAt time.Time
 	// Live pending-prompt watch (Claude only, and only when the hook is
 	// installed — i.e. the markers dir exists). lastMarkerKey dedups so a marker
 	// lingering across ticks renders exactly once.
@@ -623,9 +625,24 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			status.update(statusNow(), time.Now())
 			resumeCh <- struct{}{}
 		case <-winchCh:
+			// The bar reclaims its row immediately (cheap), but the re-wrap is
+			// deferred to the ticker: SIGWINCH fires continuously while a window
+			// edge is dragged and re-rendering the transcript per signal would
+			// bury the screen.
 			status.resize()
 			status.update(statusNow(), time.Now())
+			winchAt = time.Now()
 		case <-ticker.C:
+			// A resize changes the wrap width, and printed lines can't be
+			// rewrapped in place — so re-render once the resize has settled.
+			// setWrap reports whether the WIDTH moved, so dragging the bottom
+			// edge (height only) costs nothing.
+			if winchSettled(winchAt, time.Now()) {
+				winchAt = time.Time{}
+				if r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap)) {
+					rerender("⟳ resized", screenful())
+				}
+			}
 			before := offset
 			poll()
 			// A quiet Claude file may mean it forked. After rolloverIdleTicks with
@@ -672,6 +689,31 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			status.update(statusNow(), time.Now())
 		}
 	}
+}
+
+// winchSettle is how long the SIGWINCH stream must be quiet before the re-wrap
+// re-renders. Longer than pollInterval, so a drag that's still in flight always
+// pushes the re-render out by another tick instead of firing mid-drag.
+const winchSettle = 300 * time.Millisecond
+
+// winchSettled reports whether a resize is owed and its SIGWINCH stream has gone
+// quiet. A zero winchAt means nothing is owed.
+func winchSettled(winchAt, now time.Time) bool {
+	return !winchAt.IsZero() && now.Sub(winchAt) >= winchSettle
+}
+
+// wrapWidth is the column limit for the live renderer: the terminal's width when
+// stdout is one, and 0 (no wrap) otherwise — piped output has no width to wrap
+// to, which is also how the goldens are generated. `--no-wrap` forces 0 as well:
+// unwrapped, each paragraph is a single logical line the terminal soft-wraps, so
+// the terminal rejoins it on copy and a mouse drag-select yields one unbroken
+// paragraph. Wrapping trades that for breaks that land between words.
+func wrapWidth(f *os.File, noWrap bool) int {
+	if noWrap || !isCharDevice(f) {
+		return 0
+	}
+	w, _ := termSize(f)
+	return wrapWidthFor(w, true)
 }
 
 // installWinch reports terminal resizes. SIGWINCH is delivered to the process,
@@ -1105,6 +1147,12 @@ OPTIONS:
       --no-status           Don't reserve the bottom row for the status bar.
                             The bar shrinks the terminal's scrolling region by
                             one row; use this if that upsets your terminal.
+      --no-wrap             Don't wrap prose to the terminal width; emit each
+                            paragraph as one long line and let the terminal
+                            soft-wrap it. Breaks land mid-word, but the terminal
+                            rejoins its own soft wraps on copy, so a mouse
+                            drag-select yields unbroken paragraphs. (Piped
+                            output is never wrapped either way.)
       --claude-bin BIN      Which binary the workspace panes and 'handover'
                             launch. Default 'claude'. Pass any claude-compatible
                             wrapper instead ('happy' for mobile control, a shim

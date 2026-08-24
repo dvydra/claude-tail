@@ -31,6 +31,7 @@ type Config struct {
 	ClaudeBinSet     bool   // ClaudeBin came from a flag/env, not the built-in default
 	NoTap            bool   // --no-tap: ignore the API-stream tap even when its daemon is up
 	NoStatus         bool   // --no-status: don't reserve the bottom row for the status bar
+	NoWrap           bool   // --no-wrap: don't wrap bodies; let the terminal soft-wrap (clean drag-select copy)
 	TapArgs          []string
 }
 
@@ -104,6 +105,7 @@ func defaultConfig(getenv func(string) string) Config {
 		Pick:             firstNonEmpty(getenv("ENTIRE_TAIL_PICK"), "auto"),
 		Days:             getenv("ENTIRE_TAIL_DAYS"),
 		MarkContinuation: envTrue(getenv("ENTIRE_TAIL_MARK_CONTINUATION")),
+		NoWrap:           envTrue(getenv("ENTIRE_TAIL_NO_WRAP")),
 		ClaudeBin:        firstNonEmpty(getenv("ENTIRE_TAIL_CLAUDE_BIN"), defaultClaudeBin),
 		ClaudeBinSet:     getenv("ENTIRE_TAIL_CLAUDE_BIN") != "",
 	}
@@ -282,6 +284,8 @@ func parseCLI(args []string, getenv func(string) string) (Config, Action, error)
 			c.NoTap = true
 		case a == "--no-status":
 			c.NoStatus = true
+		case a == "--no-wrap":
+			c.NoWrap = true
 		case a == "--claude-bin":
 			v, err := needValue(i, a)
 			if err != nil {

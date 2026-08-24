@@ -610,9 +610,64 @@ needs to change.
   copy looks much like the tail of the old one it reads as though the key did
   nothing (reported live). `keep` is the terminal height minus two, from the
   status bar; `r` passes 0 for all of it.
-- **Word wrap is off** (`glamour.WithWordWrap(0)`): each paragraph is one logical
-  line the terminal soft-wraps, so resizing reflows on the next render. Don't
-  re-enable wrap.
+- **Word wrap is on for a tty, off everywhere else** — and the "everywhere else"
+  half is load-bearing. `wrapWidth` (main.go) returns 0 unless stdout is a char
+  device, so piped runs and the whole golden suite render exactly as they did
+  before wrap existed; that's the only reason turning wrap on didn't rewrite
+  every `testdata/*.golden`. On a tty it's `wrapWidthFor` = terminal width **minus
+  one**: a line that fills the final column makes the terminal wrap the cursor
+  itself, which reads as a phantom blank line after every full paragraph.
+  Wrap was off entirely until #60, for a reason that's now paid for rather than
+  gone: with `WithWordWrap(0)` a paragraph is ONE logical line, so the terminal
+  reflows it free on resize *and* rejoins its own soft wraps on copy — a mouse
+  drag-select gets an unbroken paragraph. Wrapping gives both of those up. The
+  reflow is bought back by `setWrap` + a re-render on SIGWINCH (below); the copy
+  is not buyable at all — a terminal has no "display but don't select" attribute,
+  so any break we emit is a real newline in the clipboard. `y`/`m` are unaffected
+  (they convert from raw markdown, never the screen), and `--no-wrap` restores
+  the old behaviour for a session where drag-select matters more than legibility.
+  The reason wrap went on: the terminal's own soft wrap breaks at the column
+  edge, splitting words in half.
+- **Turning wrap on turns glamour's right-padding on, and `trimWrapPad` undoes
+  it.** With a wrap width set, glamour pads EVERY line out to that width. Three
+  things break if you leave it: the pad eats the last column, it lands in the
+  clipboard on a drag-select, and — the one that's actually visible — it pushes
+  the dot streak riding the end of an agent turn past the terminal edge, so a
+  two-dot streak soft-wraps onto a row of its own and the whole "dots ride the
+  agent turn" layout collapses. The trap is that **a plain `TrimRight` takes off
+  nothing**: glamour doesn't append spaces, it emits each pad column as its own
+  styled cell (`\x1b[38;5;252m \x1b[0m` over and over), so the line ends in an
+  escape. `trimWrapPad` matches the trailing run of spaces-and-escapes, drops the
+  spaces and KEEPS the escapes (trimming them would leave a colour open to EOL),
+  collapsing them to the single closing reset when the run ends in one. It's
+  wired in `newGlamour` and only when `wrap > 0` — the wrap-0 path returns
+  `md.Render` untouched, which is what keeps the goldens byte-identical.
+  The `setsBackground` guard (skip a line that sets a background, where the pad
+  is what makes a block a rectangle) is **currently inert**:
+  `WithChromaFormatter("terminal16m")` emits foreground colours only, so no
+  bundled theme produces a background-styled body line. It's parked there because
+  the day one does, trimming would shred the block — and it parses SGR parameters
+  rather than pattern-matching them, because a foreground RGB of `38;2;48;10;20`
+  contains a literal `48` a regex reads as a background.
+- **The resize re-render is debounced, and only on a width change.** SIGWINCH
+  fires continuously while a window edge is dragged, and printed lines can't be
+  rewrapped in place — the only way to apply a new width is to re-render, which
+  costs a full transcript walk. So the winch case just records the time (and lets
+  the status bar reclaim its row, which is cheap), and the ticker performs the
+  re-wrap once the signals have been quiet for `winchSettle` (300ms — longer than
+  `pollInterval`, so a drag still in flight always pushes it out another tick).
+  `setWrap` returns whether the WIDTH actually moved, so dragging the bottom edge
+  costs nothing. A glamour rebuild failure leaves the old width in place: a
+  resize must never be able to break rendering.
+- **The alt-screen overlays (`focus.go`, `preview.go`) stay at wrap 0** on
+  purpose. They clip lines to the pane with `truncVisible` at draw time and
+  re-measure every frame, so a width baked into the rendered buffer would go
+  stale the moment the window resized mid-view. Making them wrap means moving the
+  re-render inside their key loops too — a separate change.
+- **The box headers don't wrap.** `userHdrBody`/`claudeHdrBody` are fixed-width
+  strings whose dash counts the goldens pin, so they stay 51 columns regardless
+  of the wrap width (and overflow a terminal narrower than that, as they always
+  have). Wrapping applies to bodies, not chrome.
 - Themes are pairs under `themes/<name>.{json,sh}`, embedded via `go:embed`. The
   `.json` is the glamour style; the `.sh` holds `THEME_*_ANSI` box/timestamp
   colors (parsed directly — we do **not** shell out to bash). Chroma is strict:

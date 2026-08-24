@@ -81,6 +81,7 @@ entire tail --tool-style dots              # show tool calls as colored dots
 entire tail --tool-style full              # Claude-style: ⏺ Update(main.go) + ⎿ diff
 entire tail --collapse 10                  # collapse user pastes over 10 lines
 entire tail --no-collapse                  # show every user message in full
+entire tail --no-wrap                      # don't wrap prose; let the terminal soft-wrap it
 entire tail --list                         # static ls-style dump of every session
 entire tail --list --days 3                # ...only sessions from the last 3 days
 entire tail --list-themes                  # see what's available
@@ -90,7 +91,7 @@ entire tail --help                         # full options
 All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 `ENTIRE_TAIL_THEME`, `ENTIRE_TAIL_BACKFILL`, `ENTIRE_TAIL_TOOL_STYLE`,
 `ENTIRE_TAIL_COLLAPSE`, `ENTIRE_TAIL_PICK`, `ENTIRE_TAIL_DAYS`,
-`ENTIRE_TAIL_CLAUDE_BIN`, `GLOW_STYLE`) for shell-rc
+`ENTIRE_TAIL_CLAUDE_BIN`, `ENTIRE_TAIL_NO_WRAP`, `GLOW_STYLE`) for shell-rc
 convenience — flags override env vars when both are set. The legacy
 `CLAUDE_TAIL_*` variants are still honored.
 
@@ -904,9 +905,17 @@ renderer.
   Codex `reasoning`, Antigravity `thinking` field on `PLANNER_RESPONSE`).
 - `tool_result` blocks are summarized as `↩ tool_result (×N)` in `lines`
   mode and dropped in `dots` mode (1:1 with the preceding tool_use).
-- Word wrap is disabled (glamour `WithWordWrap(0)`). Each markdown paragraph is
-  one logical line; your terminal soft-wraps it to whatever pane width you have,
-  so resizing re-flows the text naturally on the next render.
+- Prose is wrapped to your terminal width (one column short of it), so lines
+  break between words. Resizing re-wraps: the transcript is re-rendered once the
+  drag settles, and only when the width actually changed. Piped output is never
+  wrapped.
+- `--no-wrap` turns wrapping off. Each paragraph then goes out as one long
+  logical line and your terminal soft-wraps it, which splits words at the column
+  edge — but the terminal rejoins its own soft wraps on copy, so a mouse
+  drag-select gives you unbroken paragraphs. There's no way to have both: any
+  break entire-tail emits is a real newline your clipboard will keep. If you just
+  want clean text out, `y` and `m` convert from the raw markdown rather than the
+  screen, so they're unaffected by either setting.
 
 ## Live following
 

@@ -525,7 +525,7 @@ func TestApplyTheme(t *testing.T) {
 		t.Fatal(err)
 	}
 	var b strings.Builder
-	r, err := newRenderer(&b, t1, "dots", 5)
+	r, err := newRenderer(&b, t1, "dots", 5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

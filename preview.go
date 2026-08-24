@@ -20,7 +20,9 @@ import (
 // normal renderer (dots + collapse, so a preview stays compact).
 func renderPreviewLines(path, home string, theme Theme) []string {
 	var buf bytes.Buffer
-	r, err := newRenderer(&buf, theme, "dots", 5)
+	// wrap 0: as in focus.go, the pane clips at draw time and re-measures every
+	// frame, so the rendered lines stay width-agnostic.
+	r, err := newRenderer(&buf, theme, "dots", 5, 0)
 	if err != nil {
 		return []string{"  (cannot render this session)"}
 	}

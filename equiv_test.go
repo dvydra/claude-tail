@@ -45,7 +45,7 @@ func renderFixture(t *testing.T, fc fixtureCase, loc *time.Location) string {
 		t.Fatal(err)
 	}
 	var b bytes.Buffer
-	r, err := newRenderer(&b, th, fc.toolStyle, fc.collapse)
+	r, err := newRenderer(&b, th, fc.toolStyle, fc.collapse, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
