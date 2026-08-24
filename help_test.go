@@ -15,6 +15,7 @@ func testHelpInfo() helpInfo {
 		Total:       3,
 		Tools:       toolDots,
 		Collapse:    5,
+		Wrap:        119,
 		TreeEnabled: true,
 	}
 }
@@ -25,7 +26,7 @@ func TestHelpLinesShowsLiveState(t *testing.T) {
 		"claude", "~/.claude/projects/-repo/abc.jsonl", "tokyo-night",
 		"all (1..3 of 3)", "dots", "user pastes > 5 lines",
 		"cycle tool style", "cycle theme", "focus subagents", "this help", "quit",
-		"Ctrl-X", "legend",
+		"Ctrl-X", "legend", "119 columns", "toggle word wrap",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("help content missing %q:\n%s", want, got)
@@ -42,6 +43,12 @@ func TestHelpLinesReflectsToggles(t *testing.T) {
 	}
 	if !strings.Contains(got, toolNone.label()) {
 		t.Errorf("tool style should be the live one (%s):\n%s", toolNone.label(), got)
+	}
+	// Wrap suspended by `w` has to read as such — otherwise prose running off the
+	// right edge looks like a bug rather than a mode you chose.
+	info.Wrap = 0
+	if got := strings.Join(helpLines(info), "\n"); !strings.Contains(got, "wrap      off") {
+		t.Errorf("wrap=0 should render as off:\n%s", got)
 	}
 }
 

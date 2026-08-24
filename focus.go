@@ -136,7 +136,10 @@ func runFocus(tty *os.File, mainPath, home string, theme Theme) {
 // the normal renderer (dots + collapse, so a long subagent stays compact).
 func renderChannel(ch subagentChannel, home string, theme Theme) []string {
 	var buf bytes.Buffer
-	rr, err := newRenderer(&buf, theme, "dots", 5)
+	// wrap 0: the overlay clips lines to the pane width as it draws, and it
+	// re-measures every frame — baking a width in here would go stale the moment
+	// the window resized mid-view.
+	rr, err := newRenderer(&buf, theme, "dots", 5, 0)
 	if err != nil {
 		return []string{"  (cannot render this subagent)"}
 	}

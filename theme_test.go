@@ -107,7 +107,7 @@ func TestAllThemesRenderValidly(t *testing.T) {
 					info.Name, th.UserANSI, th.ClaudeANSI, th.DimANSI)
 			}
 			var b strings.Builder
-			r, err := newRenderer(&b, th, "dots", 0)
+			r, err := newRenderer(&b, th, "dots", 0, 0)
 			if err != nil {
 				t.Fatalf("newRenderer(%s): %v", info.Name, err)
 			}

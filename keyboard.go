@@ -22,6 +22,7 @@ const (
 	keyHelp
 	keyYank
 	keyToggleMrkdwn
+	keyToggleWrap
 	keyFocus // not a keyActionFor result: the `→` escape sequence decodes to it
 )
 
@@ -49,6 +50,8 @@ func keyActionFor(b byte) keyAction {
 		return keyYank
 	case 'm', 'M':
 		return keyToggleMrkdwn
+	case 'w', 'W':
+		return keyToggleWrap
 	}
 	return keyNone
 }

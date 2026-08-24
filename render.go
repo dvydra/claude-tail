@@ -75,6 +75,12 @@ type Renderer struct {
 	render func(string) (string, error) // markdown → styled string (glamour)
 	theme  Theme
 
+	// wrap is the column limit glamour breaks bodies at (0 = don't wrap, let the
+	// terminal soft-wrap). Held on the Renderer because both rebuild paths need
+	// it: applyTheme (`T`) rebuilds glamour from a new style at the SAME width,
+	// and setWrap (SIGWINCH) rebuilds it from the SAME style at a new width.
+	wrap int
+
 	// Live-mutable display settings (atomic: the keyboard goroutine flips them
 	// while the render goroutine reads them in emit).
 	toolStyle atomic.Int32 // current toolStyleKind
@@ -135,21 +141,24 @@ type Renderer struct {
 	lastDoneMsgID string
 }
 
-func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse int) (*Renderer, error) {
-	render, err := newGlamour(theme.StyleJSON)
+func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse, wrap int) (*Renderer, error) {
+	render, err := newGlamour(theme.StyleJSON, wrap)
 	if err != nil {
 		return nil, err
 	}
-	return newRendererWith(w, theme, toolStyle, collapse, render), nil
+	r := newRendererWith(w, theme, toolStyle, collapse, render)
+	r.wrap = wrap
+	return r, nil
 }
 
 // newGlamour builds the markdown→styled-string render function for a theme's
-// style JSON. Split out of newRenderer so a live theme swap (the `T` key) can
+// style JSON, wrapping bodies at `wrap` columns (0 = no wrap). Split out of
+// newRenderer so a live theme swap (the `T` key) and a resize (setWrap) can
 // rebuild just the render function without a whole new Renderer.
-func newGlamour(styleJSON []byte) (func(string) (string, error), error) {
+func newGlamour(styleJSON []byte, wrap int) (func(string) (string, error), error) {
 	md, err := glamour.NewTermRenderer(
 		glamour.WithStylesFromJSONBytes(styleJSON),
-		glamour.WithWordWrap(0),
+		glamour.WithWordWrap(wrap),
 		// Force truecolor in-process. The bash version piped glow and relied on
 		// CLICOLOR_FORCE, which capped rendering at 256 colors; rendering in
 		// our own process lets us emit the theme's exact hex colors.
@@ -162,7 +171,109 @@ func newGlamour(styleJSON []byte) (func(string) (string, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return md.Render, nil
+	if wrap == 0 {
+		return md.Render, nil // no padding to undo; the golden path, byte for byte
+	}
+	return func(s string) (string, error) {
+		out, err := md.Render(s)
+		if err != nil {
+			return out, err
+		}
+		return trimWrapPad(out), nil
+	}, nil
+}
+
+// trailPadRe matches the trailing run of padding at the end of a line: spaces
+// and the escape sequences interleaved with them. Glamour doesn't append plain
+// spaces — it emits each pad column as its own styled cell
+// ("\x1b[38;5;252m \x1b[0m" over and over), so a plain TrimRight sees an escape,
+// not a space, and takes nothing off.
+var trailPadRe = regexp.MustCompile(`(?:\x1b\[[0-9;]*[A-Za-z]|[ \t])+$`)
+
+// escRe matches a single ANSI escape sequence.
+var escRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+// resetRe matches an SGR that resets all attributes.
+var resetRe = regexp.MustCompile(`^\x1b\[0?m$`)
+
+// sgrRe matches one SGR (colour/attribute) sequence and captures its parameters.
+var sgrRe = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
+
+// setsBackground reports whether any SGR in the line sets a background colour:
+// 40–47 (basic), 100–107 (bright), or 48 followed by a 5;n / 2;r;g;b payload.
+//
+// The parameters are walked rather than pattern-matched because 38 and 48 both
+// swallow the parameters that follow them: a foreground RGB of `38;2;48;10;20`
+// contains a literal "48" that a regex would read as a background.
+func setsBackground(line string) bool {
+	for _, m := range sgrRe.FindAllStringSubmatch(line, -1) {
+		params := strings.Split(m[1], ";")
+		for i := 0; i < len(params); i++ {
+			n, err := strconv.Atoi(params[i])
+			if err != nil {
+				continue
+			}
+			switch {
+			case n == 48:
+				return true
+			case n == 38:
+				// Extended foreground: skip its payload so an RGB component
+				// that happens to equal 41 isn't read as a background.
+				if i+1 < len(params) && params[i+1] == "5" {
+					i += 2
+				} else if i+1 < len(params) && params[i+1] == "2" {
+					i += 4
+				}
+			case n >= 40 && n <= 47, n >= 100 && n <= 107:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// trimWrapPad removes the padding glamour adds once a wrap width is set: it
+// right-pads EVERY line out to that width. On prose that padding is pure cost —
+// it spends the last column, it lands in the clipboard on a mouse drag-select,
+// and it pushes the dot streak that rides the end of an agent turn past the
+// terminal edge, so a two-dot streak soft-wraps onto a row of its own (see "Dots
+// ride the agent turn").
+//
+// A line that sets a BACKGROUND colour is left exactly as glamour produced it,
+// because there the padding is what makes a block a rectangle rather than a
+// ragged edge. That guard is currently inert: `WithChromaFormatter("terminal16m")`
+// emits foreground colours only, so no bundled theme produces a background-styled
+// body line and code blocks get trimmed like prose. It's kept because the day a
+// theme or formatter does emit one, trimming it would visibly shred the block.
+//
+// Trailing whitespace inside a code block goes with the padding — the two are
+// indistinguishable by the time glamour is done — which is the right trade: it's
+// almost always incidental, and nobody wants it in a pasted command.
+//
+// Only ever called when wrap > 0. At wrap 0 glamour pads nothing, and the
+// unwrapped path stays byte-identical to what the goldens pin.
+func trimWrapPad(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if setsBackground(line) {
+			continue
+		}
+		pad := trailPadRe.FindString(line)
+		if !strings.ContainsAny(pad, " \t") {
+			continue // a bare closing escape, nothing padded — leave it alone
+		}
+		// Drop the pad's spaces but keep its escapes, so the line's SGR state
+		// still closes: trimming them off would leave a colour open to EOL.
+		escapes := escRe.FindAllString(pad, -1)
+		tail := strings.Join(escapes, "")
+		// Those escapes are colour-set/reset pairs around each pad column, so
+		// when the run ends in a reset the whole pile collapses to that reset.
+		if n := len(escapes); n > 0 && resetRe.MatchString(escapes[n-1]) {
+			tail = escapes[n-1]
+		}
+		lines[i] = line[:len(line)-len(pad)] + tail
+	}
+	return strings.Join(lines, "\n")
 }
 
 // applyTheme swaps the renderer to a new theme in place: it rebuilds the glamour
@@ -172,7 +283,7 @@ func newGlamour(styleJSON []byte) (func(string) (string, error), error) {
 // read concurrently — unlike the atomic t/c toggles, which the keyboard goroutine
 // flips directly. A rebuild failure leaves the current theme untouched.
 func (r *Renderer) applyTheme(t Theme) error {
-	render, err := newGlamour(t.StyleJSON)
+	render, err := newGlamour(t.StyleJSON, r.wrap)
 	if err != nil {
 		return err
 	}
@@ -181,6 +292,42 @@ func (r *Renderer) applyTheme(t Theme) error {
 	r.userHdr = t.UserANSI + userHdrBody + reset
 	r.claudeHdr = t.ClaudeANSI + claudeHdrBody + reset
 	return nil
+}
+
+// minWrapWidth is the narrowest terminal we'll wrap in. Below it, glamour's
+// indents (lists, block quotes, code blocks) eat so much of the line that
+// wrapping produces worse output than leaving the terminal to soft-wrap.
+const minWrapWidth = 20
+
+// wrapWidthFor turns a measured terminal width into the column limit handed to
+// glamour. One column short of the terminal on purpose: a line that fills the
+// final column makes the terminal wrap the cursor by itself, which shows up as a
+// phantom blank line after the paragraph.
+func wrapWidthFor(cols int, tty bool) int {
+	if !tty || cols < minWrapWidth {
+		return 0
+	}
+	return cols - 1
+}
+
+// setWrap rebuilds glamour at a new column limit — the SIGWINCH path. It only
+// changes the width bodies rendered from NOW on are wrapped at; lines already in
+// scrollback can't be rewrapped in place, so the caller re-renders (see the
+// winch handling in main.go). Reports whether the width actually changed, so a
+// SIGWINCH that only altered the height (or a themeless test renderer) doesn't
+// trigger a pointless re-render. A rebuild failure leaves the current width
+// untouched: a resize must never be able to break rendering.
+func (r *Renderer) setWrap(wrap int) bool {
+	if wrap == r.wrap {
+		return false
+	}
+	render, err := newGlamour(r.theme.StyleJSON, wrap)
+	if err != nil {
+		return false
+	}
+	r.render = render
+	r.wrap = wrap
+	return true
 }
 
 // newRendererWith builds a Renderer around an arbitrary markdown render

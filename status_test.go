@@ -34,6 +34,19 @@ func TestStatusLineShowsSessionAndModes(t *testing.T) {
 	}
 }
 
+// The `w` toggle is an off-normal mode: prose suddenly running off the right
+// edge is exactly what you'd otherwise read as a bug, so the bar says so.
+func TestStatusLineNoWrapFlag(t *testing.T) {
+	info := testStatusInfo()
+	if got := stripANSI(statusLine(info, "", 120, statusNowTime())); strings.Contains(got, "nowrap") {
+		t.Errorf("nowrap shown while wrapping: %q", got)
+	}
+	info.NoWrap = true
+	if got := stripANSI(statusLine(info, "", 120, statusNowTime())); !strings.Contains(got, "nowrap") {
+		t.Errorf("nowrap not shown while suspended: %q", got)
+	}
+}
+
 func TestStatusLineMrkdwnFlag(t *testing.T) {
 	info := testStatusInfo()
 	info.Mrkdwn = true
@@ -218,6 +231,8 @@ func TestStatusKeysRouteToActions(t *testing.T) {
 		{'m', keyToggleMrkdwn},
 		{'y', keyYank},
 		{'r', keyReload},
+		{'w', keyToggleWrap},
+		{'W', keyToggleWrap},
 	} {
 		if got := keyActionFor(c.b); got != c.want {
 			t.Errorf("%q → %v, want %v", c.b, got, c.want)

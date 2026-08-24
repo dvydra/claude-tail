@@ -263,7 +263,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	printBanner(cfg, agent, session, backfillFrom, total, collapse)
 
 	out := bufio.NewWriter(os.Stdout)
-	r, err := newRenderer(out, theme, cfg.ToolStyle, collapse)
+	r, err := newRenderer(out, theme, cfg.ToolStyle, collapse, wrapWidth(os.Stdout, cfg.NoWrap))
 	if err != nil {
 		die("cannot init renderer: " + err.Error())
 	}
@@ -489,6 +489,10 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	lastEventAt := time.Now()
 	lastTurns := r.turnsRendered
 	pendingNow := false
+	// wrapOff is the `w` toggle: wrapping suspended so a mouse drag-select copies
+	// whole paragraphs. Kept separate from cfg.NoWrap so a resize while it's on
+	// doesn't re-wrap behind the user's back — every wrapWidth call ORs the two.
+	wrapOff := false
 	statusNow := func() statusInfo {
 		return statusInfo{
 			Agent:    agent,
@@ -501,6 +505,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			Theme:    theme.Name,
 			Collapse: int(r.collapse.Load()),
 			Mrkdwn:   r.mrkdwn.Load(),
+			NoWrap:   wrapOff,
 		}
 	}
 	// note shows a keypress result. With a status bar it's the yellow transient
@@ -519,6 +524,8 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	idle := 0 // consecutive ticks the current Claude file hasn't grown
+	// winchAt is the last SIGWINCH; zero when there's no re-wrap owed.
+	var winchAt time.Time
 	// Live pending-prompt watch (Claude only, and only when the hook is
 	// installed — i.e. the markers dir exists). lastMarkerKey dedups so a marker
 	// lingering across ticks renders exactly once.
@@ -578,6 +585,18 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			case keyToggleMrkdwn:
 				msg = r.toggleMrkdwn()
 				rerender("⟳ "+msg, screenful())
+			case keyToggleWrap:
+				// The copy escape hatch. Wrapped prose reads better but a mouse
+				// drag-select copies the breaks with it; unwrapped, each paragraph
+				// is one logical line the terminal soft-wraps and rejoins on copy.
+				// So: press w, drag out the paragraph you want, press w again.
+				wrapOff = !wrapOff
+				r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff))
+				msg = "wrap: on"
+				if wrapOff {
+					msg = "wrap: off — drag-select now copies whole paragraphs"
+				}
+				rerender("⟳ "+msg, screenful())
 			case keyReload:
 				reload()
 				msg = "re-rendered"
@@ -616,6 +635,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					Tools:       toolStyleKind(r.toolStyle.Load()),
 					Collapse:    int(r.collapse.Load()),
 					Mrkdwn:      r.mrkdwn.Load(),
+					Wrap:        r.wrap,
 					TreeEnabled: treeEnabled,
 				}, theme)
 			}
@@ -623,9 +643,24 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			status.update(statusNow(), time.Now())
 			resumeCh <- struct{}{}
 		case <-winchCh:
+			// The bar reclaims its row immediately (cheap), but the re-wrap is
+			// deferred to the ticker: SIGWINCH fires continuously while a window
+			// edge is dragged and re-rendering the transcript per signal would
+			// bury the screen.
 			status.resize()
 			status.update(statusNow(), time.Now())
+			winchAt = time.Now()
 		case <-ticker.C:
+			// A resize changes the wrap width, and printed lines can't be
+			// rewrapped in place — so re-render once the resize has settled.
+			// setWrap reports whether the WIDTH moved, so dragging the bottom
+			// edge (height only) costs nothing.
+			if winchSettled(winchAt, time.Now()) {
+				winchAt = time.Time{}
+				if r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff)) {
+					rerender("⟳ resized", screenful())
+				}
+			}
 			before := offset
 			poll()
 			// A quiet Claude file may mean it forked. After rolloverIdleTicks with
@@ -672,6 +707,31 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			status.update(statusNow(), time.Now())
 		}
 	}
+}
+
+// winchSettle is how long the SIGWINCH stream must be quiet before the re-wrap
+// re-renders. Longer than pollInterval, so a drag that's still in flight always
+// pushes the re-render out by another tick instead of firing mid-drag.
+const winchSettle = 300 * time.Millisecond
+
+// winchSettled reports whether a resize is owed and its SIGWINCH stream has gone
+// quiet. A zero winchAt means nothing is owed.
+func winchSettled(winchAt, now time.Time) bool {
+	return !winchAt.IsZero() && now.Sub(winchAt) >= winchSettle
+}
+
+// wrapWidth is the column limit for the live renderer: the terminal's width when
+// stdout is one, and 0 (no wrap) otherwise — piped output has no width to wrap
+// to, which is also how the goldens are generated. `--no-wrap` forces 0 as well:
+// unwrapped, each paragraph is a single logical line the terminal soft-wraps, so
+// the terminal rejoins it on copy and a mouse drag-select yields one unbroken
+// paragraph. Wrapping trades that for breaks that land between words.
+func wrapWidth(f *os.File, noWrap bool) int {
+	if noWrap || !isCharDevice(f) {
+		return 0
+	}
+	w, _ := termSize(f)
+	return wrapWidthFor(w, true)
 }
 
 // installWinch reports terminal resizes. SIGWINCH is delivered to the process,
@@ -836,7 +896,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		if agent == AgentClaude {
 			back = "Ctrl-X=back to tree  "
 		}
-		fmt.Fprintln(w, "  keys:     ?=help  y=copy as slack mrkdwn  m=mrkdwn view  t=tools  T=theme  c=collapse  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     ?=help  y=copy as slack mrkdwn  m=mrkdwn view  w=wrap  t=tools  T=theme  c=collapse  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
@@ -1105,6 +1165,12 @@ OPTIONS:
       --no-status           Don't reserve the bottom row for the status bar.
                             The bar shrinks the terminal's scrolling region by
                             one row; use this if that upsets your terminal.
+      --no-wrap             Don't wrap prose to the terminal width; emit each
+                            paragraph as one long line and let the terminal
+                            soft-wrap it. Breaks land mid-word, but the terminal
+                            rejoins its own soft wraps on copy, so a mouse
+                            drag-select yields unbroken paragraphs. (Piped
+                            output is never wrapped either way.)
       --claude-bin BIN      Which binary the workspace panes and 'handover'
                             launch. Default 'claude'. Pass any claude-compatible
                             wrapper instead ('happy' for mobile control, a shim
@@ -1130,6 +1196,10 @@ LIVE KEYS (while following, on an interactive terminal):
   m                         Toggle agent text between rendered markdown and
                             Slack mrkdwn source (so a mouse-select copies
                             mrkdwn).
+  w                         Toggle word wrap. Off, each paragraph is one long
+                            logical line the terminal soft-wraps and rejoins on
+                            copy — so press w, drag out the paragraph you want,
+                            press w again. The bar shows 'nowrap' meanwhile.
   y                         Copy the last agent message to the clipboard as
                             Slack mrkdwn. Press again within 3s to add the
                             message before it.
@@ -1146,8 +1216,8 @@ LIVE KEYS (while following, on an interactive terminal):
                             tree quits entire-tail.
   q, Ctrl-D, Ctrl-C         Quit.
 
-  t/T/c/m re-render the history themselves, so the whole transcript reflects the
-  change. This is a streaming view, not an alt-screen TUI: re-rendering appends
+  t/T/c/m/w re-render the history themselves, so the whole transcript reflects
+  the change. This is a streaming view, not an alt-screen TUI: re-rendering appends
   a fresh copy rather than repainting in place, and your terminal's own
   scrollback keeps working. r does the same on demand.
 

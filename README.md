@@ -81,6 +81,7 @@ entire tail --tool-style dots              # show tool calls as colored dots
 entire tail --tool-style full              # Claude-style: ⏺ Update(main.go) + ⎿ diff
 entire tail --collapse 10                  # collapse user pastes over 10 lines
 entire tail --no-collapse                  # show every user message in full
+entire tail --no-wrap                      # don't wrap prose; let the terminal soft-wrap it
 entire tail --list                         # static ls-style dump of every session
 entire tail --list --days 3                # ...only sessions from the last 3 days
 entire tail --list-themes                  # see what's available
@@ -90,7 +91,7 @@ entire tail --help                         # full options
 All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 `ENTIRE_TAIL_THEME`, `ENTIRE_TAIL_BACKFILL`, `ENTIRE_TAIL_TOOL_STYLE`,
 `ENTIRE_TAIL_COLLAPSE`, `ENTIRE_TAIL_PICK`, `ENTIRE_TAIL_DAYS`,
-`ENTIRE_TAIL_CLAUDE_BIN`, `GLOW_STYLE`) for shell-rc
+`ENTIRE_TAIL_CLAUDE_BIN`, `ENTIRE_TAIL_NO_WRAP`, `GLOW_STYLE`) for shell-rc
 convenience — flags override env vars when both are set. The legacy
 `CLAUDE_TAIL_*` variants are still honored.
 
@@ -130,7 +131,7 @@ the moment the agent blocks on a question or a permission prompt. Right is how
 it's being rendered. It narrows gracefully: the render settings give way first,
 then the fields on the left, so the session id survives to about 40 columns.
 
-Press `t`, `T`, `c`, `m` or `y` and the whole row turns **yellow with what just
+Press `t`, `T`, `c`, `m`, `w` or `y` and the whole row turns **yellow with what just
 happened** for three seconds, then goes back to normal:
 
 ```
@@ -152,16 +153,17 @@ events show as they stream:
 | `?`            | **help** — a modal with the startup banner's context (agent/session/theme/backfill/tools/collapse), the full key map, and the dot legend; any key closes it |
 | `y`            | **copy the last agent message as Slack mrkdwn** — press again within 3s to add the one before it |
 | `m`            | toggle agent text between rendered markdown and **Slack mrkdwn source** |
+| `w`            | toggle **word wrap** — off, each paragraph is one long logical line, so a mouse drag-select copies it unbroken (the bar shows `nowrap`) |
 | `t`            | cycle tool-call rendering: **full → dots → hidden**           |
 | `T`            | cycle the color **theme** — steps through the bundled themes and re-renders the whole transcript in the new theme |
 | `c`            | toggle collapsing of long user pastes                         |
 | `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
-| `r`            | re-render the whole transcript with current settings (`t`/`T`/`c`/`m` already do this themselves) |
+| `r`            | re-render the whole transcript with current settings (`t`/`T`/`c`/`m`/`w` already do this themselves) |
 | Ctrl-X         | **back to the tree** — pop out of the live tail into the session tree picker (Claude only); pick another with `t` to tail it in this same pane, or `Enter`/`n` for a workspace |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 
 `t`/`c` declutter the view on the fly — handy when an agent goes on a long
-tool-call spree and you just want the prose. Each of `t`/`T`/`c`/`m`
+tool-call spree and you just want the prose. Each of `t`/`T`/`c`/`m`/`w`
 **re-renders as it goes**, so what's on screen reflects the new setting
 immediately. This is a streaming view, not an alt-screen TUI, so a re-render
 appends a fresh copy rather than repainting in place — your terminal's /
@@ -904,9 +906,19 @@ renderer.
   Codex `reasoning`, Antigravity `thinking` field on `PLANNER_RESPONSE`).
 - `tool_result` blocks are summarized as `↩ tool_result (×N)` in `lines`
   mode and dropped in `dots` mode (1:1 with the preceding tool_use).
-- Word wrap is disabled (glamour `WithWordWrap(0)`). Each markdown paragraph is
-  one logical line; your terminal soft-wraps it to whatever pane width you have,
-  so resizing re-flows the text naturally on the next render.
+- Prose is wrapped to your terminal width (one column short of it), so lines
+  break between words. Resizing re-wraps: the transcript is re-rendered once the
+  drag settles, and only when the width actually changed. Piped output is never
+  wrapped.
+- `--no-wrap` turns wrapping off for the session, and **`w`** toggles it live.
+  Unwrapped, each paragraph goes out as one long logical line your terminal
+  soft-wraps, which splits words at the column edge — but the terminal rejoins
+  its own soft wraps on copy, so a mouse drag-select gives you unbroken
+  paragraphs. There's no way to have both at once: any break entire-tail emits is
+  a real newline your clipboard will keep. So the copy workflow is **press `w`,
+  drag out the paragraph, press `w` again** — or skip it entirely, since `y` and
+  `m` convert from the raw markdown rather than the screen and are unaffected by
+  either setting.
 
 ## Live following
 
