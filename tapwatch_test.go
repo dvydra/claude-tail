@@ -332,6 +332,67 @@ func TestResetClearsEarlyShown(t *testing.T) {
 	}
 }
 
+// The tap can arrive AFTER the transcript records it was meant to front-run.
+// Within one tick the live loop polls the transcript BEFORE the sidecar
+// (main.go), so a message whose JSONL and tap bytes land in the same tick
+// renders from the file first and the tap event follows. Observed live as a
+// THIRD copy of a question: the hook marker's card, the transcript's redraw
+// under its preamble, then the tap reprinting preamble AND card.
+func TestLateTapDoesNotRepeatRenderedMessage(t *testing.T) {
+	var buf bytes.Buffer
+	r := newRendererWith(&buf, testTheme(), "dots", 0, identityRender)
+	r.live = true
+	qs := []QuestionItem{{Header: "Gap", Question: "What should the migration do?", Options: []string{"Fail closed", "Nullable"}}}
+
+	// 1. the hook marker fires the instant Claude dispatches the tool
+	r.pendingQuestion(qs)
+	// 2. the transcript lands: the preamble, then the question record — which
+	//    redraws the card under the text it belongs to
+	r.emit(Record{Kind: KindAssistant, Ts: "2026-09-07 12:53:04", Body: "Runner providers are dynamic.", MsgID: "msg_L"})
+	r.emit(Record{Kind: KindQuestion, Ts: "2026-09-07 12:53:04", QID: "q-late", Questions: qs})
+
+	// 3. the tap event for that same message, a tick late
+	buf.Reset()
+	r.tapPreamble(tapPendingPrompt{MsgID: "msg_L", Preamble: []string{"Runner providers are dynamic."}, QID: "q-late", Questions: qs}, "2026-09-07 12:53:03")
+	r.endLine()
+	if got := strings.TrimSpace(buf.String()); got != "" {
+		t.Errorf("the transcript already rendered this message; the late tap must add nothing, got:\n%q", got)
+	}
+}
+
+// The narrow window inside one message: a poll can see the transcript's text
+// record before its tool_use record. The tap still owns the card (no transcript
+// card yet) but must not reprint the text above it.
+func TestLateTapSkipsAlreadyRenderedPreamble(t *testing.T) {
+	var buf bytes.Buffer
+	r := newRendererWith(&buf, testTheme(), "dots", 0, identityRender)
+	r.live = true
+	qs := []QuestionItem{{Header: "Gap", Question: "What should the migration do?", Options: []string{"Fail closed"}}}
+
+	r.emit(Record{Kind: KindAssistant, Ts: "2026-09-07 12:53:04", Body: "Runner providers are dynamic.", MsgID: "msg_S"})
+	buf.Reset()
+	r.tapPreamble(tapPendingPrompt{MsgID: "msg_S", Preamble: []string{"Runner providers are dynamic."}, QID: "q-split", Questions: qs}, "2026-09-07 12:53:03")
+	r.endLine()
+	if n := strings.Count(buf.String(), "Runner providers are dynamic."); n != 0 {
+		t.Errorf("preamble already on screen from the transcript, printed %d more time(s)", n)
+	}
+	if n := strings.Count(buf.String(), "What should the migration do?"); n != 1 {
+		t.Errorf("the card has not been drawn yet; want 1, got %d", n)
+	}
+}
+
+// A reload re-emits the whole transcript, so the per-message text memory must
+// not outlive it — a stale key would swallow a tap block after the reload.
+func TestResetClearsShownText(t *testing.T) {
+	var buf bytes.Buffer
+	r := newRendererWith(&buf, testTheme(), "dots", 0, identityRender)
+	r.emit(Record{Kind: KindAssistant, Ts: "2026-09-07 12:53:04", Body: "Body.", MsgID: "m"})
+	r.reset()
+	if len(r.shownText) != 0 || r.shownMsgID != "" {
+		t.Fatal("reset must clear the shown-text memory")
+	}
+}
+
 func TestTapSidecarGatingByFile(t *testing.T) {
 	home := t.TempDir()
 	// The live loop only builds a watcher when a sidecar exists — the cheap way to
