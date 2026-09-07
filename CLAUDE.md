@@ -487,6 +487,23 @@ needs to change.
   `questionsContentKey`. Don't swap either for a similarity/hash-of-nearby-content
   scheme: the wire text and the transcript text are byte-identical, and message
   ids keep two identical short texts in different messages from colliding.
+- **…and it runs BOTH ways, because the tap doesn't always win the race.** The
+  tick polls the transcript before the sidecar (`main.go`), so a message whose
+  JSONL and tap bytes land together renders from the FILE and the tap event
+  arrives second — and a suppression that only pointed tap→JSONL let it reprint.
+  Seen live as one question card three deep (hook marker, then the transcript's
+  redraw-under-its-preamble in `question()`, then the tap) with the preamble
+  printed twice, a second apart — the tap's own wire timestamp is the tell,
+  since it renders BELOW a header stamped later than itself. So `shownText`
+  mirrors `earlyShown`: `rememberShownText` records the transcript's assistant
+  bodies (scoped to one message id — the tap never lags further behind than the
+  message it reports, so remembering more would grow with the session), and
+  `tapPreamble` skips a block already on screen and returns early when
+  `seenQuestions` already holds its `QID`. Both `question()` paths set that id,
+  including the one that suppresses the card, which is what makes the guard
+  cover "the marker drew it and the transcript confirmed it" too. Fixing this by
+  reordering the tick instead would only narrow the window — the tap can lag by
+  more than a tick — and the dedup has to hold either way.
 - **The tap is opt-in AND fail-open, and that's a safety property.** A launched
   agent gets `ANTHROPIC_BASE_URL` only when `tapBaseURL` health-checks the daemon
   *and* the reply's pid matches the state file (so a stranger squatting the port

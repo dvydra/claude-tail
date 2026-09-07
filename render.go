@@ -135,6 +135,18 @@ type Renderer struct {
 	// exact rather than a content-similarity guess. Cleared by reset().
 	earlyShown map[string]bool
 
+	// shownText is earlyShown's mirror: the assistant bodies of the message the
+	// TRANSCRIPT has just rendered, so a tap event arriving after its own
+	// transcript twin doesn't reprint them. The tap normally wins that race, but
+	// it doesn't always: within one tick the live loop polls the transcript
+	// before the sidecar (main.go), so a message whose JSONL and tap bytes land
+	// together renders from the file and the tap follows it. Scoped to a single
+	// message id — the tap only ever lags by the message it is reporting, so
+	// remembering older ones would grow with the session and buy nothing.
+	// Cleared by reset() along with earlyShown.
+	shownMsgID string
+	shownText  map[string]bool
+
 	// lastDoneMsgID is the message id whose done banner we last printed. One
 	// assistant message occasionally spans two jsonl text records (both carrying
 	// the same terminal stop_reason); this keeps the banner to one per message.
@@ -349,6 +361,7 @@ func newRendererWith(w io.Writer, theme Theme, toolStyle string, collapse int, r
 		pendingShown:    map[string]bool{},
 		pendingAt:       map[string]int{},
 		earlyShown:      map[string]bool{},
+		shownText:       map[string]bool{},
 	}
 	r.toolStyle.Store(int32(parseToolStyle(toolStyle)))
 	r.collapse.Store(int32(collapse))
@@ -381,6 +394,8 @@ func (r *Renderer) reset() {
 	clear(r.pendingShown)
 	clear(r.pendingAt)
 	clear(r.earlyShown)
+	clear(r.shownText)
+	r.shownMsgID = ""
 	r.turnsRendered = 0
 	// A reset always precedes a full re-emit of the transcript (reload, theme
 	// swap, rollover), which would otherwise append every message to the yank
@@ -420,6 +435,7 @@ func (r *Renderer) emit(rec Record) {
 		if r.consumeEarlyText(rec) {
 			return // already shown from the tap, before the question it preceded
 		}
+		r.rememberShownText(rec)
 		r.turnsRendered++
 		if r.live {
 			// BEL on each live assistant turn — lets the user wander off and
@@ -520,13 +536,27 @@ func earlyTextKey(msgID, body string) string { return "text:" + msgID + "\x00" +
 // below the card, reading backwards. Rendering from the wire puts it in the
 // right order at the right time; each block is remembered in earlyShown so the
 // transcript twin is suppressed when it eventually arrives.
+// The suppression runs BOTH ways, because the tap does not always win the race
+// it was built to win: the live loop polls the transcript before the sidecar
+// within one tick, so a message whose JSONL and tap bytes land together renders
+// from the file first. A tap event for something already on screen must add
+// nothing — seen live as a question card three deep (hook marker, transcript
+// redraw, tap) with its preamble printed twice, one second apart.
 func (r *Renderer) tapPreamble(p tapPendingPrompt, ts string) {
 	for _, body := range p.Preamble {
+		if p.MsgID != "" && r.shownText[earlyTextKey(p.MsgID, body)] {
+			continue // the transcript already printed this block
+		}
 		r.header(KindAssistant, ts)
 		r.body(body)
 		if p.MsgID != "" {
 			r.earlyShown[earlyTextKey(p.MsgID, body)] = true
 		}
+	}
+	if p.QID != "" && r.seenQuestions[p.QID] {
+		// The card for this exact prompt is already on screen — drawn from the
+		// transcript record, or from a hook marker the transcript then confirmed.
+		return
 	}
 	r.pendingQuestion(p.Questions)
 	if p.QID != "" {
@@ -534,6 +564,21 @@ func (r *Renderer) tapPreamble(p tapPendingPrompt, ts string) {
 		// record doesn't ring again for an already-seen prompt.
 		r.seenQuestions[p.QID] = true
 	}
+}
+
+// rememberShownText records a transcript-rendered assistant body so a tap event
+// that arrives after it is suppressed (tapPreamble). Scoped to one message: a
+// new message id drops the previous message's keys, since the tap never lags
+// further behind than the message it is reporting.
+func (r *Renderer) rememberShownText(rec Record) {
+	if rec.MsgID == "" {
+		return
+	}
+	if rec.MsgID != r.shownMsgID {
+		r.shownMsgID = rec.MsgID
+		clear(r.shownText)
+	}
+	r.shownText[earlyTextKey(rec.MsgID, rec.Body)] = true
 }
 
 // consumeEarlyText reports whether this record was already rendered from the tap,
