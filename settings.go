@@ -47,6 +47,10 @@ type settingRow struct {
 	ID    settingID
 	Label string
 	Value string
+	// Swatch is a pre-coloured strip drawn after the value, for a row whose
+	// value is a look rather than a word (the theme). Carries its own ANSI, so
+	// it isn't put through the value colour.
+	Swatch string
 	// Note is a dim trailing remark, for a row that behaves unlike its
 	// neighbours (the one setting that isn't remembered, say).
 	Note string
@@ -111,6 +115,9 @@ func settingsLines(env settingsEnv, rows []settingRow, cursor int, theme Theme) 
 		// Pad on the visible width: the label may be carrying a bold escape.
 		pad := strings.Repeat(" ", max(settingsLabelW-visWidth(label), 1))
 		line := marker + label + pad + val(row.Value)
+		if row.Swatch != "" {
+			line += "  " + row.Swatch
+		}
 		if row.Note != "" {
 			line += dim("  · " + row.Note)
 		}
@@ -292,7 +299,7 @@ func settingsRowsFor(info helpInfo, home string) []settingRow {
 		wrap = fmt.Sprintf("on, %d columns", info.Wrap)
 	}
 	return []settingRow{
-		{ID: setTheme, Label: "theme", Value: info.Theme},
+		{ID: setTheme, Label: "theme", Value: info.Theme, Swatch: info.ThemeSwatch},
 		{ID: setTools, Label: "tools", Value: info.Tools.label()},
 		{ID: setCollapse, Label: "collapse", Value: collapse},
 		{ID: setWrap, Label: "wrap", Value: wrap},

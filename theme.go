@@ -2,11 +2,13 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -109,6 +111,72 @@ func unescapeANSI(s string) string {
 		`\\`, `\`,
 	)
 	return r.Replace(s)
+}
+
+// swatchKeys are the glamour style elements whose colours join the swatch after
+// the three header colours, most visible on screen first: body text, headings,
+// inline code, bold, links. `emph` is left out because in every bundled theme
+// it repeats the heading, link or code colour.
+var swatchKeys = []string{"document", "heading", "code", "strong", "link"}
+
+// themeSwatch is a strip of colour blocks summarising a theme for the settings
+// panel: the USER, AGENT and dim header colours first (the box chrome is what
+// you see most of), then swatchKeys from the glamour style. Two cells per
+// colour — one is too thin to read. A colour the theme doesn't set is skipped
+// rather than drawn in the terminal default, so the strip never shows a colour
+// the theme doesn't own.
+func themeSwatch(t Theme) string {
+	var b strings.Builder
+	block := func(ansi string) {
+		if ansi != "" {
+			b.WriteString(ansi + "██" + reset)
+		}
+	}
+	block(t.UserANSI)
+	block(t.ClaudeANSI)
+	block(t.DimANSI)
+	colors := styleColors(t.StyleJSON)
+	for _, k := range swatchKeys {
+		block(styleANSI(colors[k]))
+	}
+	return b.String()
+}
+
+// styleColors pulls each top-level element's foreground colour out of a glamour
+// style JSON. Best-effort: a style that doesn't parse yields nothing, and the
+// swatch falls back to the header colours alone.
+func styleColors(styleJSON []byte) map[string]string {
+	var raw map[string]struct {
+		Color string `json:"color"`
+	}
+	if json.Unmarshal(styleJSON, &raw) != nil {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		out[k] = v.Color
+	}
+	return out
+}
+
+// styleANSI turns a glamour colour — "#rrggbb" or a 0–255 index, the two forms
+// the bundled themes use — into the SGR that selects it as a foreground.
+// Anything else is "" (no block).
+func styleANSI(c string) string {
+	if hex, ok := strings.CutPrefix(c, "#"); ok {
+		if len(hex) != 6 {
+			return ""
+		}
+		n, err := strconv.ParseUint(hex, 16, 24)
+		if err != nil {
+			return ""
+		}
+		return fmt.Sprintf("\x1b[38;2;%d;%d;%dm", n>>16, (n>>8)&0xff, n&0xff)
+	}
+	if n, err := strconv.Atoi(c); err == nil && n >= 0 && n <= 255 {
+		return fmt.Sprintf("\x1b[38;5;%dm", n)
+	}
+	return ""
 }
 
 type themeInfo struct {

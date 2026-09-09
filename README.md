@@ -206,7 +206,7 @@ have scrolled the banner away:
 ```
 ╭─ entire-tail 0.26.0 ─────────────────────────────────────────────╮
 │                                                                  │
-│ ▸ theme         tokyo-night                                      │
+│ ▸ theme         tokyo-night  ████████████████                    │
 │   tools         dots                                             │
 │   collapse      user pastes > 5 lines                            │
 │   wrap          on, 99 columns                                   │
@@ -226,7 +226,10 @@ have scrolled the banner away:
 
 `↑↓` moves, `←→` (or `⏎`) changes the row, `q`/`Esc`/`?` closes. Changes take
 effect immediately; the transcript re-renders once when the panel closes, since
-nothing underneath an alt-screen is visible while it's open. The session
+nothing underneath an alt-screen is visible while it's open. The theme row
+carries a strip of the theme's colours, most visible first (USER box, AGENT box,
+dim, body text, heading, inline code, bold, link), so `←→` previews a palette
+before the transcript is redrawn in it. The session
 context, the key map and the dot legend live below the settings in the same
 scroll, so nothing the old help card showed was lost.
 

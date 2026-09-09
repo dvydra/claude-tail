@@ -326,7 +326,12 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `⏎` arms and a second `⏎` acts, and any other key disarms; (3) the transcript
   re-render happens when the panel CLOSES (`settingsDirty` in main.go) — under an
   alt-screen nobody can see it, and an expanded paste forces the full re-render
-  for the reason `c` does
+  for the reason `c` does. The theme row also carries `themeSwatch` (theme.go):
+  eight two-cell colour blocks, the USER/AGENT/dim header colours first and then
+  `document`/`heading`/`code`/`strong`/`link` read from the glamour JSON, so `←→`
+  previews the palette. It travels as `settingRow.Swatch`, not `Value`, because
+  it carries its own ANSI and must not be put through the value colour; a colour
+  the style doesn't set leaves no block rather than a default-coloured one
 - `prefs.go` — the **persisted settings layer** (`~/.claude/entire-tail/settings.json`),
   written by the panel and read by `defaultConfig`. It sits BELOW flags and env
   and above the built-in defaults: a preference is what you want when you haven't

@@ -303,3 +303,30 @@ func TestStepTools(t *testing.T) {
 		t.Errorf("a full backwards lap gave %v, want %v", got, start)
 	}
 }
+
+// The theme row carries the theme's colour strip, so ←→ previews a palette
+// before the transcript re-renders in it. Only that row — the others have no
+// colours to show.
+func TestSettingsThemeRowShowsSwatch(t *testing.T) {
+	info := testHelpInfo()
+	info.ThemeSwatch = "\x1b[38;2;1;2;3m██" + reset
+	rows := settingsRowsFor(info, t.TempDir())
+	lines, rowLine := settingsLines(settingsTestEnv(t), rows, 1, helpTestTheme())
+	for i, r := range rows {
+		line := lines[rowLine[i]]
+		has := strings.Contains(line, info.ThemeSwatch)
+		if r.ID == setTheme && !has {
+			t.Errorf("theme row lacks its swatch: %q", line)
+		}
+		if r.ID != setTheme && has {
+			t.Errorf("%s row carries the swatch: %q", r.Label, line)
+		}
+	}
+	theme := lines[rowLine[0]]
+	if !strings.Contains(theme, "tokyo-night"+reset+"  "+info.ThemeSwatch) {
+		t.Errorf("swatch should follow the name after two spaces: %q", theme)
+	}
+	if w := visWidth(theme); w != visWidth(strings.Replace(theme, info.ThemeSwatch, "", 1))+2 {
+		t.Errorf("swatch should add 2 visible cells, line = %q", theme)
+	}
+}

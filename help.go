@@ -19,6 +19,7 @@ type helpInfo struct {
 	Agent       Agent
 	Session     string // transcript path (tildified for display)
 	Theme       string
+	ThemeSwatch string // themeSwatch(theme): the colour strip shown beside the name
 	Backfill    string // the --backfill spec, e.g. "all"
 	From, Total int    // backfill range, as the banner reports it
 	Tools       toolStyleKind

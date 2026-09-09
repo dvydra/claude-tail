@@ -170,3 +170,102 @@ func TestNextThemeCyclesInOrder(t *testing.T) {
 		t.Errorf("nextTheme(unknown) = %q, want first %q", unknown.Name, infos[0].Name)
 	}
 }
+
+// The settings panel shows a theme as a strip of colour blocks beside its name,
+// most visible colour first: the two box headers and the dim, then body text,
+// heading, inline code, strong and link from the glamour style.
+func TestThemeSwatchOrder(t *testing.T) {
+	th, err := loadTheme("dracula", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := themeSwatch(th)
+	if w := visWidth(got); w != 16 {
+		t.Errorf("visWidth = %d, want 16 (8 colours × 2 cells):\n%q", w, got)
+	}
+	if !strings.HasSuffix(got, reset) {
+		t.Errorf("swatch must end reset, got %q", got)
+	}
+	want := []string{
+		"255;121;198",      // USER pink
+		"189;147;249",      // CLAUDE purple
+		"98;114;164",       // dim comment
+		"38;2;248;248;242", // document
+		"38;2;139;233;253", // heading
+		"38;2;80;250;123",  // code
+		"38;2;255;184;108", // strong
+		"38;2;139;233;253", // link
+	}
+	pos := 0
+	for _, w := range want {
+		i := strings.Index(got[pos:], w)
+		if i < 0 {
+			t.Fatalf("colour %q missing or out of order after byte %d:\n%q", w, pos, got)
+		}
+		pos += i + len(w)
+	}
+}
+
+// The original theme's style uses 256-colour indexes rather than hex; those
+// have to render as blocks too, not vanish.
+func TestThemeSwatch256Colour(t *testing.T) {
+	th, err := loadTheme("claude", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := themeSwatch(th)
+	if !strings.Contains(got, "\x1b[38;5;252m██") {
+		t.Errorf("document colour 252 missing: %q", got)
+	}
+	if w := visWidth(got); w != 16 {
+		t.Errorf("visWidth = %d, want 16", w)
+	}
+}
+
+// Every bundled theme sets all eight colours; a short strip would mean a theme
+// file lost one.
+func TestThemeSwatchAllThemes(t *testing.T) {
+	for _, in := range listThemeInfos() {
+		th, err := loadTheme(in.Name, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w := visWidth(themeSwatch(th)); w != 16 {
+			t.Errorf("%s: swatch width %d, want 16", in.Name, w)
+		}
+	}
+}
+
+// A colour the theme doesn't set is skipped, never drawn in the default colour:
+// the strip shows only what the theme owns. Nothing at all gives an empty string.
+func TestThemeSwatchSparse(t *testing.T) {
+	got := themeSwatch(Theme{UserANSI: "\x1b[36m"})
+	if got != "\x1b[36m██"+reset {
+		t.Errorf("header-only swatch = %q", got)
+	}
+	if got := themeSwatch(Theme{}); got != "" {
+		t.Errorf("empty theme swatch = %q, want empty", got)
+	}
+	if got := themeSwatch(Theme{StyleJSON: []byte("not json")}); got != "" {
+		t.Errorf("bad style swatch = %q, want empty", got)
+	}
+}
+
+func TestStyleANSI(t *testing.T) {
+	cases := map[string]string{
+		"#ff79c6": "\x1b[38;2;255;121;198m",
+		"#000000": "\x1b[38;2;0;0;0m",
+		"252":     "\x1b[38;5;252m",
+		"0":       "\x1b[38;5;0m",
+		"":        "",
+		"#zzzzzz": "",
+		"#fff":    "",
+		"256":     "",
+		"red":     "",
+	}
+	for in, want := range cases {
+		if got := styleANSI(in); got != want {
+			t.Errorf("styleANSI(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
