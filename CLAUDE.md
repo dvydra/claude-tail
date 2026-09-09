@@ -330,6 +330,8 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   second `y` MEANS "one more turn" and a dropped press would copy the wrong
   thing. `reset()` clears it: a reload/theme-swap/rollover re-emits the whole
   transcript, which would otherwise buffer every turn twice
+- `mdtable.go` — **wide markdown tables → sectioned blocks**, for the mrkdwn
+  conversion only; see the load-bearing note below
 - `status.go` — the **bottom status bar**. The tail is a streaming view, so a
   row pinned to the bottom has to come from the terminal rather than from us
   repainting: `DECSTBM` (`ESC [ 1 ; h-1 r`) shrinks the scrolling region and the
@@ -649,6 +651,44 @@ needs to change.
   **Every ``` gets its own line** — Slack renders a one-line ```` ```code````
   ```` as literal backticks, so a one-line fence is split into three
   (`TestToSlackMrkdwnSplitsOneLineFence`; an earlier version dropped the body).
+- **A table that FITS is padded and fenced; a wider one collapses into blocks**
+  (`mdtable.go`). Slack renders no tables, so the fallback is a code fence —
+  monospaced, so the columns line up — but that only pays off if they're aligned,
+  and a source table almost never is (`|---|---|` with cells of whatever width
+  the content happened to be). So `formatMDTable` re-pads the cells, keeping the
+  `:` alignment markers and measuring in DISPLAY columns (`runewidth`, not rune
+  count — a CJK glyph or an emoji is two cells in that box and counting it as one
+  puts everything after it out by one). Only the whitespace BETWEEN cells is
+  touched; cell content is copied byte-for-byte, so a command in a cell still
+  runs when it's pasted out, and the fence is one entire-tail opened rather than
+  one the author wrote, so there's no authored formatting to preserve.
+  Because the layout is now measured rather than guessed, the switch to blocks is
+  the laid-out width (`tableMaxWidth`, 80) rather than Claude's own "seven
+  columns or a twenty-character cell" — that rule of thumb is a proxy for width
+  used by something that hasn't laid the table out yet, and it explodes a
+  three-column table with a long path in it that pads to 70 columns and reads
+  fine. Past the budget `tableBlocks` transposes the table into one block per row.
+  A row with MORE cells than the header makes BOTH decline (`parseMDTable`
+  returns not-ok) and the rows go through exactly as they came: GFM says to
+  ignore the extras, but these two paths rewrite the table on its way to
+  someone's clipboard, and silently dropping their data there is not the same
+  thing as not rendering it. Three of the five rules are exact (first
+  column is the heading; column names restated inline in the body; a column
+  constant across every row hoisted above the blocks and dropped from them) and
+  two are approximations of a judgement a converter can't make. **Rule 2** ("the
+  columns you'd filter on join the heading, unlabelled") is `headingExtras`:
+  short, REPEATING (strictly fewer distinct values than rows — with two or three
+  rows every column trivially has few, so a small table gets a bare heading
+  rather than a guessed one) and starting with a LETTER, because a bare `6` or
+  `500m` in a heading is a riddle where `prod` and `us-east-1` read fine.
+  **Rule 3** ("related columns share a line") is genuinely semantic — nothing
+  here knows CPU belongs with memory — so `packFields` fills lines to a width
+  budget instead: different grouping, same effect of three lines rather than
+  seven. The heading uses `boldCell`, which does NOT re-bold a key that already
+  carries emphasis: `**a**` converts to `*a*`, and another pair around that is
+  `**a**` again, which mrkdwn shows as literal asterisks. This is **mrkdwn-only**
+  — the terminal keeps glamour's box-drawn table, which is what a monospaced
+  pane is for, so no golden moves.
 - **`clipboardWrite` is a package var so tests can stub it.** The real path runs
   `pbcopy`; a test that exercised it would silently replace whatever the
   developer had on their clipboard. Same rule as the `launchctl` stubs — a
