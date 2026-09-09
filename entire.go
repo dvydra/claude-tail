@@ -227,12 +227,10 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 		if s.Mtime > g.Mtime {
 			g.Mtime = s.Mtime
 		}
-		// A real local dir for the repo group, for `n`. It must still EXIST: now
-		// that finished worktrees collapse into their repo group (see
-		// worktreeParent), the newest session in a group is often one whose
-		// directory has since been deleted — and `n` there would cd into nothing.
-		if g.Dir == "" && s.cwd != "" && isDir(s.cwd) {
-			g.Dir = s.cwd
+		// A real local dir for the repo group, for `n` — the checkout, not one
+		// task's worktree, and one that still EXISTS (see newSessionDir).
+		if g.Dir == "" && s.cwd != "" {
+			g.Dir = newSessionDir(s.cwd)
 		}
 		if s.Live {
 			g.Live++
@@ -349,6 +347,25 @@ func repoForCwd(cwd, home string, cache map[string]string) string {
 	}
 	cache[cwd] = repo
 	return repo
+}
+
+// newSessionDir is where `n` on a group holding a session at cwd should cd.
+//
+// Worktree sessions collapse into their repo group (worktreeParent), and the
+// newest of them is usually the one you were just working in — so the first
+// cwd a group sees is, most days, some task's worktree, and `n` on
+// ~/src/entiredb would land in .claude/worktrees/<whatever-was-last>. A repo
+// group's `n` means the checkout. The worktree itself is the fallback when the
+// checkout is gone, and "" when neither exists: a deleted worktree is not an
+// `n` target either.
+func newSessionDir(cwd string) string {
+	if parent := worktreeParent(cwd); parent != "" && isDir(parent) {
+		return parent
+	}
+	if isDir(cwd) {
+		return cwd
+	}
+	return ""
 }
 
 // worktreeParent returns the checkout a worktree path was cut from, or "" when
