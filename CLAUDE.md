@@ -146,6 +146,26 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   Self-disables off iTerm / without `pgrep`+`lsof`. Pure parsers (`itermTab`,
   `parsePsEnv`, `scrapeSessionIDArg`, `siblingPIDs`, `newestClear`) are
   unit-tested; the `ps`/`lsof` shell-outs are the thin IO layer
+- `nearby.go` — **the tree's half of the same trick, for when adopt declines.**
+  `adopt.go` bails on purpose in three cases (a tab holding two claudes, a claude
+  one tab over, and `Ctrl-X`), and each of them dropped the user into a list with
+  no indication which row was the agent three feet away. `nearbySessions` runs
+  the same placement WITHOUT the exactly-one rule: every running claude is
+  located by `ITERM_SESSION_ID` as sharing our tab (`paneTab`), our window
+  (`paneWindow`, via `itermWindow`) or neither, and resolved with adopt's own
+  `resolveClaudeSession`. `applyNearby` is an overlay in the mould of
+  `applyTapActivity` — **strictly additive**, because not finding a process near
+  you is not evidence about a session — and it promotes a nearby session (and its
+  folder) to Live, or the group holding the agent you're using would sort cold.
+  `nearbyCursor` then feeds two places: `mergeEntire` expands that folder (a
+  session row doesn't exist until its group is open, so the cursor would land
+  somewhere arbitrary) and `initialCursor` puts the cursor on it, ahead of the
+  current-repo/`$PWD` fallbacks. Resolution is deliberately cheap — a
+  workspace-launched claude carries `--session-id` in argv, so it costs a string
+  scan; only a hand-started one reads a project dir, and nothing here samples
+  activity over time the way adopt may, because the tree has to open instantly.
+  `nearbyMark` is a fixed two-column cell (the `profileMark` pattern) that hands
+  the row colour back, and the footer names only the marks actually on screen
 - `iterm.go` — macOS/iTerm2 automation via `osascript`: the tree's `Enter`
   opens the 3-pane workspace (`<bin> --resume` + live tail + shell) in the
   CURRENT window, cd'd to the picked session's folder; `n` opens the same
