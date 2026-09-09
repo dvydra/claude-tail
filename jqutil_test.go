@@ -48,16 +48,29 @@ func TestCollapseBody(t *testing.T) {
 		{"singular", "a\nb\nc", 2, "a\nb\n\n*… 1 more line — re-run with --no-collapse to expand*"},
 	}
 	for _, c := range cases {
-		if got := collapseBody(c.body, c.t); got != c.want {
+		if got := collapseBody(c.body, c.t, flagHint); got != c.want {
 			t.Errorf("%s: collapseBody(%q,%d) = %q, want %q", c.name, c.body, c.t, got, c.want)
 		}
+	}
+}
+
+// flagHint is the piped-run wording — the one the goldens pin.
+const flagHint = "re-run with --no-collapse to expand"
+
+// The marker is the only place that says how to get the rest of a paste back,
+// and the answer differs by where the output is going: a live tail has the `c`
+// key, a piped run has only the flag.
+func TestCollapseBodyNamesTheKeyItWasGiven(t *testing.T) {
+	got := collapseBody("a\nb\nc\nd", 2, "press c to expand")
+	if want := "a\nb\n\n*… 2 more lines — press c to expand*"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestCollapseBodyClosesFence(t *testing.T) {
 	// Head ends inside an unclosed ``` fence → a closing fence is appended.
 	body := "```go\nx := 1\ny := 2\nz := 3"
-	got := collapseBody(body, 2)
+	got := collapseBody(body, 2, flagHint)
 	want := "```go\nx := 1\n```\n\n*… 2 more lines — re-run with --no-collapse to expand*"
 	if got != want {
 		t.Errorf("got %q want %q", got, want)

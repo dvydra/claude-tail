@@ -763,8 +763,11 @@ tail. By default, any **user** message longer than **5 lines** is collapsed to
 its first 5 lines followed by a marker:
 
 ```
-… 29 more lines — re-run with --no-collapse to expand
+… 29 more lines — press c to expand
 ```
+
+(Piped output says `re-run with --no-collapse to expand` instead — there's no
+keyboard on the other end of a pipe.)
 
 - `--collapse N` — change the threshold to N lines (default 5).
 - `--no-collapse` — never collapse; show every user message in full.
@@ -778,10 +781,14 @@ preview gets a synthetic closing ``` ``` ``` so the rest of the transcript
 still renders cleanly.
 
 This is a **render-time** collapse, not an interactive fold: the tail appends
-to the terminal scrollback rather than running an alt-screen TUI. You can press
-`c` while following to toggle collapsing for *new* events (see [Live
-keys](#live-keys)), but already-printed lines stay as they are — to re-expand
-history, re-run with `--no-collapse` (or scroll the agent's own pane).
+to the terminal scrollback rather than running an alt-screen TUI. Pressing `c`
+while following flips the setting and reprints the transcript with it applied —
+already-printed lines stay where they are, the new copy is appended below them.
+Expanding reprints the transcript **in full** rather than the last screenful
+the other toggles redraw: the pastes it reveals are above the fold by
+definition (the big one is usually the message that opened the session), so a
+screenful would redraw a tail that already looked the same and the key would
+read as dead.
 
 ## Themes
 
@@ -907,9 +914,12 @@ renderer.
 - `tool_result` blocks are summarized as `↩ tool_result (×N)` in `lines`
   mode and dropped in `dots` mode (1:1 with the preceding tool_use).
 - Prose is wrapped to your terminal width (one column short of it), so lines
-  break between words. Resizing re-wraps: the transcript is re-rendered once the
-  drag settles, and only when the width actually changed. Piped output is never
-  wrapped.
+  break between words — and only between words: a token too long for the line
+  (a URL, a `--flag=value`) goes out whole and is soft-wrapped by the terminal,
+  so it still pastes as one piece. Wrapped list items and block quotes indent
+  their continuations under themselves; tables and rules are left alone.
+  Resizing re-wraps: the transcript is re-rendered once the drag settles, and
+  only when the width actually changed. Piped output is never wrapped.
 - `--no-wrap` turns wrapping off for the session, and **`w`** toggles it live.
   Unwrapped, each paragraph goes out as one long logical line your terminal
   soft-wraps, which splits words at the column edge — but the terminal rejoins
