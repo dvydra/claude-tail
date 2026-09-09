@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseEntireTime(t *testing.T) {
 	if got := parseEntireTime("2026-07-10T00:00:00Z"); got != 1783641600 {
@@ -160,5 +164,50 @@ func TestMergeEntireSkipsDeadDirsForNewSessions(t *testing.T) {
 	}
 	if infra.Dir != live {
 		t.Errorf("group Dir = %q, want the existing dir %q (a deleted worktree is not an `n` target)", infra.Dir, live)
+	}
+}
+
+func TestMergeEntireGroupDirIsTheCheckoutNotAWorktree(t *testing.T) {
+	// `n` on a repo group means "a new session in this repo". Worktree sessions
+	// collapse into the repo group, and a live worktree is usually the group's
+	// newest session — so without this, the group's Dir is whichever task
+	// worktree you happened to work in last, and `n` on ~/src/entiredb lands in
+	// .claude/worktrees/<random-task>.
+	checkout := t.TempDir()
+	wt := filepath.Join(checkout, ".claude", "worktrees", "some-task")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name     string
+		sessions []treeSession
+	}{
+		{"worktree session is newest", []treeSession{
+			{ID: "wt", Mtime: 200, cwd: wt},
+			{ID: "root", Mtime: 100, cwd: checkout},
+		}},
+		{"only worktree sessions", []treeSession{
+			{ID: "wt", Mtime: 200, cwd: wt},
+		}},
+		{"worktree dir deleted, checkout remains", []treeSession{
+			{ID: "gone", Mtime: 200, cwd: filepath.Join(checkout, ".claude", "worktrees", "merged-away")},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			local := sessionTree{Pwd: "/p", Folders: []treeFolder{{Cwd: checkout, Sessions: tc.sessions}}}
+			var entire []entireSession
+			for _, s := range tc.sessions {
+				entire = append(entire, entireSession{SessionID: s.ID, Repo: "org/infra", LastActivityAt: "2026-07-10T00:59:00Z"})
+			}
+			tree := mergeEntire(local, entire, "/home/me", 0, parseEntireTime("2026-07-10T01:00:00Z"))
+			infra := folderByCwd(tree, "org/infra")
+			if infra == nil {
+				t.Fatal("no org/infra group")
+			}
+			if infra.Dir != checkout {
+				t.Errorf("group Dir = %q, want the checkout %q", infra.Dir, checkout)
+			}
+		})
 	}
 }
