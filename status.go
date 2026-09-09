@@ -292,21 +292,6 @@ func statusRights(info statusInfo) []string {
 	return out
 }
 
-// tailLinesOf keeps the last n lines of a rendered chunk (n <= 0 keeps all of
-// it), reporting whether anything was dropped. The final line may have no
-// trailing newline — the renderer defers it so a dot streak can ride the end of
-// a turn — and that is preserved.
-func tailLinesOf(s string, n int) (string, bool) {
-	if n <= 0 || s == "" {
-		return s, false
-	}
-	lines := strings.Split(s, "\n")
-	if len(lines) <= n {
-		return s, false
-	}
-	return strings.Join(lines[len(lines)-n:], "\n"), true
-}
-
 // statusRepo names the folder the session is running in. A worktree shows as
 // `<checkout>@<worktree>`: its own basename is a task name ("status-line"),
 // which on its own doesn't say which repo you're looking at — and worktrees are

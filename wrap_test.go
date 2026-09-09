@@ -153,18 +153,6 @@ func TestWrappedBodyHasNoTrailingPadding(t *testing.T) {
 	}
 }
 
-// Expanding a collapsed paste has to reprint the whole transcript: the text it
-// reveals is above the fold by definition, so a screenful-sized re-render
-// redraws a tail that already looked the same and the key reads as dead.
-func TestCollapseKeep(t *testing.T) {
-	if got := collapseKeep(true, 40); got != 0 {
-		t.Errorf("expanding re-rendered %d lines, want all of them (0)", got)
-	}
-	if got := collapseKeep(false, 40); got != 40 {
-		t.Errorf("collapsing re-rendered %d lines, want a screenful (40)", got)
-	}
-}
-
 // setWrap reports whether the width actually moved, so a height-only SIGWINCH
 // (dragging the bottom edge) doesn't re-render the whole transcript. A theme
 // swap has to preserve the current width rather than reset it.

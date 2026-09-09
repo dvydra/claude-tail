@@ -137,29 +137,6 @@ func TestStatusRepo(t *testing.T) {
 	}
 }
 
-// A toggle re-renders only what's on screen; the renderer still processes the
-// whole transcript, so only the printed output is trimmed.
-func TestTailLinesOf(t *testing.T) {
-	const body = "a\nb\nc\nd"
-	if got, trimmed := tailLinesOf(body, 2); got != "c\nd" || !trimmed {
-		t.Errorf("tailLinesOf(2) = %q, %v", got, trimmed)
-	}
-	if got, trimmed := tailLinesOf(body, 4); got != body || trimmed {
-		t.Errorf("exactly-fits should not trim: %q, %v", got, trimmed)
-	}
-	if got, trimmed := tailLinesOf(body, 0); got != body || trimmed {
-		t.Errorf("0 means all: %q, %v", got, trimmed)
-	}
-	// The last line carries no trailing newline (the renderer defers it so a dot
-	// streak can ride the end of a turn) — that must survive the trim.
-	if got, _ := tailLinesOf("a\nb\nopen", 2); strings.HasSuffix(got, "\n") {
-		t.Errorf("trailing newline added: %q", got)
-	}
-	if got, trimmed := tailLinesOf("", 5); got != "" || trimmed {
-		t.Errorf("empty = %q, %v", got, trimmed)
-	}
-}
-
 func TestParseCursorReport(t *testing.T) {
 	cases := []struct {
 		in   string
