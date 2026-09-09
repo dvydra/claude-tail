@@ -117,6 +117,27 @@ dir. Worktree-fork and `/clear` rollovers are then followed as usual (see
 Force the tree instead with `-p`. Off iTerm (or non-macOS) this is inert and the
 tree/`--no-pick` behavior is unchanged.
 
+### …and when it can't, the tree points at it
+
+Adopt gives up on purpose in three cases — a tab holding **two** claudes, a
+claude **one tab over**, and `Ctrl-X`, which asks for the tree — and you used to
+land in a list with no clue which row was the agent you were just looking at.
+
+So the tree runs the same placement without the "exactly one" rule: every running
+claude is located by its `ITERM_SESSION_ID` and resolved to the transcript it's
+writing. Sessions in **this tab** get a bright `◀`, sessions elsewhere in **this
+window** a dim one, and the tree **opens with the cursor already on the closest
+one** (expanding its group to get there). The footer names whichever marks are on
+screen:
+
+```
+  11 folders · 35 sessions · ◀ runs in this tab (dim: this window)
+```
+
+It's strictly additive — nothing gets *un*-marked because no process was found
+near you — and inert off iTerm or without `pgrep`/`lsof`, where the cursor starts
+where it always did.
+
 ## The status bar
 
 The bottom row of the terminal is a status bar:

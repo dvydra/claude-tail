@@ -167,6 +167,11 @@ func buildSessionTree(home, pwd string, days int, now int64, forceLocal, cloud b
 	if act, ok := readTapActive(home); ok {
 		applyTapActivity(&local, act, now*1000)
 	}
+	// Which of these is the agent one pane away (nearby.go). Applied to the
+	// local crawl so it survives the regroup below — mergeEntire copies the
+	// sessions across rather than rebuilding them.
+	near := nearbySessions(home, os.Getenv)
+	applyNearby(&local, near)
 	if forceLocal {
 		ensureCurrentDirFolder(&local, pwd, now)
 		return local
@@ -308,6 +313,12 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 	}
 	if !expanded && len(tree.Folders) > 0 {
 		tree.Folders[0].Expanded = true
+	}
+	// …but if an agent is running beside this pane, that's the group to open —
+	// it's the one the user is coming back to, and its row has to be RENDERED
+	// before initialCursor can put the cursor on it.
+	if fi, _, prox := nearbyCursor(tree); prox > paneFar {
+		tree.Folders[fi].Expanded = true
 	}
 	return tree
 }
