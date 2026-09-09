@@ -57,13 +57,19 @@ func toSlackMrkdwn(md string) string {
 				out = append(out, line) // verbatim: this is someone's command
 				continue
 			}
-			// Slack has no tables, so a table's columns only line up inside a code
-			// box — where the font is monospaced. Wrap the whole run in a fence and
-			// pass the rows through untouched (alignment is the point).
+			// Slack has no tables. A narrow one still reads as a table inside a
+			// code box (monospaced, so the columns line up), and that's the better
+			// answer while it fits the pane — so the rows go through untouched,
+			// alignment being the point. Past that, tableBlocks turns it inside out
+			// into one block per row instead of a box nobody can scroll.
 			if n := mdTableRun(lines[i:]); n > 0 {
-				out = append(out, "```")
-				out = append(out, lines[i:i+n]...)
-				out = append(out, "```")
+				if blocks := tableBlocks(lines[i : i+n]); blocks != nil {
+					out = append(out, blocks...)
+				} else {
+					out = append(out, "```")
+					out = append(out, lines[i:i+n]...)
+					out = append(out, "```")
+				}
 				i += n - 1
 				continue
 			}

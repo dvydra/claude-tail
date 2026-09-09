@@ -256,6 +256,33 @@ box — not the Web API. So no HTML escaping (`&amp;` would paste literally) and
 never `<url|text>` (that form is only parsed for API-posted messages, so it
 would paste literally too).
 
+### Wide tables collapse into blocks
+
+Slack renders no tables at all. A narrow one still reads fine wrapped in a code
+fence — the box is monospaced, so the columns line up — and that's what it gets.
+Past **seven columns, or any cell over twenty characters**, an aligned table
+stops fitting a message pane, so it's turned inside out into one block per row:
+
+```
+*api-gateway* · prod · us-east-1 · healthy
+• Cluster: eks-prod-use1 · Replicas: 6 · CPU req: 500m
+• Mem req: 1Gi · Image tag: v2.14.3 · Owner: platform
+• Last deploy: 2026-09-08 14:02
+```
+
+- The **first column is the heading**, in bold.
+- The columns you'd *filter* on join it bare — short, repeating, word-like values
+  (`prod`, `us-east-1`, `healthy`) that still read with their names removed. A
+  bare `6` or `500m` would be a riddle, so numeric columns stay in the body.
+- Everything else keeps its **column name inline**, so a line still makes sense
+  once the header row has scrolled away, packed a few to a line.
+- A column with the **same value in every row** is stated once above the blocks
+  and dropped from them: `_Same for every row: Env prod · Status healthy_`.
+
+A table inside a code fence is someone's output, not a table to reformat, and is
+passed through untouched. This is a **mrkdwn-only** transform — the terminal
+rendering keeps its box-drawn table, which is what a monospaced pane is for.
+
 `m` is the same conversion applied to the screen: agent text renders as mrkdwn
 source instead of glamour, so whatever you drag-select with the mouse already
 *is* mrkdwn. Handy when you want one paragraph rather than a whole turn. User

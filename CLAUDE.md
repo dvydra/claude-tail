@@ -330,6 +330,8 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   second `y` MEANS "one more turn" and a dropped press would copy the wrong
   thing. `reset()` clears it: a reload/theme-swap/rollover re-emits the whole
   transcript, which would otherwise buffer every turn twice
+- `mdtable.go` — **wide markdown tables → sectioned blocks**, for the mrkdwn
+  conversion only; see the load-bearing note below
 - `status.go` — the **bottom status bar**. The tail is a streaming view, so a
   row pinned to the bottom has to come from the terminal rather than from us
   repainting: `DECSTBM` (`ESC [ 1 ; h-1 r`) shrinks the scrolling region and the
@@ -649,6 +651,28 @@ needs to change.
   **Every ``` gets its own line** — Slack renders a one-line ```` ```code````
   ```` as literal backticks, so a one-line fence is split into three
   (`TestToSlackMrkdwnSplitsOneLineFence`; an earlier version dropped the body).
+- **A WIDE table collapses into blocks; a narrow one stays a fenced table**
+  (`mdtable.go`). Slack renders no tables, so the fallback is a code fence —
+  monospaced, so the columns line up — and while it fits a message pane that IS
+  the better answer. Past `tableWideCols` (7) columns or a cell over
+  `tableWideCell` (20) runes it stops fitting, and `tableBlocks` transposes the
+  table into one block per row instead. Three of the five rules are exact (first
+  column is the heading; column names restated inline in the body; a column
+  constant across every row hoisted above the blocks and dropped from them) and
+  two are approximations of a judgement a converter can't make. **Rule 2** ("the
+  columns you'd filter on join the heading, unlabelled") is `headingExtras`:
+  short, REPEATING (strictly fewer distinct values than rows — with two or three
+  rows every column trivially has few, so a small table gets a bare heading
+  rather than a guessed one) and starting with a LETTER, because a bare `6` or
+  `500m` in a heading is a riddle where `prod` and `us-east-1` read fine.
+  **Rule 3** ("related columns share a line") is genuinely semantic — nothing
+  here knows CPU belongs with memory — so `packFields` fills lines to a width
+  budget instead: different grouping, same effect of three lines rather than
+  seven. The heading uses `boldCell`, which does NOT re-bold a key that already
+  carries emphasis: `**a**` converts to `*a*`, and another pair around that is
+  `**a**` again, which mrkdwn shows as literal asterisks. This is **mrkdwn-only**
+  — the terminal keeps glamour's box-drawn table, which is what a monospaced
+  pane is for, so no golden moves.
 - **`clipboardWrite` is a package var so tests can stub it.** The real path runs
   `pbcopy`; a test that exercised it would silently replace whatever the
   developer had on their clipboard. Same rule as the `launchctl` stubs — a
