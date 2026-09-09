@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,7 +18,7 @@ import (
 const version = "0.26.0"
 
 func main() {
-	cfg, action, err := parseCLI(os.Args[1:], os.Getenv)
+	cfg, action, err := parseCLI(os.Args[1:], os.Getenv, loadPrefs(homeDir()))
 	if err != nil {
 		die(err.Error())
 	}
@@ -413,11 +414,13 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		}
 		return max(status.h-2, 8)
 	}
-	// cycleTheme is the `T` key: swap to the next bundled theme, then re-render so
+	// stepThemeTo swaps to the theme `dir` along the list. `redraw` re-renders so
 	// the whole visible transcript recolours at once (glamour body colours already
-	// in scrollback can't be recoloured in place). A rebuild failure is a no-op.
-	cycleTheme := func() string {
-		next, err := nextTheme(theme.Name)
+	// in scrollback can't be recoloured in place) — the settings panel passes
+	// false, because it's sitting on an alt-screen and does its own redraw when it
+	// closes. A rebuild failure is a no-op.
+	stepThemeTo := func(dir int, redraw bool) string {
+		next, err := stepTheme(theme.Name, dir)
 		if err != nil {
 			return "no other theme to switch to"
 		}
@@ -425,9 +428,13 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			return "cannot load theme " + next.Name
 		}
 		theme = next // so a later focus overlay (runFocus) uses the new theme too
-		rerender("⟳ theme: "+next.Name, screenful())
+		if redraw {
+			rerender("⟳ theme: "+next.Name, screenful())
+		}
 		return "theme: " + next.Name
 	}
+	// cycleTheme is the `T` key.
+	cycleTheme := func() string { return stepThemeTo(+1, true) }
 	// rollover follows the session across a Claude worktree fork. When the
 	// current file has gone quiet and a sibling in the same project dir forked
 	// from our lineage, switch to it and stream from its start (fork children are
@@ -501,6 +508,80 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// whole paragraphs. Kept separate from cfg.NoWrap so a resize while it's on
 	// doesn't re-wrap behind the user's back — every wrapWidth call ORs the two.
 	wrapOff := false
+	// settingsDirty is what the `?` panel changed while it was open, so the
+	// transcript is re-rendered once on the way out rather than under an
+	// alt-screen nobody can see. expanded forces the FULL re-render for the same
+	// reason `c` does: an uncollapsed paste is above the fold by definition.
+	settingsDirty, settingsExpanded := false, false
+	// applySetting performs one row of the `?` panel and returns its result for
+	// the footer. It runs on the render goroutine (the panel holds the tty while
+	// the keyboard is parked), which is what lets it touch the renderer's
+	// non-atomic state and the status bar directly.
+	applySetting := func(id settingID, dir int) string {
+		settingsDirty = true
+		switch id {
+		case setTheme:
+			msg := stepThemeTo(dir, false)
+			return msg + savedNote(rememberPref(home, func(p *savedPrefs) { p.Theme = theme.Name }))
+		case setTools:
+			msg := r.stepTools(dir)
+			return msg + savedNote(rememberPref(home, func(p *savedPrefs) {
+				p.ToolStyle = toolStyleKind(r.toolStyle.Load()).label()
+			}))
+		case setCollapse:
+			msg := r.toggleCollapse()
+			if r.collapse.Load() == 0 {
+				settingsExpanded = true
+			}
+			return msg + savedNote(rememberPref(home, func(p *savedPrefs) {
+				p.Collapse = strconv.Itoa(int(r.collapse.Load()))
+			}))
+		case setBodies:
+			// Not remembered: this is a mode you flip to copy something out, not
+			// a preference. Coming back tomorrow to raw mrkdwn would read as a
+			// broken renderer.
+			return r.toggleMrkdwn()
+		case setWrap:
+			wrapOff = !wrapOff
+			r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff))
+			msg := "wrap: on"
+			if wrapOff {
+				msg = "wrap: off — drag-select copies whole paragraphs"
+			}
+			return msg + savedNote(rememberPref(home, func(p *savedPrefs) { p.Wrap = boolPtr(!wrapOff) }))
+		case setStatusBar:
+			// The bar owns a scrolling region, so turning it off has to hand the
+			// region back before the bar is dropped, and turning it on has to
+			// re-run the DSR query — safe here and nowhere else, because the
+			// keyboard goroutine is parked and can't swallow the reply.
+			on := status == nil
+			if on {
+				status = newStatusBar(kbTTY)
+				on = status != nil
+			} else {
+				status.close()
+				status = nil
+			}
+			return boolLabel(on, "status bar") +
+				savedNote(rememberPref(home, func(p *savedPrefs) { p.StatusBar = boolPtr(on) }))
+		case setHooks:
+			settingsDirty = false // nothing on screen changed
+			if hookInstalledFor(home) {
+				if err := uninstallHooks(home); err != nil {
+					return "cannot remove hooks: " + err.Error()
+				}
+				return "pending-prompt hooks removed"
+			}
+			if err := installHooks(home); err != nil {
+				return "cannot install hooks: " + err.Error()
+			}
+			return "pending-prompt hooks installed"
+		case setTap:
+			settingsDirty = false
+			return toggleTapAgent(home)
+		}
+		return ""
+	}
 	statusNow := func() statusInfo {
 		return statusInfo{
 			Agent:    agent,
@@ -631,23 +712,47 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				// hint) otherwise.
 				runFocus(kbTTY, cur, home, theme)
 			case keyHelp:
-				// The state shown is sampled HERE, not at startup: t/T/c/m may have
-				// moved since the banner was printed.
-				runHelp(kbTTY, helpInfo{
-					Agent:       agent,
-					Session:     tildify(cur, home),
-					Theme:       theme.Name,
-					Backfill:    cfg.Backfill,
-					From:        backfillFrom,
-					Total:       total,
-					Tools:       toolStyleKind(r.toolStyle.Load()),
-					Collapse:    int(r.collapse.Load()),
-					Mrkdwn:      r.mrkdwn.Load(),
-					Wrap:        r.wrap,
-					TreeEnabled: treeEnabled,
+				// The state shown is sampled HERE, not at startup: t/T/c/m/w may
+				// all have moved since the banner was printed.
+				info := func() helpInfo {
+					return helpInfo{
+						Agent:       agent,
+						Session:     tildify(cur, home),
+						Theme:       theme.Name,
+						Backfill:    cfg.Backfill,
+						From:        backfillFrom,
+						Total:       total,
+						Tools:       toolStyleKind(r.toolStyle.Load()),
+						Collapse:    int(r.collapse.Load()),
+						Mrkdwn:      r.mrkdwn.Load(),
+						Wrap:        r.wrap,
+						StatusBar:   status != nil,
+						TreeEnabled: treeEnabled,
+					}
+				}
+				settingsDirty, settingsExpanded = false, false
+				runSettings(kbTTY, settingsEnv{
+					Context: settingsContext(info()),
+					Keys:    settingsKeys(treeEnabled),
+					Legend:  strings.TrimSpace(strings.TrimPrefix(bannerLegend(), "  legend:   ")),
+					Rows:    func() []settingRow { return settingsRowsFor(info(), home) },
+					Apply:   applySetting,
 				}, theme)
 			}
 			status.resume()
+			// A change made in the panel lands on the transcript only now: while
+			// the panel was up it was covered by an alt-screen, and re-rendering
+			// underneath it would have been work nobody could see. Expanding a
+			// collapsed paste reprints everything, for the reason collapseKeep
+			// gives.
+			if settingsDirty {
+				settingsDirty = false
+				keep := screenful()
+				if settingsExpanded {
+					keep = 0 // what uncollapsing reveals is above the fold
+				}
+				rerender("⟳ settings", keep)
+			}
 			status.update(statusNow(), time.Now())
 			resumeCh <- struct{}{}
 		case <-winchCh:
@@ -918,7 +1023,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		if agent == AgentClaude {
 			back = "Ctrl-X=back to tree  "
 		}
-		fmt.Fprintln(w, "  keys:     ?=help  y=copy as slack mrkdwn  m=mrkdwn view  w=wrap  t=tools  T=theme  c=collapse  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     ?=settings  y=copy as slack mrkdwn  m=mrkdwn view  w=wrap  t=tools  T=theme  c=collapse  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())

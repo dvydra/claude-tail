@@ -92,22 +92,29 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// defaultConfig applies the env-var defaults. ENTIRE_TAIL_* is canonical;
-// CLAUDE_TAIL_* is honored as a back-compat fallback where the bash version did.
-func defaultConfig(getenv func(string) string) Config {
+// defaultConfig applies the env-var defaults, with the panel's saved
+// preferences (prefs.go) slotted in below env and above the built-ins — a
+// preference is what you want when you haven't said otherwise, and an env var
+// or a flag IS saying otherwise. Pass the zero savedPrefs for "none saved".
+// ENTIRE_TAIL_* is canonical; CLAUDE_TAIL_* is honored as a back-compat
+// fallback where the bash version did.
+func defaultConfig(getenv func(string) string, prefs savedPrefs) Config {
 	c := Config{
 		Agent:            firstNonEmpty(getenv("ENTIRE_TAIL_AGENT"), "auto"),
-		Theme:            firstNonEmpty(getenv("ENTIRE_TAIL_THEME"), getenv("CLAUDE_TAIL_THEME"), "tokyo-night"),
+		Theme:            firstNonEmpty(getenv("ENTIRE_TAIL_THEME"), getenv("CLAUDE_TAIL_THEME"), prefs.Theme, "tokyo-night"),
 		Backfill:         firstNonEmpty(getenv("ENTIRE_TAIL_BACKFILL"), getenv("CLAUDE_TAIL_BACKFILL"), "all"),
 		GlowStyle:        getenv("GLOW_STYLE"),
-		ToolStyle:        firstNonEmpty(getenv("ENTIRE_TAIL_TOOL_STYLE"), getenv("CLAUDE_TAIL_TOOL_STYLE"), "dots"),
-		Collapse:         firstNonEmpty(getenv("ENTIRE_TAIL_COLLAPSE"), "5"),
+		ToolStyle:        firstNonEmpty(getenv("ENTIRE_TAIL_TOOL_STYLE"), getenv("CLAUDE_TAIL_TOOL_STYLE"), prefs.ToolStyle, "dots"),
+		Collapse:         firstNonEmpty(getenv("ENTIRE_TAIL_COLLAPSE"), prefs.Collapse, "5"),
 		Pick:             firstNonEmpty(getenv("ENTIRE_TAIL_PICK"), "auto"),
 		Days:             getenv("ENTIRE_TAIL_DAYS"),
 		MarkContinuation: envTrue(getenv("ENTIRE_TAIL_MARK_CONTINUATION")),
-		NoWrap:           envTrue(getenv("ENTIRE_TAIL_NO_WRAP")),
-		ClaudeBin:        firstNonEmpty(getenv("ENTIRE_TAIL_CLAUDE_BIN"), defaultClaudeBin),
-		ClaudeBinSet:     getenv("ENTIRE_TAIL_CLAUDE_BIN") != "",
+		// Both flags are negative and both preferences are positive, so the
+		// saved value is inverted on the way in.
+		NoWrap:       prefBool(getenv("ENTIRE_TAIL_NO_WRAP"), negBool(prefs.Wrap), false),
+		NoStatus:     prefBool("", negBool(prefs.StatusBar), false),
+		ClaudeBin:    firstNonEmpty(getenv("ENTIRE_TAIL_CLAUDE_BIN"), defaultClaudeBin),
+		ClaudeBinSet: getenv("ENTIRE_TAIL_CLAUDE_BIN") != "",
 	}
 	c.Collapse = normalizeCollapseWord(c.Collapse)
 	c.Pick = normalizePickWord(c.Pick)
@@ -156,9 +163,10 @@ func normalizePickWord(s string) string {
 	return s
 }
 
-// parseCLI applies env defaults then walks args, with flags overriding env.
-func parseCLI(args []string, getenv func(string) string) (Config, Action, error) {
-	c := defaultConfig(getenv)
+// parseCLI applies the saved preferences and env defaults, then walks args, with
+// flags overriding both.
+func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Config, Action, error) {
+	c := defaultConfig(getenv, prefs)
 
 	if len(args) > 0 && args[0] == "handover" {
 		return c, ActionHandover, nil

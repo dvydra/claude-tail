@@ -285,14 +285,39 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   on `resumeCh`, sharing the SAME tty fd (two fds on one tty race for input).
   **Gotcha:** a raw timed read reports a 0-byte timeout as `(0, io.EOF)` — treat
   that as a follow tick, not end-of-input, or the overlay exits instantly
-- `help.go` — the `?` help modal: a centered bordered box in an alt-screen
-  showing the startup banner's context plus the full key map and the dot legend.
-  Same hand-off as `focus.go` (keyboard signals `helpCh` and parks on `resumeCh`;
-  the render goroutine draws on the SAME tty fd), so there's one tty reader. The
-  state is sampled when `?` is pressed, not at startup — `t`/`T`/`c` move it, and
-  a modal that echoed the stale banner would be worse than no modal. Pure
-  `helpLines`/`drawHelp`/`visWidth`/`padVisible` split from the tty driver
-  `runHelp`, so content and box geometry are unit-tested without a tty
+- `help.go` — the alt-screen **panel chrome**: `drawPanel` (a centered bordered
+  box, title in the top border, caller-supplied hint in the bottom one) plus
+  `helpInfo`, `visWidth` and `padVisible`. It used to hold a read-only `?` card;
+  `settings.go` replaced that, and only the box survived
+- `settings.go` — the `?` **settings panel**: every changeable thing as a row
+  with its CURRENT value, then the session context / key map / dot legend under
+  dividers in the same scroll. Same hand-off as `focus.go` (keyboard signals
+  `overlayCh` and parks on `resumeCh`; the render goroutine draws on the SAME tty
+  fd), so there's one tty reader — and because the applying code runs on the
+  render goroutine it may touch the renderer's non-atomic state and the status
+  bar directly, which is the same reason the display keys only *signal*
+  `actionCh`. Split the usual three ways (as `tree.go` is): `settingsRowsFor` +
+  `updateSettings` + `settingsLines`, then the tty driver `runSettings`. Rows are
+  a **function** on `settingsEnv`, re-read after every change rather than
+  mutated, so the panel can't disagree with what it controls. Three things are
+  load-bearing: (1) the state is sampled when `?` is pressed, not at startup —
+  `t`/`T`/`c`/`w` move it; (2) `setHooks`/`setTap` are `Confirm` rows because
+  they write OUTSIDE the process (`~/.claude/settings.json`, a launchd agent), so
+  `⏎` arms and a second `⏎` acts, and any other key disarms; (3) the transcript
+  re-render happens when the panel CLOSES (`settingsDirty` in main.go) — under an
+  alt-screen nobody can see it, and an expanded paste forces the full re-render
+  for the reason `c` does
+- `prefs.go` — the **persisted settings layer** (`~/.claude/entire-tail/settings.json`),
+  written by the panel and read by `defaultConfig`. It sits BELOW flags and env
+  and above the built-in defaults: a preference is what you want when you haven't
+  said otherwise. The bools are `*bool` because "saved as off" and "never saved"
+  have to be different answers — collapse them and a preference file pins every
+  default it never meant to. `negBool` keeps that tri-state while inverting the
+  positive prefs (`wrap`, `statusBar`) onto the negative Config fields
+  (`NoWrap`, `NoStatus`). Load is best-effort and silent (a viewer must start
+  even when its own preference file is nonsense); writes are temp+rename, and
+  `rememberPref` is read-modify-write so a second entire-tail changing a
+  different setting isn't clobbered
 - `mrkdwn.go` / `yank.go` — **getting text out into Slack.** `y` copies the last
   agent turn as Slack mrkdwn (repeat within `yankExtendWindow` extends backwards
   a turn at a time); `m` renders agent bodies as mrkdwn source on screen so a
@@ -597,6 +622,12 @@ needs to change.
   the symlink with a real file and silently fork the two accounts' configs (the
   exact hazard `setup-claude-personal.sh`'s README warns about). Don't
   "modernize" that write to an atomic rename without handling the symlink.
+- **Only ONE setting the panel shows isn't remembered, and that's deliberate.**
+  `bodies` (the `m` mrkdwn view) is a mode you flip to copy something out, not a
+  preference: persisting it would mean opening tomorrow's session to raw mrkdwn,
+  which reads as a broken renderer rather than a setting you chose. The row says
+  so (`· this session only`). Everything else the panel changes goes through
+  `rememberPref`.
 - **This is the first feature that writes global config** (`~/.claude/settings.json`),
   opt-in and reversible. `shouldOfferHookInstall` gates the offer so it fires
   only on a fresh interactive Claude run with no explicit flags; `--no-hook-install`

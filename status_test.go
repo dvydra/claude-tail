@@ -24,7 +24,7 @@ func statusNowTime() time.Time { return time.Date(2026, 8, 15, 12, 0, 45, 0, tim
 
 func TestStatusLineShowsSessionAndModes(t *testing.T) {
 	got := stripANSI(statusLine(testStatusInfo(), "", 120, statusNowTime()))
-	for _, want := range []string{"claude", "claude-tail", "ac2925b3", "14 turns", "45s ago", "dots", "tokyo-night", "collapse 5", "? help"} {
+	for _, want := range []string{"claude", "claude-tail", "ac2925b3", "14 turns", "45s ago", "dots", "tokyo-night", "collapse 5", "? settings"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("status line missing %q: %q", want, got)
 		}
@@ -79,7 +79,7 @@ func TestStatusLineMessageTakesTheLine(t *testing.T) {
 	if !strings.Contains(got, "copied 1 message") {
 		t.Errorf("message missing: %q", got)
 	}
-	if strings.Contains(got, "? help") || strings.Contains(got, "tokyo-night") {
+	if strings.Contains(got, "? settings") || strings.Contains(got, "tokyo-night") {
 		t.Errorf("message line should not carry the persistent half: %q", got)
 	}
 }

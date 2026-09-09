@@ -73,7 +73,11 @@ func themeExists(name string) bool {
 // deliberately NOT threaded through: cycling switches among the bundled themes'
 // full looks, so a --style body override doesn't pin every theme to one style.
 // An unknown current name starts the cycle at the first theme.
-func nextTheme(cur string) (Theme, error) {
+func nextTheme(cur string) (Theme, error) { return stepTheme(cur, +1) }
+
+// stepTheme is nextTheme with a direction, so the settings panel's ← walks back
+// through the list instead of going all the way round.
+func stepTheme(cur string, dir int) (Theme, error) {
 	infos := listThemeInfos()
 	if len(infos) == 0 {
 		return Theme{}, fmt.Errorf("no bundled themes")
@@ -85,7 +89,14 @@ func nextTheme(cur string) (Theme, error) {
 			break
 		}
 	}
-	return loadTheme(infos[(idx+1)%len(infos)].Name, "")
+	// idx is -1 when the current theme isn't bundled (a `-s` style override):
+	// forward lands on the first, back on the last, which is what nextTheme has
+	// always done at the wrap-around.
+	n := len(infos)
+	if dir < 0 {
+		return loadTheme(infos[((idx-1)%n+n)%n].Name, "")
+	}
+	return loadTheme(infos[(idx+1)%n].Name, "")
 }
 
 // unescapeANSI turns the backslash escapes used in the bash $'...' palette
