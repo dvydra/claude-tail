@@ -147,13 +147,18 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `parsePsEnv`, `scrapeSessionIDArg`, `siblingPIDs`, `newestClear`) are
   unit-tested; the `ps`/`lsof` shell-outs are the thin IO layer
 - `nearby.go` — **the tree's half of the same trick, for when adopt declines.**
-  `adopt.go` bails on purpose in three cases (a tab holding two claudes, a claude
-  one tab over, and `Ctrl-X`), and each of them dropped the user into a list with
-  no indication which row was the agent three feet away. `nearbySessions` runs
-  the same placement WITHOUT the exactly-one rule: every running claude is
-  located by `ITERM_SESSION_ID` as sharing our tab (`paneTab`), our window
-  (`paneWindow`, via `itermWindow`) or neither, and resolved with adopt's own
-  `resolveClaudeSession`. `applyNearby` is an overlay in the mould of
+  `adopt.go` bails on purpose in two cases (a tab holding two claudes, and
+  `Ctrl-X`), and both dropped the user into a list with no indication which row
+  was the agent three feet away. `nearbySessions` runs the same placement
+  WITHOUT the exactly-one rule: every running claude is located by
+  `ITERM_SESSION_ID` as sharing our tab (`paneTab`) or not, and resolved with
+  adopt's own `resolveClaudeSession`. **The tab is the whole horizon.** #65 also
+  ranked a claude in another tab of the same window (`paneWindow`, a dim mark),
+  and that made a fresh terminal in a folder open with the cursor on whatever
+  was running next door, so `⏎` resumed THAT instead of starting a session
+  here. With nothing in this tab the cursor falls to the current folder's
+  header, where `⏎` is a new session in it (`TestOtherTabLeavesCursorOnCurrentFolder`).
+  Don't re-add a window tier. `applyNearby` is an overlay in the mould of
   `applyTapActivity` — **strictly additive**, because not finding a process near
   you is not evidence about a session — and it promotes a nearby session (and its
   folder) to Live, or the group holding the agent you're using would sort cold.

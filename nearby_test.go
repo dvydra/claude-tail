@@ -5,25 +5,12 @@ import (
 	"testing"
 )
 
-func TestItermWindow(t *testing.T) {
-	cases := map[string]string{
-		"w0t1p0:3894364C-898B-41C4-8C51-4174812F38F2": "w0",
-		"w2t10p3:ABC": "w2",
-		"w0t0p0":      "w0",
-		"":            "",
-		"garbage":     "",
-	}
-	for in, want := range cases {
-		if got := itermWindow(in); got != want {
-			t.Errorf("itermWindow(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-// A pane of our tab beats a pane elsewhere in the window, which beats anything
-// outside it — and the order matters, because the tree opens on the highest.
+// Only a pane of OUR tab counts. A claude one tab over used to rank as
+// "this window" and pull the cursor onto its session; a fresh terminal in a
+// folder then opened pointing at whatever was running next door instead of at
+// the folder it was opened in.
 func TestProximityOf(t *testing.T) {
-	const ownTab, ownWin = "w0t1", "w0"
+	const ownTab = "w0t1"
 	cases := []struct {
 		name string
 		id   string
@@ -31,19 +18,19 @@ func TestProximityOf(t *testing.T) {
 	}{
 		{"same tab, other pane", "w0t1p2:X", paneTab},
 		{"same tab, same pane", "w0t1p0:X", paneTab},
-		{"other tab, same window", "w0t3p0:X", paneWindow},
+		{"other tab, same window", "w0t3p0:X", paneFar},
 		{"other window", "w1t1p0:X", paneFar},
 		{"no iterm id", "", paneFar},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := proximityOf(c.id, ownTab, ownWin); got != c.want {
+			if got := proximityOf(c.id, ownTab); got != c.want {
 				t.Errorf("proximityOf(%q) = %d, want %d", c.id, got, c.want)
 			}
 		})
 	}
 	// Off iTerm entirely there is nothing to be near.
-	if got := proximityOf("w0t1p0:X", "", ""); got != paneFar {
+	if got := proximityOf("w0t1p0:X", ""); got != paneFar {
 		t.Errorf("with no own id, got %d, want paneFar", got)
 	}
 }
@@ -51,8 +38,8 @@ func TestProximityOf(t *testing.T) {
 func nearbyTestTree() sessionTree {
 	return sessionTree{
 		Folders: []treeFolder{
-			{Cwd: "o/cold", Sessions: []treeSession{{ID: "aaa"}, {ID: "bbb"}}},
-			{Cwd: "o/warm", Sessions: []treeSession{{ID: "ccc"}, {ID: "ddd"}}},
+			{Cwd: "o/cold", Dir: "/src/cold", Sessions: []treeSession{{ID: "aaa"}, {ID: "bbb"}}},
+			{Cwd: "o/warm", Dir: "/src/warm", Sessions: []treeSession{{ID: "ccc"}, {ID: "ddd"}}},
 		},
 	}
 }
@@ -89,11 +76,9 @@ func TestApplyNearbyIsAdditive(t *testing.T) {
 	}
 }
 
-// The tab wins over the window: two agents nearby, and the cursor goes to the
-// one in the pane next door.
-func TestNearbyCursorPrefersTheTab(t *testing.T) {
+func TestNearbyCursor(t *testing.T) {
 	tree := nearbyTestTree()
-	applyNearby(&tree, map[string]paneProximity{"bbb": paneWindow, "ccc": paneTab})
+	applyNearby(&tree, map[string]paneProximity{"ccc": paneTab})
 	fi, si, prox := nearbyCursor(tree)
 	if prox != paneTab || fi != 1 || si != 0 {
 		t.Errorf("nearbyCursor = (%d, %d, %d), want (1, 0, paneTab)", fi, si, prox)
@@ -115,7 +100,6 @@ func TestNearbyMark(t *testing.T) {
 	}{
 		{paneFar, "  "},
 		{paneTab, "◀ "},
-		{paneWindow, "◀ "},
 	} {
 		got := nearbyMark(c.prox, restore)
 		if plain := stripANSI(got); plain != c.want {
@@ -125,19 +109,10 @@ func TestNearbyMark(t *testing.T) {
 			t.Errorf("nearbyMark(%d) = %q, did not restore the row colour", c.prox, got)
 		}
 	}
-	// The two live marks are visibly the same glyph in different colours — the
-	// confident one and the muted one, as the account marker does.
-	tab, win := nearbyMark(paneTab, restore), nearbyMark(paneWindow, restore)
-	if tab == win {
-		t.Error("this-tab and this-window render identically")
-	}
-	if stripANSI(tab) != stripANSI(win) {
-		t.Error("the two marks should differ only in colour")
-	}
 }
 
-// The whole point: the tree opens on the agent one pane away, not on whatever
-// the current directory happened to be.
+// A claude in THIS tab is the one you were just watching (two claudes in the
+// tab, or Ctrl-X out of its tail), so the tree opens on it.
 func TestInitialCursorPrefersTheNearbySession(t *testing.T) {
 	tree := nearbyTestTree()
 	tree.CurrentGroup = "o/cold"
@@ -166,6 +141,36 @@ func TestInitialCursorPrefersTheNearbySession(t *testing.T) {
 	}
 }
 
+// A fresh terminal in a folder, with a claude running one tab over: that claude
+// is not placed, so the cursor opens on THIS folder's header — and ⏎ there is a
+// new session in this folder. One key, no hunting.
+func TestOtherTabLeavesCursorOnCurrentFolder(t *testing.T) {
+	const ownTab = "w0t1"
+	near := map[string]paneProximity{}
+	if p := proximityOf("w0t3p0:X", ownTab); p > paneFar {
+		near["ddd"] = p
+	}
+	tree := nearbyTestTree()
+	tree.CurrentGroup = "o/cold"
+	tree.Folders[0].Expanded = true
+	tree.Folders[1].Expanded = true
+	applyNearby(&tree, near)
+	if tree.Folders[1].Sessions[1].Nearby != paneFar {
+		t.Fatalf("a claude in another tab was marked nearby: %+v", tree.Folders[1].Sessions[1])
+	}
+
+	ui := treeUI{Tree: tree}
+	ui.Rows = flattenRows(ui.Tree, "")
+	ui.Cursor = initialCursor(ui)
+	if r := ui.Rows[ui.Cursor]; r.Session != -1 || tree.Folders[r.Folder].Cwd != "o/cold" {
+		t.Fatalf("cursor opened on %+v, want the o/cold folder header", r)
+	}
+	ui = updateTree(ui, kEnter, 0)
+	if !ui.NewWorkspace || ui.NewWorkspaceDir != "/src/cold" {
+		t.Errorf("⏎ on the current folder: NewWorkspace=%v dir=%q, want a new session in /src/cold", ui.NewWorkspace, ui.NewWorkspaceDir)
+	}
+}
+
 // The footer only explains the glyph when one is on screen: a legend for a
 // marker that isn't there is noise on every other run.
 func TestFooterExplainsTheMarkOnlyWhenShown(t *testing.T) {
@@ -175,20 +180,12 @@ func TestFooterExplainsTheMarkOnlyWhenShown(t *testing.T) {
 	}
 	tree := nearbyTestTree()
 	applyNearby(&tree, map[string]paneProximity{"ccc": paneTab})
-	if got := composeFooter(treeUI{Tree: tree}); !strings.Contains(got, "◀ runs in this tab") {
+	got := composeFooter(treeUI{Tree: tree})
+	if !strings.Contains(got, "◀ runs in this tab") {
 		t.Errorf("footer = %q, want it to name the marker", got)
 	}
-	win := nearbyTestTree()
-	applyNearby(&win, map[string]paneProximity{"ccc": paneWindow})
-	if got := composeFooter(treeUI{Tree: win}); !strings.Contains(got, "◀ runs in this window") {
-		t.Errorf("footer = %q, want the window wording", got)
-	}
-	// With both on screen the footer has to name both, or the dim mark beside a
-	// session in the next tab sits under a line calling it this one.
-	both := nearbyTestTree()
-	applyNearby(&both, map[string]paneProximity{"ccc": paneTab, "bbb": paneWindow})
-	if got := composeFooter(treeUI{Tree: both}); !strings.Contains(got, "dim: this window") {
-		t.Errorf("footer = %q, want it to explain both marks", got)
+	if strings.Contains(got, "window") {
+		t.Errorf("footer = %q, still mentions the window", got)
 	}
 }
 
