@@ -68,16 +68,29 @@ func TestTableBlocksDeclinesNarrowTables(t *testing.T) {
 	}
 }
 
-// …but a long cell blows the alignment on its own, however few columns there
-// are: one wide column pushes every other one off the pane.
-func TestTableBlocksSwitchesOnALongCell(t *testing.T) {
-	long := "| flag | meaning |\n|---|---|\n| --mark-continuation | write a forward pointer into the stopped file |\n| --no-wrap | leave it |"
+// …and two columns are enough to blow the budget on their own, if one of them
+// is long. Padding can't rescue a table that doesn't fit.
+func TestTableBlocksSwitchesOnAWideTwoColumnTable(t *testing.T) {
+	long := "| flag | meaning |\n|---|---|\n" +
+		"| --mark-continuation | write a forward-pointer record into the file the session stopped in |\n" +
+		"| --no-wrap | leave it |"
 	got := tableBlocks(strings.Split(long, "\n"))
 	if got == nil {
-		t.Fatal("a table with a 46-character cell stayed a table")
+		t.Fatal("a 93-column table stayed a table")
 	}
 	if joined := strings.Join(got, "\n"); !strings.Contains(joined, "*--mark-continuation*") {
 		t.Errorf("first column should be the heading:\n%s", joined)
+	}
+}
+
+// A table that fits, however long a single cell is, stays a table: the padded
+// form is compact and still reads as rows.
+func TestTableBlocksKeepsATableThatFits(t *testing.T) {
+	in := "| Agent | Discovery | Notes |\n|---|---|---|\n" +
+		"| Claude Code | ~/.claude/projects/*.jsonl | default |\n" +
+		"| Codex | ~/.codex/sessions/ | cwd from session_meta |"
+	if got := tableBlocks(strings.Split(in, "\n")); got != nil {
+		t.Errorf("a 70-column table was collapsed:\n%s", strings.Join(got, "\n"))
 	}
 }
 
@@ -161,11 +174,11 @@ func TestTableBlocksSkipsEmptyCells(t *testing.T) {
 // Cells are markdown, and go through the same inline conversion as the rest of
 // the body — a bolded cell must not arrive in Slack still wearing `**`.
 func TestTableBlocksConvertsCellMarkdown(t *testing.T) {
-	in := `| Service | Env | Region | Cluster | Replicas | CPU req | Status |
-|---|---|---|---|---|---|---|
-| **a** | prod | us-east-1 | ` + "`eks-prod-use1`" + ` | 6 | 500m | healthy |
-| b | prod | eu-west-1 | ` + "`eks-prod-euw1`" + ` | 4 | 250m | healthy |
-| c | stg | us-east-1 | ` + "`eks-stg-use1`" + ` | 2 | 100m | degraded |`
+	in := `| Service | Env | Region | Cluster | Replicas | CPU req | Mem req | Status |
+|---|---|---|---|---|---|---|---|
+| **a** | prod | us-east-1 | ` + "`eks-prod-use1`" + ` | 6 | 500m | 1Gi | healthy |
+| b | prod | eu-west-1 | ` + "`eks-prod-euw1`" + ` | 4 | 250m | 512Mi | healthy |
+| c | stg | us-east-1 | ` + "`eks-stg-use1`" + ` | 2 | 100m | 2Gi | degraded |`
 	got := strings.Join(tableBlocks(strings.Split(in, "\n")), "\n")
 	if strings.Contains(got, "**a**") {
 		t.Errorf("cell markdown not converted:\n%s", got)
@@ -242,6 +255,114 @@ func TestToSlackMrkdwnCollapsesWideTables(t *testing.T) {
 	}
 	if strings.Contains(out, "|--") {
 		t.Errorf("the delimiter row leaked into the output:\n%s", out)
+	}
+}
+
+// The fence is only worth adding if the columns actually line up inside it, and
+// a source table almost never arrives padded — an agent writes `|---|---|` with
+// cells of whatever width the content happened to be.
+func TestFormatMDTablePadsColumns(t *testing.T) {
+	in := "| Agent | Discovery | Notes |\n|---|---|---|\n| Claude Code | projects/*.jsonl | default |\n| agy | brain logs | id lookup |"
+	got := strings.Join(formatMDTable(strings.Split(in, "\n")), "\n")
+	want := "| Agent       | Discovery        | Notes     |\n" +
+		"|-------------|------------------|-----------|\n" +
+		"| Claude Code | projects/*.jsonl | default   |\n" +
+		"| agy         | brain logs       | id lookup |"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+	// Every row is the same width, which is the only thing the reader sees.
+	var widths []int
+	for _, l := range strings.Split(got, "\n") {
+		widths = append(widths, cellWidth(l))
+	}
+	for i, w := range widths {
+		if w != widths[0] {
+			t.Errorf("row %d is %d columns, want %d:\n%s", i, w, widths[0], got)
+		}
+	}
+}
+
+// Already-padded input comes back unchanged — the pass is idempotent, so a table
+// that was fine doesn't churn.
+func TestFormatMDTableIsIdempotent(t *testing.T) {
+	in := "| stage | before |\n|-------|--------|\n| plan  | 40s    |"
+	once := formatMDTable(strings.Split(in, "\n"))
+	if strings.Join(once, "\n") != in {
+		t.Errorf("an aligned table was rewritten:\n%s", strings.Join(once, "\n"))
+	}
+	if twice := formatMDTable(once); strings.Join(twice, "\n") != strings.Join(once, "\n") {
+		t.Errorf("not idempotent:\n%s", strings.Join(twice, "\n"))
+	}
+}
+
+// Alignment markers are the author's instruction about the column, so they
+// survive — and they decide which side the padding goes on.
+func TestFormatMDTableKeepsAlignment(t *testing.T) {
+	in := "| stage | ms | note |\n|:--|--:|:-:|\n| plan | 40 | ok |\n| apply | 1200 | slow |"
+	got := strings.Join(formatMDTable(strings.Split(in, "\n")), "\n")
+	want := "| stage |   ms | note |\n" +
+		"|:------|-----:|:----:|\n" +
+		"| plan  |   40 |  ok  |\n" +
+		"| apply | 1200 | slow |"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Padding is measured in display columns, not runes: a CJK glyph or an emoji
+// takes two cells in a monospaced box, and counting it as one puts every column
+// after it out by one.
+func TestFormatMDTableMeasuresDisplayWidth(t *testing.T) {
+	in := "| name | status |\n|---|---|\n| 日本語テスト | ok |\n| ascii | ✅ done |"
+	got := formatMDTable(strings.Split(in, "\n"))
+	first := cellWidth(got[0])
+	for i, l := range got {
+		if w := cellWidth(l); w != first {
+			t.Errorf("row %d is %d columns, want %d:\n%s", i, w, first, strings.Join(got, "\n"))
+		}
+	}
+}
+
+// Content is never touched — only the whitespace between cells. A command in a
+// cell still has to run when it's pasted out of the code box.
+func TestFormatMDTableDoesNotRewriteCells(t *testing.T) {
+	in := "| what | cmd |\n|---|---|\n| build | `go build -o entire-tail .` |\n| test | **run** it |"
+	got := strings.Join(formatMDTable(strings.Split(in, "\n")), "\n")
+	for _, want := range []string{"`go build -o entire-tail .`", "**run** it"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("cell content was rewritten, %q missing:\n%s", want, got)
+		}
+	}
+}
+
+// A row with MORE cells than the header would lose the extras. GFM says to
+// ignore them; a converter on the way to someone's clipboard does not get to.
+func TestTableWithExtraCellsIsPassedThroughUntouched(t *testing.T) {
+	in := "| a | b |\n|---|---|\n| 1 | 2 | 3 |"
+	lines := strings.Split(in, "\n")
+	if got := formatMDTable(lines); got != nil {
+		t.Errorf("a row with extra cells was reformatted:\n%s", strings.Join(got, "\n"))
+	}
+	if got := tableBlocks(lines); got != nil {
+		t.Errorf("a row with extra cells was collapsed:\n%s", strings.Join(got, "\n"))
+	}
+	if got := toSlackMrkdwn(in); !strings.Contains(got, "| 1 | 2 | 3 |") {
+		t.Errorf("the extra cell did not survive:\n%s", got)
+	}
+}
+
+// End to end: a narrow table comes out fenced AND padded.
+func TestToSlackMrkdwnPadsFencedTables(t *testing.T) {
+	got := toSlackMrkdwn("| Agent | Discovery |\n|---|---|\n| Claude Code | projects/*.jsonl |\n| agy | brain logs |")
+	want := "```\n" +
+		"| Agent       | Discovery        |\n" +
+		"|-------------|------------------|\n" +
+		"| Claude Code | projects/*.jsonl |\n" +
+		"| agy         | brain logs       |\n" +
+		"```"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
 }
 

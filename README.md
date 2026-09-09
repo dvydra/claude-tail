@@ -256,12 +256,27 @@ box — not the Web API. So no HTML escaping (`&amp;` would paste literally) and
 never `<url|text>` (that form is only parsed for API-posted messages, so it
 would paste literally too).
 
-### Wide tables collapse into blocks
+### Tables get padded, and wide ones collapse into blocks
 
-Slack renders no tables at all. A narrow one still reads fine wrapped in a code
-fence — the box is monospaced, so the columns line up — and that's what it gets.
-Past **seven columns, or any cell over twenty characters**, an aligned table
-stops fitting a message pane, so it's turned inside out into one block per row:
+Slack renders no tables at all, so one that fits goes into a code fence — the box
+is monospaced, so the columns line up — and the cells are **re-padded on the way
+in**, because a source table almost never arrives aligned:
+
+```
+| Agent       | Discovery        | Notes     |
+|-------------|------------------|-----------|
+| Claude Code | projects/*.jsonl | default   |
+| agy         | brain logs       | id lookup |
+```
+
+Alignment markers (`:--`, `:-:`, `--:`) are kept and decide which side the
+padding goes on. Widths are measured in display columns, so a CJK glyph or an
+emoji — two cells wide in a monospaced box — doesn't knock every column after it
+out by one. Only the whitespace *between* cells is touched: a command in a cell
+still runs when you paste it back out.
+
+Past **80 columns laid out**, an aligned table stops fitting a message pane, so
+it's turned inside out into one block per row instead:
 
 ```
 *api-gateway* · prod · us-east-1 · healthy
@@ -280,8 +295,10 @@ stops fitting a message pane, so it's turned inside out into one block per row:
   and dropped from them: `_Same for every row: Env prod · Status healthy_`.
 
 A table inside a code fence is someone's output, not a table to reformat, and is
-passed through untouched. This is a **mrkdwn-only** transform — the terminal
-rendering keeps its box-drawn table, which is what a monospaced pane is for.
+passed through untouched — as is a table with more cells in a row than in its
+header, since reformatting that one would mean dropping the extras. This is a
+**mrkdwn-only** transform: the terminal rendering keeps its box-drawn table,
+which is what a monospaced pane is for.
 
 `m` is the same conversion applied to the screen: agent text renders as mrkdwn
 source instead of glamour, so whatever you drag-select with the mouse already

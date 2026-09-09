@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // mdtable.go collapses a WIDE markdown table into sectioned blocks for the Slack
@@ -19,8 +21,8 @@ import (
 // which is what a person does when they read a wide table aloud:
 //
 //	*api-gateway* · prod · us-east-1 · healthy
-//	• Cluster: eks-prod-use1 · Replicas: 6
-//	• CPU req: 500m · Mem req: 1Gi · Image tag: v2.14.3
+//	• Cluster: eks-prod-use1 · Replicas: 6 · CPU req: 500m
+//	• Mem req: 1Gi · Image tag: v2.14.3 · Owner: platform
 //
 // The rules, and how faithfully each one is mechanised:
 //
@@ -38,15 +40,22 @@ import (
 //  5. A column with the same value in every row is stated once, above the
 //     blocks, and dropped from them. Exact.
 //
-// The threshold is the same one: about seven columns, or sooner if any cell runs
-// past twenty characters. Under it a fenced table is genuinely nicer — compact,
-// aligned, and still a table — so narrow tables are left alone.
+// The threshold is the laid-out width (formatMDTable below pads the cells, so
+// it's a real measurement, not a guess): a table that still fits a message pane
+// stays a table, because a fenced one is genuinely nicer there — compact,
+// aligned, and still a table.
 
 const (
-	// tableWideCols / tableWideCell are the switch: at this many columns, or with
-	// a cell this long, an aligned table stops fitting a Slack message pane.
-	tableWideCols = 7
-	tableWideCell = 20
+	// tableMaxWidth is the switch: a padded table this wide or narrower still
+	// fits a Slack message pane and stays a table; past it, blocks.
+	//
+	// Claude's own rule of thumb is "about seven columns, or sooner if a cell
+	// runs past twenty characters" — but that's a proxy for width, used by
+	// something that hasn't laid the table out yet. formatMDTable measures the
+	// real thing, so this measures the real thing too. It's why a three-column
+	// table with a long path in it (70 columns padded) stays a table, where the
+	// proxy would have exploded it into nine lines.
+	tableMaxWidth = 80
 	// tableHeadExtras caps how many columns join the heading line; past three it
 	// stops being a heading and becomes another row of data.
 	tableHeadExtras = 3
@@ -60,6 +69,124 @@ const (
 
 // mdDelimCellRe matches one cell of a table's delimiter row (`---`, `:--`, `-:`).
 var mdDelimCellRe = regexp.MustCompile(`^:?-+:?$`)
+
+// mdAlign is a column's alignment, from the `:` markers on its delimiter cell.
+type mdAlign int
+
+const (
+	alignNone mdAlign = iota
+	alignLeft
+	alignCenter
+	alignRight
+)
+
+// formatMDTable re-pads a table's cells so its columns line up, or returns nil
+// if it can't parse the table (in which case the caller passes it through
+// untouched).
+//
+// A narrow table goes to Slack inside a code fence BECAUSE the box is
+// monospaced and the columns will line up — but that only works if they're
+// aligned in the first place, and they usually aren't: an agent emits
+// `|---|---|---|` with cells of whatever width the content happened to be, which
+// looks like a table on a rendered page and like ragged pipe soup in a code box.
+// So the fence we add comes with the padding that makes it worth adding.
+//
+// Only the whitespace BETWEEN cells is touched. Cell content is copied
+// byte-for-byte, so a command in a cell still runs when it's pasted out; and
+// this is a fence entire-tail chose to open, not one the author wrote, so
+// there's no author's formatting to preserve.
+func formatMDTable(lines []string) []string {
+	head, rows, ok := parseMDTable(lines)
+	if !ok {
+		return nil
+	}
+	aligns := tableAligns(lines[1], len(head))
+	widths := tableColumnWidths(head, rows)
+	out := []string{renderTableRow(head, widths, aligns), renderTableDelim(widths, aligns)}
+	for _, row := range rows {
+		out = append(out, renderTableRow(row, widths, aligns))
+	}
+	return out
+}
+
+// renderTableRow lays one row out at the measured column widths.
+func renderTableRow(cells []string, widths []int, aligns []mdAlign) string {
+	var b strings.Builder
+	b.WriteString("|")
+	for c, cell := range cells {
+		b.WriteString(" ")
+		b.WriteString(padCell(cell, widths[c], aligns[c]))
+		b.WriteString(" |")
+	}
+	return b.String()
+}
+
+// renderTableDelim draws the rule under the header, keeping whatever alignment
+// markers the original carried. The dashes fill the whole cell including the
+// padding columns, so the rule reads as one unbroken line.
+func renderTableDelim(widths []int, aligns []mdAlign) string {
+	var b strings.Builder
+	b.WriteString("|")
+	for c, w := range widths {
+		switch aligns[c] {
+		case alignLeft:
+			b.WriteString(":" + strings.Repeat("-", w+1))
+		case alignRight:
+			b.WriteString(strings.Repeat("-", w+1) + ":")
+		case alignCenter:
+			b.WriteString(":" + strings.Repeat("-", w) + ":")
+		default:
+			b.WriteString(strings.Repeat("-", w+2))
+		}
+		b.WriteString("|")
+	}
+	return b.String()
+}
+
+// padCell pads a cell out to w display columns. A cell already wider than w
+// (which only happens if the caller measured a different set) is left alone
+// rather than truncated — losing content to make a column fit is never the
+// trade.
+func padCell(s string, w int, align mdAlign) string {
+	pad := w - cellWidth(s)
+	if pad <= 0 {
+		return s
+	}
+	switch align {
+	case alignRight:
+		return strings.Repeat(" ", pad) + s
+	case alignCenter:
+		left := pad / 2
+		return strings.Repeat(" ", left) + s + strings.Repeat(" ", pad-left)
+	default:
+		return s + strings.Repeat(" ", pad)
+	}
+}
+
+// tableAligns reads the `:` markers off a delimiter row. A row that doesn't
+// parse yields all-default, which is what an unmarked table wants anyway.
+func tableAligns(delim string, cols int) []mdAlign {
+	out := make([]mdAlign, cols)
+	cells := splitTableRow(delim)
+	for c := 0; c < cols && c < len(cells); c++ {
+		l := strings.HasPrefix(cells[c], ":")
+		r := strings.HasSuffix(cells[c], ":")
+		switch {
+		case l && r:
+			out[c] = alignCenter
+		case r:
+			out[c] = alignRight
+		case l:
+			out[c] = alignLeft
+		}
+	}
+	return out
+}
+
+// cellWidth is a cell's width in terminal columns. Rune count isn't enough here:
+// the whole point of padding is that the columns line up in Slack's monospaced
+// code box, and a CJK glyph or an emoji occupies two cells there.
+func cellWidth(s string) int { return runewidth.StringWidth(s) }
 
 // tableBlocks turns a markdown table into sectioned blocks, or returns nil to
 // leave it as a table — which the caller then fences.
@@ -130,26 +257,35 @@ func tableBlocks(lines []string) []string {
 	return out
 }
 
-// tableIsWide reports whether a table has outgrown an aligned code box: too many
-// columns to fit a message pane, or a cell long enough to stretch one column
-// past everything beside it.
+// tableIsWide reports whether a table, laid out as formatMDTable would lay it
+// out, has outgrown a message pane.
 func tableIsWide(head []string, rows [][]string) bool {
-	if len(head) >= tableWideCols {
-		return true
-	}
-	for _, cell := range head {
-		if len([]rune(cell)) > tableWideCell {
-			return true
-		}
+	return tableRenderedWidth(tableColumnWidths(head, rows)) > tableMaxWidth
+}
+
+// tableColumnWidths is each column's display width: the widest cell in it, and
+// never zero — an all-empty column still needs a rule under its header.
+func tableColumnWidths(head []string, rows [][]string) []int {
+	widths := make([]int, len(head))
+	for c, cell := range head {
+		widths[c] = max(1, cellWidth(cell))
 	}
 	for _, row := range rows {
-		for _, cell := range row {
-			if len([]rune(cell)) > tableWideCell {
-				return true
-			}
+		for c, cell := range row {
+			widths[c] = max(widths[c], cellWidth(cell))
 		}
 	}
-	return false
+	return widths
+}
+
+// tableRenderedWidth is how many columns the laid-out table occupies: the cells,
+// plus `| ` … ` | ` … ` |` around and between them.
+func tableRenderedWidth(widths []int) int {
+	total := 3*len(widths) + 1 // "| " before each cell, and a closing "|"
+	for _, w := range widths {
+		total += w
+	}
+	return total
 }
 
 // headingExtras picks the columns that join the heading line unlabelled: the
@@ -255,6 +391,13 @@ func parseMDTable(lines []string) (head []string, rows [][]string, ok bool) {
 	}
 	for _, l := range lines[2:] {
 		cells := splitTableRow(l)
+		if len(cells) > len(head) {
+			// GFM says to ignore cells past the header's width, but both callers
+			// here REWRITE the table, and quietly dropping someone's data on the
+			// way to their clipboard is not a thing to do. Bail, and the caller
+			// passes the rows through exactly as they were.
+			return nil, nil, false
+		}
 		row := make([]string, len(head))
 		copy(row, cells)
 		rows = append(rows, row)

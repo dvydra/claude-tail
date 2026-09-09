@@ -651,12 +651,28 @@ needs to change.
   **Every ``` gets its own line** — Slack renders a one-line ```` ```code````
   ```` as literal backticks, so a one-line fence is split into three
   (`TestToSlackMrkdwnSplitsOneLineFence`; an earlier version dropped the body).
-- **A WIDE table collapses into blocks; a narrow one stays a fenced table**
+- **A table that FITS is padded and fenced; a wider one collapses into blocks**
   (`mdtable.go`). Slack renders no tables, so the fallback is a code fence —
-  monospaced, so the columns line up — and while it fits a message pane that IS
-  the better answer. Past `tableWideCols` (7) columns or a cell over
-  `tableWideCell` (20) runes it stops fitting, and `tableBlocks` transposes the
-  table into one block per row instead. Three of the five rules are exact (first
+  monospaced, so the columns line up — but that only pays off if they're aligned,
+  and a source table almost never is (`|---|---|` with cells of whatever width
+  the content happened to be). So `formatMDTable` re-pads the cells, keeping the
+  `:` alignment markers and measuring in DISPLAY columns (`runewidth`, not rune
+  count — a CJK glyph or an emoji is two cells in that box and counting it as one
+  puts everything after it out by one). Only the whitespace BETWEEN cells is
+  touched; cell content is copied byte-for-byte, so a command in a cell still
+  runs when it's pasted out, and the fence is one entire-tail opened rather than
+  one the author wrote, so there's no authored formatting to preserve.
+  Because the layout is now measured rather than guessed, the switch to blocks is
+  the laid-out width (`tableMaxWidth`, 80) rather than Claude's own "seven
+  columns or a twenty-character cell" — that rule of thumb is a proxy for width
+  used by something that hasn't laid the table out yet, and it explodes a
+  three-column table with a long path in it that pads to 70 columns and reads
+  fine. Past the budget `tableBlocks` transposes the table into one block per row.
+  A row with MORE cells than the header makes BOTH decline (`parseMDTable`
+  returns not-ok) and the rows go through exactly as they came: GFM says to
+  ignore the extras, but these two paths rewrite the table on its way to
+  someone's clipboard, and silently dropping their data there is not the same
+  thing as not rendering it. Three of the five rules are exact (first
   column is the heading; column names restated inline in the body; a column
   constant across every row hoisted above the blocks and dropped from them) and
   two are approximations of a judgement a converter can't make. **Rule 2** ("the
