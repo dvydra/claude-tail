@@ -306,7 +306,8 @@ func TestStepTools(t *testing.T) {
 
 // The theme row carries the theme's colour strip, so ←→ previews a palette
 // before the transcript re-renders in it. Only that row — the others have no
-// colours to show.
+// colours to show. The strip comes BEFORE the name: it's fixed-width and the
+// name isn't, so it doesn't jump sideways as the cycle moves.
 func TestSettingsThemeRowShowsSwatch(t *testing.T) {
 	info := testHelpInfo()
 	info.ThemeSwatch = "\x1b[38;2;1;2;3m██" + reset
@@ -323,8 +324,8 @@ func TestSettingsThemeRowShowsSwatch(t *testing.T) {
 		}
 	}
 	theme := lines[rowLine[0]]
-	if !strings.Contains(theme, "tokyo-night"+reset+"  "+info.ThemeSwatch) {
-		t.Errorf("swatch should follow the name after two spaces: %q", theme)
+	if !strings.Contains(theme, info.ThemeSwatch+"  tokyo-night") {
+		t.Errorf("swatch should precede the name by two spaces: %q", theme)
 	}
 	if w := visWidth(theme); w != visWidth(strings.Replace(theme, info.ThemeSwatch, "", 1))+2 {
 		t.Errorf("swatch should add 2 visible cells, line = %q", theme)

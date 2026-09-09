@@ -47,7 +47,7 @@ type settingRow struct {
 	ID    settingID
 	Label string
 	Value string
-	// Swatch is a pre-coloured strip drawn after the value, for a row whose
+	// Swatch is a pre-coloured strip drawn before the value, for a row whose
 	// value is a look rather than a word (the theme). Carries its own ANSI, so
 	// it isn't put through the value colour.
 	Swatch string
@@ -114,10 +114,13 @@ func settingsLines(env settingsEnv, rows []settingRow, cursor int, theme Theme) 
 		}
 		// Pad on the visible width: the label may be carrying a bold escape.
 		pad := strings.Repeat(" ", max(settingsLabelW-visWidth(label), 1))
-		line := marker + label + pad + val(row.Value)
+		line := marker + label + pad
+		// The swatch goes BEFORE the value: it's a fixed width and the name isn't,
+		// so this way it stays put as ←→ cycles through names of different lengths.
 		if row.Swatch != "" {
-			line += "  " + row.Swatch
+			line += row.Swatch + "  "
 		}
+		line += val(row.Value)
 		if row.Note != "" {
 			line += dim("  · " + row.Note)
 		}
