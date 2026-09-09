@@ -13,7 +13,7 @@ func envFunc(m map[string]string) func(string) string {
 }
 
 func TestParseCLIDefaults(t *testing.T) {
-	c, action, err := parseCLI(nil, envFunc(nil))
+	c, action, err := parseCLI(nil, envFunc(nil), savedPrefs{})
 	if err != nil || action != ActionRun {
 		t.Fatalf("err=%v action=%v", err, action)
 	}
@@ -31,7 +31,7 @@ func TestParseCLIEnvDefaults(t *testing.T) {
 		"ENTIRE_TAIL_PICK":     "yes",     // → "always"
 		"GLOW_STYLE":           "/x.json",
 	}
-	c, _, _ := parseCLI(nil, envFunc(env))
+	c, _, _ := parseCLI(nil, envFunc(env), savedPrefs{})
 	if c.Agent != "codex" || c.Theme != "dracula" || c.Collapse != "0" ||
 		c.Pick != "always" || c.GlowStyle != "/x.json" {
 		t.Errorf("env not applied: %+v", c)
@@ -41,7 +41,7 @@ func TestParseCLIEnvDefaults(t *testing.T) {
 func TestParseCLIEnvPrecedence(t *testing.T) {
 	// ENTIRE_TAIL_THEME wins over CLAUDE_TAIL_THEME.
 	env := map[string]string{"ENTIRE_TAIL_THEME": "nord", "CLAUDE_TAIL_THEME": "dracula"}
-	c, _, _ := parseCLI(nil, envFunc(env))
+	c, _, _ := parseCLI(nil, envFunc(env), savedPrefs{})
 	if c.Theme != "nord" {
 		t.Errorf("got %q", c.Theme)
 	}
@@ -49,7 +49,7 @@ func TestParseCLIEnvPrecedence(t *testing.T) {
 
 func TestParseCLIFlagsOverrideEnv(t *testing.T) {
 	env := map[string]string{"ENTIRE_TAIL_AGENT": "codex"}
-	c, _, err := parseCLI([]string{"--agent", "claude", "-t", "nord", "--backfill", "50"}, envFunc(env))
+	c, _, err := parseCLI([]string{"--agent", "claude", "-t", "nord", "--backfill", "50"}, envFunc(env), savedPrefs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestParseCLIFlagsOverrideEnv(t *testing.T) {
 }
 
 func TestParseCLIEqualsForm(t *testing.T) {
-	c, _, err := parseCLI([]string{"--agent=agy", "--theme=nord", "--collapse=0"}, envFunc(nil))
+	c, _, err := parseCLI([]string{"--agent=agy", "--theme=nord", "--collapse=0"}, envFunc(nil), savedPrefs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,46 +69,46 @@ func TestParseCLIEqualsForm(t *testing.T) {
 }
 
 func TestParseCLIFollowSession(t *testing.T) {
-	c, _, err := parseCLI([]string{"--follow-session", "abc-123"}, envFunc(nil))
+	c, _, err := parseCLI([]string{"--follow-session", "abc-123"}, envFunc(nil), savedPrefs{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.FollowSession != "abc-123" {
 		t.Errorf("FollowSession = %q, want abc-123", c.FollowSession)
 	}
-	c2, _, _ := parseCLI([]string{"--follow-session=xyz-789"}, envFunc(nil))
+	c2, _, _ := parseCLI([]string{"--follow-session=xyz-789"}, envFunc(nil), savedPrefs{})
 	if c2.FollowSession != "xyz-789" {
 		t.Errorf("equals-form FollowSession = %q, want xyz-789", c2.FollowSession)
 	}
-	if _, _, err := parseCLI([]string{"--follow-session"}, envFunc(nil)); err == nil {
+	if _, _, err := parseCLI([]string{"--follow-session"}, envFunc(nil), savedPrefs{}); err == nil {
 		t.Error("--follow-session with no value should error")
 	}
 }
 
 func TestParseCLIClaudeBin(t *testing.T) {
 	// The built-in default is plain claude, and it's not marked as an explicit ask.
-	c, _, _ := parseCLI(nil, envFunc(nil))
+	c, _, _ := parseCLI(nil, envFunc(nil), savedPrefs{})
 	if c.ClaudeBin != "claude" || c.ClaudeBinSet {
 		t.Errorf("default: ClaudeBin=%q set=%v, want claude/false", c.ClaudeBin, c.ClaudeBinSet)
 	}
 
 	// happy is still selectable — just no longer the default.
 	env := map[string]string{"ENTIRE_TAIL_CLAUDE_BIN": "happy"}
-	c, _, _ = parseCLI(nil, envFunc(env))
+	c, _, _ = parseCLI(nil, envFunc(env), savedPrefs{})
 	if c.ClaudeBin != "happy" || !c.ClaudeBinSet {
 		t.Errorf("env: ClaudeBin=%q set=%v, want happy/true", c.ClaudeBin, c.ClaudeBinSet)
 	}
 
 	// A flag beats the env var, in both forms.
-	c, _, err := parseCLI([]string{"--claude-bin", "/opt/bin/happy"}, envFunc(env))
+	c, _, err := parseCLI([]string{"--claude-bin", "/opt/bin/happy"}, envFunc(env), savedPrefs{})
 	if err != nil || c.ClaudeBin != "/opt/bin/happy" || !c.ClaudeBinSet {
 		t.Errorf("flag: %v ClaudeBin=%q set=%v", err, c.ClaudeBin, c.ClaudeBinSet)
 	}
-	c, _, _ = parseCLI([]string{"--claude-bin=codex"}, envFunc(env))
+	c, _, _ = parseCLI([]string{"--claude-bin=codex"}, envFunc(env), savedPrefs{})
 	if c.ClaudeBin != "codex" || !c.ClaudeBinSet {
 		t.Errorf("equals form: ClaudeBin=%q set=%v", c.ClaudeBin, c.ClaudeBinSet)
 	}
-	if _, _, err := parseCLI([]string{"--claude-bin"}, envFunc(nil)); err == nil {
+	if _, _, err := parseCLI([]string{"--claude-bin"}, envFunc(nil), savedPrefs{}); err == nil {
 		t.Error("--claude-bin with no value should error")
 	}
 }
@@ -156,7 +156,7 @@ func TestResolveClaudeBin(t *testing.T) {
 }
 
 func TestParseCLINegationFlags(t *testing.T) {
-	c, _, _ := parseCLI([]string{"--no-backfill", "--no-collapse", "--no-pick", "--no-compact-tools"}, envFunc(nil))
+	c, _, _ := parseCLI([]string{"--no-backfill", "--no-collapse", "--no-pick", "--no-compact-tools"}, envFunc(nil), savedPrefs{})
 	if c.Backfill != "0" || c.Collapse != "0" || c.Pick != "never" || c.ToolStyle != "lines" {
 		t.Errorf("got %+v", c)
 	}
@@ -164,19 +164,19 @@ func TestParseCLINegationFlags(t *testing.T) {
 
 func TestParseCLIPositional(t *testing.T) {
 	// A single positional (resolved to a file or a search query in run()).
-	c, _, err := parseCLI([]string{"-t", "nord", "/path/to/session.jsonl"}, envFunc(nil))
+	c, _, err := parseCLI([]string{"-t", "nord", "/path/to/session.jsonl"}, envFunc(nil), savedPrefs{})
 	if err != nil || len(c.Positional) != 1 || c.Positional[0] != "/path/to/session.jsonl" {
 		t.Errorf("single positional: %v %q", err, c.Positional)
 	}
 	// Multiple bare words are collected (joined into a search query downstream).
-	c, _, err = parseCLI([]string{"fire", "socks"}, envFunc(nil))
+	c, _, err = parseCLI([]string{"fire", "socks"}, envFunc(nil), savedPrefs{})
 	if err != nil || len(c.Positional) != 2 {
 		t.Errorf("multi positional: %v %q", err, c.Positional)
 	}
 }
 
 func TestParseCLIDashDash(t *testing.T) {
-	c, _, err := parseCLI([]string{"--", "--weird-filename"}, envFunc(nil))
+	c, _, err := parseCLI([]string{"--", "--weird-filename"}, envFunc(nil), savedPrefs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestParseCLIErrors(t *testing.T) {
 		{"--frobnicate"}, // unknown option
 	}
 	for _, args := range cases {
-		if _, _, err := parseCLI(args, envFunc(nil)); err == nil {
+		if _, _, err := parseCLI(args, envFunc(nil), savedPrefs{}); err == nil {
 			t.Errorf("expected error for args %v", args)
 		}
 	}
@@ -207,7 +207,7 @@ func TestParseCLIActions(t *testing.T) {
 		"--list-themes": ActionListThemes,
 		"-l":            ActionListThemes,
 	} {
-		_, action, err := parseCLI([]string{flag}, envFunc(nil))
+		_, action, err := parseCLI([]string{flag}, envFunc(nil), savedPrefs{})
 		if err != nil || action != want {
 			t.Errorf("%s: action=%v err=%v", flag, action, err)
 		}

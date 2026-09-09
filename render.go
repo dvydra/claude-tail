@@ -288,7 +288,11 @@ func newRendererWith(w io.Writer, theme Theme, toolStyle string, collapse int, r
 
 // cycleTools advances tool-call rendering to the next state (full → dots →
 // hidden → full), for future events only. Returns a short status for the user.
-func (r *Renderer) cycleTools() string {
+func (r *Renderer) cycleTools() string { return r.stepTools(+1) }
+
+// stepTools is cycleTools with a direction, so the settings panel's ← steps back
+// through full → dots → hidden instead of going twice round.
+func (r *Renderer) stepTools(dir int) string {
 	cur := toolStyleKind(r.toolStyle.Load())
 	i := 0
 	for j, k := range toolCycle {
@@ -297,7 +301,8 @@ func (r *Renderer) cycleTools() string {
 			break
 		}
 	}
-	next := toolCycle[(i+1)%len(toolCycle)]
+	n := len(toolCycle)
+	next := toolCycle[((i+dir)%n+n)%n]
 	r.toolStyle.Store(int32(next))
 	return "tool calls " + next.label()
 }

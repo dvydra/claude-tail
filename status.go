@@ -281,9 +281,9 @@ func statusRights(info statusInfo) []string {
 	}
 	var out []string
 	for _, fields := range [][]string{
-		{tools, theme, collapse, mrk, nowrap, "? help"},
-		{tools, theme, mrk, nowrap, "? help"},
-		{tools, mrk, nowrap, "? help"},
+		{tools, theme, collapse, mrk, nowrap, "? settings"},
+		{tools, theme, mrk, nowrap, "? settings"},
+		{tools, mrk, nowrap, "? settings"},
 		{tools, mrk, nowrap, "?"},
 		{mrk, nowrap, "?"},
 	} {

@@ -122,7 +122,7 @@ tree/`--no-pick` behavior is unchanged.
 The bottom row of the terminal is a status bar:
 
 ```
- claude · claude-tail · ac2925b3 · 14 turns · 45s ago    dots · tokyo-night · collapse 5 · ? help
+ claude · claude-tail · ac2925b3 · 14 turns · 45s ago    dots · tokyo-night · collapse 5 · ? settings
 ```
 
 Left is which session you're following and what it's doing — `45s ago` is how
@@ -150,7 +150,7 @@ events show as they stream:
 
 | key            | effect                                                        |
 |----------------|---------------------------------------------------------------|
-| `?`            | **help** — a modal with the startup banner's context (agent/session/theme/backfill/tools/collapse), the full key map, and the dot legend; any key closes it |
+| `?`            | **settings** — a live panel of everything you can change, with its current value; see below |
 | `y`            | **copy the last agent message as Slack mrkdwn** — press again within 3s to add the one before it |
 | `m`            | toggle agent text between rendered markdown and **Slack mrkdwn source** |
 | `w`            | toggle **word wrap** — off, each paragraph is one long logical line, so a mouse drag-select copies it unbroken (the bar shows `nowrap`) |
@@ -175,10 +175,56 @@ keypress buries the screen in scrollback, and since the tail of the new copy
 looks much like the tail of the old one, it reads as though nothing happened.
 Press **`r`** for the full re-render when you want the whole history in the new
 style.
-A one-line `keys:` legend prints in the startup banner, and **`?`**
-brings the whole banner back as a modal at any point — with the live values, so
-it also answers "which tool style / theme am I in now?" after a few `t`/`T`
-presses have scrolled the banner away.
+### The settings panel (`?`)
+
+A one-line `keys:` legend prints in the startup banner; **`?`** opens the panel
+it points at. Every setting is a row with its **current value** beside it, so it
+also answers "which tool style / theme am I in now?" after a few `t`/`T` presses
+have scrolled the banner away:
+
+```
+╭─ entire-tail 0.26.0 ─────────────────────────────────────────────╮
+│                                                                  │
+│ ▸ theme         tokyo-night                                      │
+│   tools         dots                                             │
+│   collapse      user pastes > 5 lines                            │
+│   wrap          on, 99 columns                                   │
+│   bodies        rendered markdown  · this session only           │
+│   status bar    on                                               │
+│   prompt hooks  installed  · writes ~/.claude/settings.json      │
+│   api tap       running  · launchd agent                         │
+│                                                                  │
+│ ── session ───────────────────────────────────────────────────── │
+│   agent     claude                                               │
+│   session   ~/.claude/projects/-repo/abc.jsonl                   │
+│   backfill  all (1..188 of 188)                                  │
+│                                                                  │
+│ ── keys ────────────────────────────────────────────────────────  ⋯
+╰──────────────────────────── ↑↓ move · ←→ change · q close ───────╯
+```
+
+`↑↓` moves, `←→` (or `⏎`) changes the row, `q`/`Esc`/`?` closes. Changes take
+effect immediately; the transcript re-renders once when the panel closes, since
+nothing underneath an alt-screen is visible while it's open. The session
+context, the key map and the dot legend live below the settings in the same
+scroll, so nothing the old help card showed was lost.
+
+**Changes are remembered.** Theme, tool style, collapse, wrap and the status bar
+are written to `~/.claude/entire-tail/settings.json` and picked up next launch.
+They sit *below* flags and env vars in precedence — `--theme dracula` still wins
+for that run — and the file is created only once you change something, so an
+install that never opens the panel behaves exactly as it always did. Delete the
+file to go back to the defaults.
+
+Two rows are different:
+
+- **bodies** (the `m` mrkdwn view) is a mode you flip to copy something out, not
+  a preference, so it isn't remembered — coming back tomorrow to raw mrkdwn
+  would read as a broken renderer.
+- **prompt hooks** and **api tap** reach outside this process (they edit
+  `~/.claude/settings.json` and load a launchd agent), so they don't move on a
+  stray arrow key: `⏎` arms the row, a second `⏎` does it, and any other key
+  cancels.
 
 ### Getting text out into Slack
 
