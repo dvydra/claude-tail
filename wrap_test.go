@@ -153,62 +153,15 @@ func TestWrappedBodyHasNoTrailingPadding(t *testing.T) {
 	}
 }
 
-// ...but a code block's padding is what makes it a rectangle, so a line that
-// sets a background colour is left exactly as glamour produced it.
-func TestWrapPadKeptOnBackgroundLines(t *testing.T) {
-	const bg = "\x1b[48;2;22;22;30m"
-	line := bg + "  func main() {   " + reset
-	if got := trimWrapPad(line); got != line {
-		t.Errorf("trimmed a background-styled line:\n got %q\nwant %q", got, line)
+// Expanding a collapsed paste has to reprint the whole transcript: the text it
+// reveals is above the fold by definition, so a screenful-sized re-render
+// redraws a tail that already looked the same and the key reads as dead.
+func TestCollapseKeep(t *testing.T) {
+	if got := collapseKeep(true, 40); got != 0 {
+		t.Errorf("expanding re-rendered %d lines, want all of them (0)", got)
 	}
-}
-
-// The padding sits either side of the closing reset depending on how glamour
-// composed the line, so both layouts have to be trimmed.
-func TestTrimWrapPadLayouts(t *testing.T) {
-	const fg = "\x1b[38;2;192;202;245m"
-	cases := []struct{ name, in, want string }{
-		{"padding after the reset", fg + "hello" + reset + "     ", fg + "hello" + reset},
-		{"padding before the reset", fg + "hello     " + reset, fg + "hello" + reset},
-		{"plain text", "hello     ", "hello"},
-		{"a line of pure padding", "          ", ""},
-		{"nothing to trim", fg + "hello" + reset, fg + "hello" + reset},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := trimWrapPad(c.in); got != c.want {
-				t.Errorf("trimWrapPad(%q) = %q, want %q", c.in, got, c.want)
-			}
-		})
-	}
-}
-
-// setsBackground walks the SGR parameters rather than pattern-matching them: 38
-// and 48 both swallow what follows, so an RGB foreground component that happens
-// to equal 48 (or 41) must not read as a background.
-func TestSetsBackground(t *testing.T) {
-	cases := []struct {
-		name string
-		line string
-		want bool
-	}{
-		{"rgb background", "\x1b[48;2;22;22;30mx", true},
-		{"256 background", "\x1b[48;5;236mx", true},
-		{"basic background", "\x1b[41mx", true},
-		{"bright background", "\x1b[102mx", true},
-		{"rgb foreground", "\x1b[38;2;192;202;245mx", false},
-		{"foreground whose blue component is 48", "\x1b[38;2;10;20;48mx", false},
-		{"foreground whose green component is 41", "\x1b[38;2;10;41;20mx", false},
-		{"bold plus foreground", "\x1b[1;38;5;9mx", false},
-		{"reset only", reset, false},
-		{"no escapes", "plain text", false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := setsBackground(c.line); got != c.want {
-				t.Errorf("setsBackground(%q) = %v, want %v", c.line, got, c.want)
-			}
-		})
+	if got := collapseKeep(false, 40); got != 40 {
+		t.Errorf("collapsing re-rendered %d lines, want a screenful (40)", got)
 	}
 }
 

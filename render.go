@@ -88,6 +88,10 @@ type Renderer struct {
 	mrkdwn    atomic.Bool  // `m`: render agent bodies as Slack mrkdwn, not glamour
 	// Immutable threshold to restore when re-enabling collapse.
 	collapseDefault int32
+	// collapseHint is how the "… N more lines" marker says to get the rest back.
+	// Set for a terminal run, where the `c` key does it; the default names the
+	// flag, which is all a piped run has (and is what the goldens pin).
+	collapseHint string
 
 	// The `y` yank buffer: the raw markdown of recent agent messages, so a copy
 	// is made from the source text rather than from glamour's wrapped, colored
@@ -167,10 +171,16 @@ func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse, wrap int)
 // style JSON, wrapping bodies at `wrap` columns (0 = no wrap). Split out of
 // newRenderer so a live theme swap (the `T` key) and a resize (setWrap) can
 // rebuild just the render function without a whole new Renderer.
+//
+// Glamour is ALWAYS built at word-wrap 0 and the wrapping is ours (wraptext.go):
+// its own wrapper mis-counts any line containing a hyphen and overshoots the
+// limit, which showed on screen as a one-word orphan line after every long
+// paragraph. Rendering unwrapped also means glamour pads nothing, so there's no
+// padding to trim back off.
 func newGlamour(styleJSON []byte, wrap int) (func(string) (string, error), error) {
 	md, err := glamour.NewTermRenderer(
 		glamour.WithStylesFromJSONBytes(styleJSON),
-		glamour.WithWordWrap(wrap),
+		glamour.WithWordWrap(0),
 		// Force truecolor in-process. The bash version piped glow and relied on
 		// CLICOLOR_FORCE, which capped rendering at 256 colors; rendering in
 		// our own process lets us emit the theme's exact hex colors.
@@ -184,108 +194,15 @@ func newGlamour(styleJSON []byte, wrap int) (func(string) (string, error), error
 		return nil, err
 	}
 	if wrap == 0 {
-		return md.Render, nil // no padding to undo; the golden path, byte for byte
+		return md.Render, nil // the golden path, byte for byte
 	}
 	return func(s string) (string, error) {
 		out, err := md.Render(s)
 		if err != nil {
 			return out, err
 		}
-		return trimWrapPad(out), nil
+		return wrapANSI(out, wrap), nil
 	}, nil
-}
-
-// trailPadRe matches the trailing run of padding at the end of a line: spaces
-// and the escape sequences interleaved with them. Glamour doesn't append plain
-// spaces — it emits each pad column as its own styled cell
-// ("\x1b[38;5;252m \x1b[0m" over and over), so a plain TrimRight sees an escape,
-// not a space, and takes nothing off.
-var trailPadRe = regexp.MustCompile(`(?:\x1b\[[0-9;]*[A-Za-z]|[ \t])+$`)
-
-// escRe matches a single ANSI escape sequence.
-var escRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
-
-// resetRe matches an SGR that resets all attributes.
-var resetRe = regexp.MustCompile(`^\x1b\[0?m$`)
-
-// sgrRe matches one SGR (colour/attribute) sequence and captures its parameters.
-var sgrRe = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
-
-// setsBackground reports whether any SGR in the line sets a background colour:
-// 40–47 (basic), 100–107 (bright), or 48 followed by a 5;n / 2;r;g;b payload.
-//
-// The parameters are walked rather than pattern-matched because 38 and 48 both
-// swallow the parameters that follow them: a foreground RGB of `38;2;48;10;20`
-// contains a literal "48" that a regex would read as a background.
-func setsBackground(line string) bool {
-	for _, m := range sgrRe.FindAllStringSubmatch(line, -1) {
-		params := strings.Split(m[1], ";")
-		for i := 0; i < len(params); i++ {
-			n, err := strconv.Atoi(params[i])
-			if err != nil {
-				continue
-			}
-			switch {
-			case n == 48:
-				return true
-			case n == 38:
-				// Extended foreground: skip its payload so an RGB component
-				// that happens to equal 41 isn't read as a background.
-				if i+1 < len(params) && params[i+1] == "5" {
-					i += 2
-				} else if i+1 < len(params) && params[i+1] == "2" {
-					i += 4
-				}
-			case n >= 40 && n <= 47, n >= 100 && n <= 107:
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// trimWrapPad removes the padding glamour adds once a wrap width is set: it
-// right-pads EVERY line out to that width. On prose that padding is pure cost —
-// it spends the last column, it lands in the clipboard on a mouse drag-select,
-// and it pushes the dot streak that rides the end of an agent turn past the
-// terminal edge, so a two-dot streak soft-wraps onto a row of its own (see "Dots
-// ride the agent turn").
-//
-// A line that sets a BACKGROUND colour is left exactly as glamour produced it,
-// because there the padding is what makes a block a rectangle rather than a
-// ragged edge. That guard is currently inert: `WithChromaFormatter("terminal16m")`
-// emits foreground colours only, so no bundled theme produces a background-styled
-// body line and code blocks get trimmed like prose. It's kept because the day a
-// theme or formatter does emit one, trimming it would visibly shred the block.
-//
-// Trailing whitespace inside a code block goes with the padding — the two are
-// indistinguishable by the time glamour is done — which is the right trade: it's
-// almost always incidental, and nobody wants it in a pasted command.
-//
-// Only ever called when wrap > 0. At wrap 0 glamour pads nothing, and the
-// unwrapped path stays byte-identical to what the goldens pin.
-func trimWrapPad(s string) string {
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		if setsBackground(line) {
-			continue
-		}
-		pad := trailPadRe.FindString(line)
-		if !strings.ContainsAny(pad, " \t") {
-			continue // a bare closing escape, nothing padded — leave it alone
-		}
-		// Drop the pad's spaces but keep its escapes, so the line's SGR state
-		// still closes: trimming them off would leave a colour open to EOL.
-		escapes := escRe.FindAllString(pad, -1)
-		tail := strings.Join(escapes, "")
-		// Those escapes are colour-set/reset pairs around each pad column, so
-		// when the run ends in a reset the whole pile collapses to that reset.
-		if n := len(escapes); n > 0 && resetRe.MatchString(escapes[n-1]) {
-			tail = escapes[n-1]
-		}
-		lines[i] = line[:len(line)-len(pad)] + tail
-	}
-	return strings.Join(lines, "\n")
 }
 
 // applyTheme swaps the renderer to a new theme in place: it rebuilds the glamour
@@ -355,6 +272,7 @@ func newRendererWith(w io.Writer, theme Theme, toolStyle string, collapse int, r
 		render:          render,
 		theme:           theme,
 		collapseDefault: collapseDefault,
+		collapseHint:    "re-run with --no-collapse to expand",
 		userHdr:         theme.UserANSI + userHdrBody + reset,
 		claudeHdr:       theme.ClaudeANSI + claudeHdrBody + reset,
 		seenQuestions:   map[string]bool{},
@@ -430,7 +348,7 @@ func (r *Renderer) emit(rec Record) {
 	case KindUser:
 		r.turnsRendered++
 		r.header(KindUser, rec.Ts)
-		r.body(collapseBody(rec.Body, int(r.collapse.Load())))
+		r.body(collapseBody(rec.Body, int(r.collapse.Load()), r.collapseHint))
 	case KindAssistant:
 		if r.consumeEarlyText(rec) {
 			return // already shown from the tap, before the question it preceded
