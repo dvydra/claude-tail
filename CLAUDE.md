@@ -226,6 +226,9 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   instead of a standalone line; the first dot opens the `[`, `endLine()` writes the
   closing `]` + the owed newline before the next header/marker/block. Backfill and
   live leave the last line open (streaming); the quit path (and preview/focus) flush it
+- `wraptext.go` — the **word wrapper** applied to glamour's rendered output
+  (`wrapANSI`), because glamour's own mis-counts hyphens; see the load-bearing
+  note below
 - `toolresult.go` — parse Claude `toolUseResult` into diffs / output / read-summary
 - `tail.go` — follow loop (byte-offset resume for claude/codex; whole-file
   re-read + `step_index` dedup for agy)
@@ -627,6 +630,17 @@ needs to change.
   copy looks much like the tail of the old one it reads as though the key did
   nothing (reported live). `keep` is the terminal height minus two, from the
   status bar; `r` passes 0 for all of it.
+- **…except `c` when it EXPANDS, which re-renders everything** (`collapseKeep`).
+  The rule above assumes the change is visible in the tail. Uncollapsing is the
+  case where it never is: what it reveals is text that was hidden, and the paste
+  you want back is usually the message that OPENED the session — hundreds of
+  lines above the fold. Reported live as "the session is failing to uncollapse my
+  long input": the toggle worked, `c` re-rendered the last screenful, and the
+  expanded paste was off the top of it. Collapsing back is only tidying what's in
+  view, so that direction still takes a screenful. The marker's wording is
+  `Renderer.collapseHint`, chosen in `run` before backfill (so the whole screen
+  agrees): `press c to expand` on a terminal, and the flag on a pipe — which is
+  what the goldens pin.
 - **Word wrap is on for a tty, off everywhere else** — and the "everywhere else"
   half is load-bearing. `wrapWidth` (main.go) returns 0 unless stdout is a char
   device, so piped runs and the whole golden suite render exactly as they did
@@ -645,27 +659,32 @@ needs to change.
   the old behaviour for a session where drag-select matters more than legibility.
   The reason wrap went on: the terminal's own soft wrap breaks at the column
   edge, splitting words in half.
-- **Turning wrap on turns glamour's right-padding on, and `trimWrapPad` undoes
-  it.** With a wrap width set, glamour pads EVERY line out to that width. Three
-  things break if you leave it: the pad eats the last column, it lands in the
-  clipboard on a drag-select, and — the one that's actually visible — it pushes
-  the dot streak riding the end of an agent turn past the terminal edge, so a
-  two-dot streak soft-wraps onto a row of its own and the whole "dots ride the
-  agent turn" layout collapses. The trap is that **a plain `TrimRight` takes off
-  nothing**: glamour doesn't append spaces, it emits each pad column as its own
-  styled cell (`\x1b[38;5;252m \x1b[0m` over and over), so the line ends in an
-  escape. `trimWrapPad` matches the trailing run of spaces-and-escapes, drops the
-  spaces and KEEPS the escapes (trimming them would leave a colour open to EOL),
-  collapsing them to the single closing reset when the run ends in one. It's
-  wired in `newGlamour` and only when `wrap > 0` — the wrap-0 path returns
-  `md.Render` untouched, which is what keeps the goldens byte-identical.
-  The `setsBackground` guard (skip a line that sets a background, where the pad
-  is what makes a block a rectangle) is **currently inert**:
-  `WithChromaFormatter("terminal16m")` emits foreground colours only, so no
-  bundled theme produces a background-styled body line. It's parked there because
-  the day one does, trimming would shred the block — and it parses SGR parameters
-  rather than pattern-matching them, because a foreground RGB of `38;2;48;10;20`
-  contains a literal `48` a regex reads as a background.
+- **We wrap, glamour doesn't** (`wraptext.go`). Glamour is ALWAYS built with
+  `WithWordWrap(0)` and `newGlamour` runs `wrapANSI` over its output when
+  `wrap > 0`. Glamour wraps through muesli/reflow v0.3.0, whose `wordwrap` writes
+  a breakpoint rune (`-`) straight to the buffer **without counting it**
+  (`inGroup(w.Breakpoints, c)`), so every hyphen on a line buys a free column,
+  the line overshoots the limit, and a later stage snaps the overshoot off as a
+  stub. On screen that was a full line, then a ONE-WORD line, then the rest of
+  the paragraph — constantly, because hyphens are everywhere in this text (flag
+  names, repo names, `op://` paths). Don't "simplify" back to `WithWordWrap(wrap)`
+  without checking `wordwrap.String("a-b …", n)` still overshoots `n`.
+  Three things fall out of owning the wrap, and each is deliberate:
+  **(1) no padding.** Glamour right-pads every line out to the width only when a
+  width is set; at 0 it pads nothing, so the pad-trimming pass this replaced
+  (`trimWrapPad` + its `setsBackground` guard) is gone. That guard was documented
+  as inert and wasn't: the theme's inline-code style sets a background
+  (`48;2;22;22;30`), so any line with a code span kept its pad — trailing spaces
+  into the clipboard, and the dot streak riding the turn pushed off the edge.
+  **(2) breaks land between words only.** A token wider than the column overflows
+  and the terminal soft-wraps it, so a URL or a shell command still pastes as one
+  piece; reflow broke at hyphens, which cut `op://…/agent-token-elastic-ci-stack-`
+  in half. **(3) continuations get the right prefix** (`splitLinePrefix`): a block
+  quote repeats its `│ ` bar, a list item indents under its own text, and a line
+  carrying box-drawing runes (a table row, a rule) is passed through untouched
+  because it's laid out by column and a re-wrap would shred it.
+  `wrapANSI` is pure and unit-tested; it runs only when `wrap > 0`, which is what
+  keeps every golden byte-identical.
 - **The resize re-render is debounced, and only on a width change.** SIGWINCH
   fires continuously while a window edge is dragged, and printed lines can't be
   rewrapped in place — the only way to apply a new width is to re-render, which

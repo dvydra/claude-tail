@@ -76,6 +76,8 @@ func helpLines(info helpInfo) []string {
 		kv("t", "cycle tool style (full → dots → hidden)"),
 		kv("T", "cycle theme"),
 		kv("c", "toggle user-paste collapse"),
+		kv("", "(expanding reprints the whole transcript — what it"),
+		kv("", "reveals is above the fold)"),
 		kv("", "t/T/c/m/w re-render the history as they go"),
 		kv("r", "re-render the history on demand"),
 		kv("→", "focus subagents"),

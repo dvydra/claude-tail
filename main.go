@@ -267,6 +267,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	if err != nil {
 		die("cannot init renderer: " + err.Error())
 	}
+	// On a terminal the collapse marker names the key that expands it. Decided
+	// here, before backfill, so every marker on screen says the same thing — the
+	// control tty isn't opened until the live phase (the status bar's DSR query
+	// has to run after cbreak), and half a screen of stale advice would be worse
+	// than none.
+	if isCharDevice(os.Stdout) {
+		r.collapseHint = "press c to expand"
+	}
 
 	// ── phase 1: backfill ──
 	if backfillFrom > 0 {
@@ -581,7 +589,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				msg = cycleTheme()
 			case keyToggleCollapse:
 				msg = r.toggleCollapse()
-				rerender("⟳ "+msg, screenful())
+				rerender("⟳ "+msg, collapseKeep(r.collapse.Load() == 0, screenful()))
 			case keyToggleMrkdwn:
 				msg = r.toggleMrkdwn()
 				rerender("⟳ "+msg, screenful())
@@ -718,6 +726,20 @@ const winchSettle = 300 * time.Millisecond
 // quiet. A zero winchAt means nothing is owed.
 func winchSettled(winchAt, now time.Time) bool {
 	return !winchAt.IsZero() && now.Sub(winchAt) >= winchSettle
+}
+
+// collapseKeep is how many lines the `c` toggle re-renders. Expanding is the one
+// toggle that has to reprint the WHOLE transcript: what it reveals is by
+// definition text that was hidden, and the paste you want back is usually the
+// one that opened the session — far above the last screenful. Re-rendering a
+// screenful there redraws a tail that already looked like that, so the key reads
+// as dead (it isn't: the expansion happened, off-screen). Collapsing back is only
+// tidying up what's in view, so a screenful is enough.
+func collapseKeep(expanded bool, screenful int) int {
+	if expanded {
+		return 0 // 0 = all of it
+	}
+	return screenful
 }
 
 // wrapWidth is the column limit for the live renderer: the terminal's width when

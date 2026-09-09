@@ -43,7 +43,12 @@ func formatTS(iso string, loc *time.Location) string {
 // more than t lines, keep the first t lines plus an italic "N more lines"
 // marker. If the kept head ends inside an unclosed ``` fence, a closing fence is
 // appended so the renderer doesn't mis-highlight the marker.
-func collapseBody(body string, t int) string {
+//
+// hint is how the reader gets the rest back, and it differs by where the output
+// is going: a live tail has a `c` key for it, a piped run has only the flag. The
+// marker is the only place that advice appears, so telling a live reader to
+// re-run the program would be answering a question they didn't ask.
+func collapseBody(body string, t int, hint string) string {
 	if t <= 0 {
 		return body
 	}
@@ -71,7 +76,9 @@ func collapseBody(body string, t int) string {
 	} else {
 		b.WriteString(" more lines")
 	}
-	b.WriteString(" — re-run with --no-collapse to expand*")
+	b.WriteString(" — ")
+	b.WriteString(hint)
+	b.WriteString("*")
 	return b.String()
 }
 
