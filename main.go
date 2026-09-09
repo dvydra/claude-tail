@@ -702,6 +702,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 						Agent:       agent,
 						Session:     tildify(cur, home),
 						Theme:       theme.Name,
+						ThemeSwatch: themeSwatch(theme),
 						Backfill:    cfg.Backfill,
 						From:        backfillFrom,
 						Total:       total,
