@@ -713,25 +713,28 @@ needs to change.
   `pbcopy`; a test that exercised it would silently replace whatever the
   developer had on their clipboard. Same rule as the `launchctl` stubs — a
   `go test` must not touch the machine's real state.
-- **A toggle re-renders one SCREENFUL; only `r` re-renders everything.**
-  `rerender(banner, keep)` renders the whole transcript into a buffer — the
-  renderer's state (turn boundaries, dot streaks, the yank buffer) must see every
-  record — and then prints only the last `keep` lines. Dumping a long session on
-  every keypress buries the screen in scrollback, and because the tail of the new
-  copy looks much like the tail of the old one it reads as though the key did
-  nothing (reported live). `keep` is the terminal height minus two, from the
-  status bar; `r` passes 0 for all of it.
-- **…except `c` when it EXPANDS, which re-renders everything** (`collapseKeep`).
-  The rule above assumes the change is visible in the tail. Uncollapsing is the
-  case where it never is: what it reveals is text that was hidden, and the paste
-  you want back is usually the message that OPENED the session — hundreds of
-  lines above the fold. Reported live as "the session is failing to uncollapse my
-  long input": the toggle worked, `c` re-rendered the last screenful, and the
-  expanded paste was off the top of it. Collapsing back is only tidying what's in
-  view, so that direction still takes a screenful. The marker's wording is
-  `Renderer.collapseHint`, chosen in `run` before backfill (so the whole screen
-  agrees): `press c to expand` on a terminal, and the flag on a pipe — which is
-  what the goldens pin.
+- **Every re-render prints the WHOLE transcript.** `rerender(banner)` renders the
+  transcript into a buffer — the renderer's state (turn boundaries, dot streaks,
+  the yank buffer) must see every record either way — and prints all of it.
+  A toggle and `r` differ only in that the toggle changes a setting first.
+  This has been round the houses twice, so don't re-derive it:
+  it originally capped a toggle at one screenful (`keep`, terminal height minus
+  two) on the theory that dumping a session on every keypress buries the screen.
+  That produced two complaints in a row. First, uncollapsing showed nothing —
+  what `c` reveals is text that was HIDDEN, and the big paste is usually the
+  message that opened the session, hundreds of lines above the fold, so the key
+  read as dead; that was patched with a `collapseKeep` special case. Then the
+  partial copies themselves: scroll up out of a screenful-sized re-render and
+  you are back in the stale copy with no seam to tell you where the boundary
+  was. The verdict was "just make it re-render the whole history, it's not that
+  slow" — so the cap, `collapseKeep`, `screenful()`, the
+  `· showing the last N lines (r for all)` suffix and `tailLinesOf` are all
+  gone. The cost is real (a long session reprints in full on every keypress) and
+  it was accepted knowingly; the win is that scrollback always holds one
+  complete transcript in the settings you just chose.
+  The collapse marker's wording is `Renderer.collapseHint`, chosen in `run`
+  before backfill (so the whole screen agrees): `press c to expand` on a
+  terminal, and the flag on a pipe — which is what the goldens pin.
 - **Word wrap is on for a tty, off everywhere else** — and the "everywhere else"
   half is load-bearing. `wrapWidth` (main.go) returns 0 unless stdout is a char
   device, so piped runs and the whole golden suite render exactly as they did

@@ -190,12 +190,12 @@ immediately. This is a streaming view, not an alt-screen TUI, so a re-render
 appends a fresh copy rather than repainting in place — your terminal's /
 Zellij's native scrollback keeps working.
 
-A toggle re-renders **one screenful**, not the whole session (`⟳ tool calls
-hidden · showing the last 22 lines`). Dumping a long transcript on every
-keypress buries the screen in scrollback, and since the tail of the new copy
-looks much like the tail of the old one, it reads as though nothing happened.
-Press **`r`** for the full re-render when you want the whole history in the new
-style.
+Every re-render prints the **whole transcript** — a toggle and `r` do the same
+amount of work, and the only difference is that a toggle changes a setting
+first. Rendering a session is cheap, and a partial copy is its own kind of
+confusing: scroll up out of it and you're back in the stale one with no seam to
+tell you where the boundary was. This way your scrollback holds one complete
+transcript in whatever settings you just picked.
 ### The settings panel (`?`)
 
 A one-line `keys:` legend prints in the startup banner; **`?`** opens the panel
@@ -893,13 +893,11 @@ still renders cleanly.
 
 This is a **render-time** collapse, not an interactive fold: the tail appends
 to the terminal scrollback rather than running an alt-screen TUI. Pressing `c`
-while following flips the setting and reprints the transcript with it applied —
-already-printed lines stay where they are, the new copy is appended below them.
-Expanding reprints the transcript **in full** rather than the last screenful
-the other toggles redraw: the pastes it reveals are above the fold by
-definition (the big one is usually the message that opened the session), so a
-screenful would redraw a tail that already looked the same and the key would
-read as dead.
+while following flips the setting and reprints the whole transcript with it
+applied — already-printed lines stay where they are, the new copy is appended
+below them. That matters most here: what expanding reveals is by definition text
+that was hidden, and the big paste is usually the message that opened the
+session, hundreds of lines up.
 
 ## Themes
 

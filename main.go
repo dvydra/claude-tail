@@ -368,14 +368,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// fresh copy (it reads r.theme, so a theme swap must land BEFORE this runs to
 	// colour the banner in the new theme).
 	//
-	// keep caps how many rendered LINES are actually printed, newest last (0 =
-	// all of them). A toggle only needs to refresh what you can see: dumping a
-	// whole session on every keypress buries the screen in scrollback and — since
-	// the tail of it looks much like the tail of the old copy — reads as if
-	// nothing happened. The transcript is still rendered in full so the renderer's
-	// state (turn boundaries, the yank buffer, dot streaks) stays exact; only the
-	// output is trimmed. `r` passes 0 and re-renders everything.
-	rerender := func(banner string, keep int) {
+	// It prints the WHOLE transcript, every time. An earlier version capped a
+	// toggle at one screenful, on the theory that dumping a session on every
+	// keypress buries the screen — but a partial copy is its own kind of
+	// confusing (scroll up out of the re-render and you're back in the stale one,
+	// with no seam to tell you), and rendering a session turns out to be cheap
+	// enough that the cap bought nothing. The full copy also leaves your
+	// scrollback holding one complete transcript in the settings you just chose.
+	rerender := func(banner string) {
 		d, err := os.ReadFile(cur)
 		if err != nil {
 			return
@@ -393,27 +393,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		}
 		r.w = prevW
 
-		body, trimmed := tailLinesOf(buf.String(), keep)
-		if trimmed {
-			banner += " · showing the last " + fmt.Sprint(keep) + " lines (r for all)"
-		}
 		io.WriteString(out, "\n"+r.theme.DimANSI+banner+reset+"\n\n")
-		io.WriteString(out, body)
+		io.WriteString(out, buf.String())
 		offset = liveOffset(d)
 		agyKeep = newAgyDedup(maxStepIndex(all))
 		agyLastSize, agyLastMtime = -1, -1 // force a re-stat next tick
 	}
-	// reload is the `r` key: re-render the WHOLE transcript, settings unchanged.
-	reload := func() { rerender("⟳ reloaded", 0) }
-	// screenful is how much a toggle re-renders: enough to refresh what's on
-	// screen, and no more. Without a status bar there's no measured height, so
-	// fall back to a conservative screen.
-	screenful := func() int {
-		if status == nil {
-			return 40
-		}
-		return max(status.h-2, 8)
-	}
+	// reload is the `r` key: re-render with the settings unchanged.
+	reload := func() { rerender("⟳ reloaded") }
 	// stepThemeTo swaps to the theme `dir` along the list. `redraw` re-renders so
 	// the whole visible transcript recolours at once (glamour body colours already
 	// in scrollback can't be recoloured in place) — the settings panel passes
@@ -429,7 +416,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		}
 		theme = next // so a later focus overlay (runFocus) uses the new theme too
 		if redraw {
-			rerender("⟳ theme: "+next.Name, screenful())
+			rerender("⟳ theme: " + next.Name)
 		}
 		return "theme: " + next.Name
 	}
@@ -510,9 +497,8 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	wrapOff := false
 	// settingsDirty is what the `?` panel changed while it was open, so the
 	// transcript is re-rendered once on the way out rather than under an
-	// alt-screen nobody can see. expanded forces the FULL re-render for the same
-	// reason `c` does: an uncollapsed paste is above the fold by definition.
-	settingsDirty, settingsExpanded := false, false
+	// alt-screen nobody can see.
+	settingsDirty := false
 	// applySetting performs one row of the `?` panel and returns its result for
 	// the footer. It runs on the render goroutine (the panel holds the tty while
 	// the keyboard is parked), which is what lets it touch the renderer's
@@ -530,9 +516,6 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			}))
 		case setCollapse:
 			msg := r.toggleCollapse()
-			if r.collapse.Load() == 0 {
-				settingsExpanded = true
-			}
 			return msg + savedNote(rememberPref(home, func(p *savedPrefs) {
 				p.Collapse = strconv.Itoa(int(r.collapse.Load()))
 			}))
@@ -665,15 +648,15 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			switch act {
 			case keyCycleTools:
 				msg = r.cycleTools()
-				rerender("⟳ "+msg, screenful())
+				rerender("⟳ " + msg)
 			case keyCycleTheme:
 				msg = cycleTheme()
 			case keyToggleCollapse:
 				msg = r.toggleCollapse()
-				rerender("⟳ "+msg, collapseKeep(r.collapse.Load() == 0, screenful()))
+				rerender("⟳ " + msg)
 			case keyToggleMrkdwn:
 				msg = r.toggleMrkdwn()
-				rerender("⟳ "+msg, screenful())
+				rerender("⟳ " + msg)
 			case keyToggleWrap:
 				// The copy escape hatch. Wrapped prose reads better but a mouse
 				// drag-select copies the breaks with it; unwrapped, each paragraph
@@ -685,7 +668,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				if wrapOff {
 					msg = "wrap: off — drag-select now copies whole paragraphs"
 				}
-				rerender("⟳ "+msg, screenful())
+				rerender("⟳ " + msg)
 			case keyReload:
 				reload()
 				msg = "re-rendered"
@@ -730,7 +713,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 						TreeEnabled: treeEnabled,
 					}
 				}
-				settingsDirty, settingsExpanded = false, false
+				settingsDirty = false
 				runSettings(kbTTY, settingsEnv{
 					Context: settingsContext(info()),
 					Keys:    settingsKeys(treeEnabled),
@@ -742,16 +725,10 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			status.resume()
 			// A change made in the panel lands on the transcript only now: while
 			// the panel was up it was covered by an alt-screen, and re-rendering
-			// underneath it would have been work nobody could see. Expanding a
-			// collapsed paste reprints everything, for the reason collapseKeep
-			// gives.
+			// underneath it would have been work nobody could see.
 			if settingsDirty {
 				settingsDirty = false
-				keep := screenful()
-				if settingsExpanded {
-					keep = 0 // what uncollapsing reveals is above the fold
-				}
-				rerender("⟳ settings", keep)
+				rerender("⟳ settings")
 			}
 			status.update(statusNow(), time.Now())
 			resumeCh <- struct{}{}
@@ -771,7 +748,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			if winchSettled(winchAt, time.Now()) {
 				winchAt = time.Time{}
 				if r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff)) {
-					rerender("⟳ resized", screenful())
+					rerender("⟳ resized")
 				}
 			}
 			before := offset
@@ -831,20 +808,6 @@ const winchSettle = 300 * time.Millisecond
 // quiet. A zero winchAt means nothing is owed.
 func winchSettled(winchAt, now time.Time) bool {
 	return !winchAt.IsZero() && now.Sub(winchAt) >= winchSettle
-}
-
-// collapseKeep is how many lines the `c` toggle re-renders. Expanding is the one
-// toggle that has to reprint the WHOLE transcript: what it reveals is by
-// definition text that was hidden, and the paste you want back is usually the
-// one that opened the session — far above the last screenful. Re-rendering a
-// screenful there redraws a tail that already looked like that, so the key reads
-// as dead (it isn't: the expansion happened, off-screen). Collapsing back is only
-// tidying up what's in view, so a screenful is enough.
-func collapseKeep(expanded bool, screenful int) int {
-	if expanded {
-		return 0 // 0 = all of it
-	}
-	return screenful
 }
 
 // wrapWidth is the column limit for the live renderer: the terminal's width when
