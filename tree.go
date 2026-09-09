@@ -52,7 +52,7 @@ type treeSession struct {
 	Generating bool
 
 	// Nearby is how close this session's claude is to the pane the tree is
-	// running in — this iTerm tab, this window, or neither (see nearby.go). It's
+	// running in — this iTerm tab, or not (see nearby.go). It's
 	// what lets the tree open on the agent you were just looking at.
 	Nearby paneProximity
 
@@ -1048,26 +1048,18 @@ func composeFooter(ui treeUI) string {
 		return "  /" + ui.Filter + "▏"
 	}
 	ns := 0
-	tab, win := false, false
+	tab := false
 	for _, f := range ui.Tree.Folders {
 		ns += len(f.Sessions)
 		for _, s := range f.Sessions {
 			tab = tab || s.Nearby == paneTab
-			win = win || s.Nearby == paneWindow
 		}
 	}
 	out := fmt.Sprintf("  %d folders · %d sessions", len(ui.Tree.Folders), ns)
 	// Only explain the marker when one is on screen — a legend for a glyph that
-	// isn't there is noise on every other run — and only name the halves that
-	// ARE on screen, or the dim mark beside a session in the next tab sits under
-	// a footer confidently calling it this one.
-	switch {
-	case tab && win:
-		out += " · ◀ runs in this tab (dim: this window)"
-	case tab:
+	// isn't there is noise on every other run.
+	if tab {
 		out += " · ◀ runs in this tab"
-	case win:
-		out += " · ◀ runs in this window"
 	}
 	return out
 }

@@ -119,20 +119,23 @@ tree/`--no-pick` behavior is unchanged.
 
 ### …and when it can't, the tree points at it
 
-Adopt gives up on purpose in three cases — a tab holding **two** claudes, a
-claude **one tab over**, and `Ctrl-X`, which asks for the tree — and you used to
-land in a list with no clue which row was the agent you were just looking at.
+Adopt gives up on purpose in two cases — a tab holding **two** claudes, and
+`Ctrl-X`, which asks for the tree — and you used to land in a list with no clue
+which row was the agent you were just looking at.
 
 So the tree runs the same placement without the "exactly one" rule: every running
 claude is located by its `ITERM_SESSION_ID` and resolved to the transcript it's
-writing. Sessions in **this tab** get a bright `◀`, sessions elsewhere in **this
-window** a dim one, and the tree **opens with the cursor already on the closest
-one** (expanding its group to get there). The footer names whichever marks are on
-screen:
+writing. Sessions in **this tab** get a `◀`, and the tree **opens with the cursor
+already on one** (expanding its group to get there). The footer names the mark
+when it's on screen:
 
 ```
-  11 folders · 35 sessions · ◀ runs in this tab (dim: this window)
+  11 folders · 35 sessions · ◀ runs in this tab
 ```
+
+Only **this tab** counts. A claude in another tab of the same window is ignored,
+so a fresh terminal in a folder opens with the cursor on **that folder's row**,
+where `⏎` starts a new session in it — one key, no hunting.
 
 It's strictly additive — nothing gets *un*-marked because no process was found
 near you — and inert off iTerm or without `pgrep`/`lsof`, where the cursor starts
