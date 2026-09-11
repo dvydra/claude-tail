@@ -1,10 +1,8 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -41,35 +39,22 @@ const fmSummarySchema = `{
   }
 }`
 
-func fmAvailable() bool {
-	_, err := exec.LookPath("fm")
-	return err == nil
-}
-
-// aiSummarize summarizes transcript text via fm's on-device model. ok=false when
-// fm is missing, the model is unavailable, or the output can't be parsed.
-func aiSummarize(text string) (aiSummary, bool) {
-	if !fmAvailable() || strings.TrimSpace(text) == "" {
-		return aiSummary{}, false
+// aiSummarize summarizes transcript text via fm's on-device model. The error is
+// for showing, not only for branching — see fmrun.go on why there is no
+// availability pre-flight.
+func aiSummarize(text string) (aiSummary, error) {
+	if strings.TrimSpace(text) == "" {
+		return aiSummary{}, errNoTranscript
 	}
-	schema, err := os.CreateTemp("", "entire-tail-*.schema.json")
+	out, err := fmRunner(fmSummarySchema, fmInstructions, text)
 	if err != nil {
-		return aiSummary{}, false
+		return aiSummary{}, err
 	}
-	defer os.Remove(schema.Name())
-	schema.WriteString(fmSummarySchema)
-	schema.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "fm", "respond",
-		"--model", "system", "--no-stream", "--schema", schema.Name(), "-i", fmInstructions)
-	cmd.Stdin = strings.NewReader(text)
-	out, err := cmd.Output()
-	if err != nil {
-		return aiSummary{}, false
+	s, ok := parseSummaryJSON(out)
+	if !ok {
+		return aiSummary{}, errUnreadable
 	}
-	return parseSummaryJSON(out)
+	return s, nil
 }
 
 // parseSummaryJSON pulls the JSON object out of fm's output (ignoring any spinner
@@ -91,29 +76,50 @@ func parseSummaryJSON(out []byte) (aiSummary, bool) {
 // on-device model); a longer session is sampled head + tail.
 const summaryBudget = 10000
 
-// transcriptText extracts a session's user/assistant turns as plain
-// "User:/Assistant:" text (system/tool noise dropped), then samples it to fit the
-// model: short sessions in full; long ones as the opening turns (the goal) plus
-// the recent turns (the work/outcome), with the middle elided — so the summary
-// reflects the whole session, not just its tail.
-func transcriptText(path, home string) string {
+// turn is one conversational turn, tagged with whether the human produced it.
+// The drift check needs that distinction; the summary card doesn't.
+type turn struct {
+	user bool
+	body string
+}
+
+// sessionTurns extracts a session's user/assistant turns (system and tool noise
+// dropped) via the agent adapters, so injected records — skill bodies, command
+// caveats, task notifications — never reach a model as if the human typed them.
+func sessionTurns(path, home string) []turn {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return nil
 	}
 	agent := detectAgentForFile(home, path)
-	var turns []string
+	var turns []turn
 	for _, l := range splitLines(data) {
 		for _, rec := range normalize(agent, l, time.Local) {
 			switch rec.Kind {
 			case KindUser:
-				turns = append(turns, "User: "+rec.Body)
+				turns = append(turns, turn{user: true, body: rec.Body})
 			case KindAssistant:
-				turns = append(turns, "Assistant: "+rec.Body)
+				turns = append(turns, turn{body: rec.Body})
 			}
 		}
 	}
-	return sampleTurns(turns, summaryBudget)
+	return turns
+}
+
+// transcriptText renders the turns as plain "User:/Assistant:" text, then samples
+// it to fit the model: short sessions in full; long ones as the opening turns
+// (the goal) plus the recent turns (the work/outcome), with the middle elided —
+// so the summary reflects the whole session, not just its tail.
+func transcriptText(path, home string) string {
+	var lines []string
+	for _, t := range sessionTurns(path, home) {
+		if t.user {
+			lines = append(lines, "User: "+t.body)
+		} else {
+			lines = append(lines, "Assistant: "+t.body)
+		}
+	}
+	return sampleTurns(lines, summaryBudget)
 }
 
 // sampleTurns joins turns whole when they fit in budget, else takes ~40% from the

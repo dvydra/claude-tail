@@ -27,6 +27,9 @@ type claudeEvent struct {
 	Origin       struct {
 		Kind string `json:"kind"`
 	} `json:"origin"`
+	// IsMeta marks a record Claude Code wrote as scaffolding — an injected skill
+	// body, a local-command caveat — never something the human typed.
+	IsMeta bool `json:"isMeta"`
 }
 
 type claudeMessage struct {
@@ -86,7 +89,10 @@ func normalizeClaude(line []byte, loc *time.Location) []Record {
 				}
 				return []Record{{Kind: KindTaskNote, Ts: ts, Body: line}}
 			}
-			return []Record{{Kind: KindUser, Ts: ts, Body: s}}
+			if isSyntheticUser(ev.Origin.Kind, ev.PromptSource, ev.IsMeta) {
+				return nil
+			}
+			return []Record{{Kind: KindUser, Ts: ts, Body: unwrapCommand(s)}}
 		}
 		var blocks []claudeBlock
 		if json.Unmarshal(ev.Message.Content, &blocks) != nil {

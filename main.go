@@ -694,6 +694,8 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				// Only Claude sessions have subagents; runFocus no-ops (with a
 				// hint) otherwise.
 				runFocus(kbTTY, cur, home, theme)
+			case keyDrift:
+				runDrift(kbTTY, cur, home, theme)
 			case keyHelp:
 				// The state shown is sampled HERE, not at startup: t/T/c/m/w may
 				// all have moved since the banner was printed.

@@ -6,17 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"syscall"
 	"testing"
 	"time"
 )
 
-// ansiRe matches SGR sequences and OSC strings so comparisons focus on rendered
-// text + layout rather than exact colors (those are covered by unit tests).
-var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]|\x1b\\][0-9];[^\x1b\x07]*(?:\x1b\\\\|\x07)")
-
-func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+// ansiRe / stripANSI live in fmrun.go, shared with production code.
 
 type fixtureCase struct {
 	name      string

@@ -23,6 +23,7 @@ const (
 	keyYank
 	keyToggleMrkdwn
 	keyToggleWrap
+	keyDrift
 	keyFocus // not a keyActionFor result: the `→` escape sequence decodes to it
 )
 
@@ -50,6 +51,8 @@ func keyActionFor(b byte) keyAction {
 		return keyYank
 	case 'm', 'M':
 		return keyToggleMrkdwn
+	case 'd', 'D':
+		return keyDrift
 	case 'w', 'W':
 		return keyToggleWrap
 	}
@@ -142,6 +145,9 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 				// Same hand-off as the focus overlay: the render goroutine draws
 				// the modal on this fd while we park, so there's one tty reader.
 				overlayCh <- keyHelp
+				<-resumeCh
+			case keyDrift:
+				overlayCh <- keyDrift
 				<-resumeCh
 			case keyNone:
 			default:
