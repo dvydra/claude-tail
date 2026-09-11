@@ -107,9 +107,11 @@ func showInfo(tty *os.File, s treeSession, home string, theme Theme) {
 
 	var ai aiSummary
 	haveAI := false
-	if fmAvailable() && path != "" {
+	if fmInstalled() && path != "" {
 		io.WriteString(tty, "\x1b[H\x1b[2J\n  Summarizing with Apple Intelligence…")
-		ai, haveAI = aiSummarize(transcriptText(path, home))
+		var err error
+		ai, err = aiSummarize(transcriptText(path, home))
+		haveAI = err == nil
 	}
 	var links []sessionLink
 	if path != "" {

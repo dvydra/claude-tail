@@ -413,6 +413,7 @@ func settingsKeys(treeEnabled bool) []string {
 		kv("y", "copy the last agent message as Slack mrkdwn"),
 		kv("", "(press again within 3s to add the one before it)"),
 		kv("r", "re-render the history on demand"),
+		kv("d", "drift check — what you asked for vs what you're doing"),
 		kv("→", "focus subagents"),
 	}
 	if treeEnabled {
