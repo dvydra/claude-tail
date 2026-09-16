@@ -102,6 +102,22 @@ func run(cfg Config) {
 		if agentStr == "auto" {
 			agentStr = string(AgentClaude)
 		}
+	} else if cfg.Live {
+		// --live: pick from the sessions that are actually running, read out of
+		// Claude Code's own registry. Piped (ok=false) it has already dumped the
+		// list, so there is nothing left to tail.
+		c, ok := runLive(home, theme)
+		if !ok {
+			return
+		}
+		p, ok := resolveTreeChoice(home, claudeBin, c)
+		if !ok {
+			return
+		}
+		session = p
+		if agentStr == "auto" {
+			agentStr = string(AgentClaude)
+		}
 	} else {
 		// Positional args are sugar: a single existing file is a session to tail;
 		// anything else is a search query (so `entire-tail fire socks` just
@@ -1232,6 +1248,15 @@ OPTIONS:
                             fetch takes a few seconds; the result is cached for
                             ~10 min, so subsequent runs (without --cloud) stay
                             instant and still show the cached titles.
+      --live                Show ONLY the sessions running right now, one
+                            expanded block each: pid, status (busy/idle), cwd,
+                            worktree, uptime and a transcript tail. Read from the
+                            registry Claude Code keeps for every running session
+                            (needs claude 2.1.273+), so it's fact rather than the
+                            tree's process-and-folder guess. Refreshes every
+                            second; 'j' shows the raw registry json, '+/-' resize
+                            the tail, Enter/t open or tail the session. Piped, it
+                            prints one line per live session and exits.
       --local               Build the tree by crawling ~/.claude directly,
                             grouped by folder — no git remote lookups, no cloud.
                             The fastest / fully-offline view.

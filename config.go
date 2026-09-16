@@ -20,6 +20,7 @@ type Config struct {
 	Pick             string // auto|always|never
 	Days             string // window for the session tree (empty = per-mode default)
 	List             bool   // --list: static ls-style dump instead of the TUI
+	Live             bool   // --live: only the sessions running right now, read from Claude's own registry
 	Local            bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
 	Cloud            bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
 	Search           string // --search: content-search sessions, ranked by relevance
@@ -267,6 +268,8 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 			c.Days = strings.TrimPrefix(a, "--days=")
 		case a == "-L" || a == "--list":
 			c.List = true
+		case a == "--live":
+			c.Live = true
 		case a == "--local":
 			c.Local = true
 		case a == "--cloud":

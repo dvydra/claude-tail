@@ -84,6 +84,7 @@ entire tail --no-collapse                  # show every user message in full
 entire tail --no-wrap                      # don't wrap prose; let the terminal soft-wrap it
 entire tail --list                         # static ls-style dump of every session
 entire tail --list --days 3                # ...only sessions from the last 3 days
+entire tail --live                         # only the sessions running right now
 entire tail --list-themes                  # see what's available
 entire tail --help                         # full options
 ```
@@ -679,6 +680,64 @@ exits — handy for `grep`/`fzf` or just a full inventory. It's uncapped by defa
 entire tail --list | grep -i erasure     # find that session about account erasure
 entire tail --list --days 1              # what did I work on today?
 ```
+
+### `--live` — only what's running right now
+
+Everywhere else here, "is this session live?" is a guess. `pgrep`+`lsof` finds a
+`claude` process and the folder it's in, but not *which* transcript it's
+writing, so the tree marks the whole folder and hopes the newest file is the
+right one.
+
+`--live` stops guessing. Claude Code keeps a registry of its own running
+sessions at `~/.claude/sessions/<pid>.json` — pid, session id, cwd, version and
+a `busy`/`idle` status — and `--live` reads it. Session ids come out exactly, no
+mtime races and no subprocesses. Every session gets an expanded block, and the
+view refreshes every second, so status flips in place and an exited session
+disappears:
+
+```
+▸ ◉ claude-tail-b3         busy · pid 86544 · v2.1.273
+    21c1a476-e137-4951-8a9a-1bb471096870  interactive · cli
+    ~/src/dvydra/claude-tail  ⑂ live-view  ⎇ worktree-live-view
+    up 40m 29s · busy 9m 18s · /tmp/cc-socks/86544.sock
+    │ Now the dispatch in run(). [..]
+    │ Three fixes from the eyeball: the worktree line repeats the cwd…
+    │ Name collision with tree.go's tailWindow. Renaming mine. [......]
+
+  ○ entiredb-16            idle · pid 41763 · v2.1.273
+    eab90abf-1b59-4244-ac0d-9803fc257e94  interactive · cli
+    ~/src/entirehq/entiredb  ⎇ main
+    up 16h 38m · idle 2m 02s · /tmp/cc-socks/41763.sock
+    │ Order: connect route (2d), status intake + projection (3–4d)…
+```
+
+Busy sessions sort first, then by most recent status change. A worktree names
+its checkout once (`~/src/repo  ⑂ live-view`) rather than repeating the path.
+The transcript tail drops blank lines and turn seams first, so six rows are six
+rows of what the agent actually said.
+
+| key | |
+|---|---|
+| `↑` `↓` | move between sessions |
+| `⏎` | open the 3-pane workspace for it (as in the tree) |
+| `t` | tail it in place |
+| `j` | show the raw registry json for every block |
+| `+` `-` | more / fewer transcript lines |
+| `r` | refresh now |
+| `q` `Esc` | quit |
+
+Piped, it prints one line per live session and exits:
+
+```sh
+entire tail --live                       # the interactive view
+entire tail --live | grep busy           # what's actually generating right now
+```
+
+Two things worth knowing. A session only registers once it has taken its **first
+turn** — that's when Claude mints the id, and also when the transcript first
+appears, so "absent" and "nothing to tail" mean the same thing. And the registry
+arrived in **claude 2.1.273**; on anything older `--live` says so rather than
+showing an empty list.
 
 **Tailing** prefers the session's local `~/.claude` jsonl. If it's not there — a
 **cloud-only** session pruned locally or created on another machine — entire-tail
