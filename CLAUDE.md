@@ -99,6 +99,42 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   am I starting as" is not a thing to guess). `/@` filters by account, matching
   the visible marker rather than the word "personal" — substring-matching that
   word would make a filter of `n` or `e` drag in every personal session
+- `live.go` — **`--live`: the sessions running RIGHT NOW, read rather than
+  guessed.** Everywhere else "is this live?" is inference — `liveCwds`
+  (pgrep+lsof) sees a claude process and its cwd but not *which* transcript it
+  writes, so `buildClaudeTree` marks the folder and takes the newest file. Claude
+  Code answers the question itself: every running session registers at
+  `<config-dir>/sessions/<pid>.json` (pid, sessionId, cwd, version,
+  `busy`/`idle`, `messagingSocketPath`) — the registry behind its own peer
+  messaging (`peerProtocol:1`). Reading it gives **pid → session id exactly**,
+  with no subprocess, no mtime race, no argv scraping and no tap. Four things
+  are load-bearing. (1) **The entry survives a SIGKILL**, so liveness is the
+  PID (`syscall.Kill(pid,0)`, free every tick), not the file's presence; a
+  recycled pid is caught by `liveIsClaude`, which shells out **once per
+  newly-seen pid** and caches — the cost lands on a new session, never on the 1s
+  tick. (2) **`updatedAt` is not a heartbeat** (measured 113–167s stale on idle
+  sessions), so it can never be a freshness window; the block prints
+  `idle 15m 00s` from `statusUpdatedAt`, which is a real edge. (3) **`procStart`
+  is malformed** — a session started 16:54:54 records `Wed Sep 16 06:54:54 2026`
+  — so it looks like the obvious pid-reuse guard and is read for nothing.
+  (4) **The registry is per `CLAUDE_CONFIG_DIR`**, so `liveRoots` walks
+  `claudeProfiles` exactly as everything else does; a single-root read would be
+  blind to the personal account. A hand-started `claude` at its prompt with no
+  turns yet is absent (verified live, 25s+): the id is minted with the first
+  turn, which is also when the transcript appears — so "no entry" and "nothing
+  to tail" are the same fact, not a gap. Split the usual three ways
+  (`collectLiveSessions` + `liveBlockLines`/`renderLive` + `updateLive`, then the
+  tty driver `runLiveTUI`), and `liveChoice` hands back a `treeChoice` so `⏎`/`t`
+  reuse `resolveTreeChoice` — the workspace launch and the picker↔tail loop in
+  `run` need no live-specific code. The read is raw+TIMED (the `focus.go`
+  contract, including its `(0, io.EOF)`-is-a-timeout gotcha) so a quiet terminal
+  still re-polls. Two rendering decisions are deliberate: a worktree's checkout
+  is named ONCE (`~/src/repo  ⑂ live-view`) because the full worktree path
+  already contains it and the repeat costs a row in a multi-block view; and
+  `tailGlance` drops blank lines **and** the renderer's `⋯ <ts>` turn seams
+  *before* taking the last N, because at a six-row budget three seams crowd out
+  every line of text. Transcript tails are cached on the transcript's mtime, so
+  the tick is a stat per session rather than a re-render
 - `discovery.go` — find the session file for `$PWD` per agent
 - `tree.go` — the interactive session **tree** picker (the DEFAULT): sessions
   grouped by repo/folder, arrow-key navigable, recency-colored, type-to-filter
