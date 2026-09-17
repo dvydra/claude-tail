@@ -670,6 +670,16 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			defer removePaneEntry(home, linkUUID) // Ctrl-X back to the tree
 		}
 	}
+	// Wear the agent's tab title, so two tails side by side aren't both just
+	// "entire-tail". The daemon publishes it; setting it is ours to do, because
+	// only this process owns this terminal (AppleScript's own title properties
+	// revert or error — see panelink.go). Never into a pipe: that would put
+	// escapes into redirected output and into the golden suite.
+	linkTitle := ""
+	titleTTY := isCharDevice(os.Stdout)
+	if linkUUID != "" && titleTTY {
+		defer func() { fmt.Fprint(os.Stdout, titleOSC("")) }() // hand the tab back
+	}
 	for {
 		select {
 		case code := <-codeCh:
@@ -829,6 +839,16 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				if id := sessionIDFromPath(cur); id != linkFollow {
 					linkFollow = id
 					_ = writePaneEntry(home, linkUUID, paneEntry{Follow: id, Pid: os.Getpid()})
+				}
+				// Wear whatever the daemon says our agent's tab says. Emitted only
+				// when it CHANGES: the title is rewritten on every daemon tick, and
+				// re-sending an unchanged escape on ours would be a write into the
+				// middle of a streaming transcript for no reason.
+				if titleTTY {
+					if t := readPaneTitle(home, linkUUID); t != linkTitle {
+						linkTitle = t
+						fmt.Fprint(os.Stdout, titleOSC(t))
+					}
 				}
 			}
 			if tap != nil {

@@ -198,6 +198,88 @@ var paneWindows = func(uuids []string) map[string]string {
 	return res
 }
 
+// paneNamesScript reads the tab names of the given iTerm sessions, one
+// "<uuid> <name>" line each.
+//
+// The separator is a SPACE, and that is not laziness. A session id is a UUID
+// and contains none, so the first space splits the line exactly — while the
+// obvious choice of a tab character cannot be written here at all: inside
+// `tell application "iTerm2"`, `tab` is iTerm's own tab CLASS, and the script
+// silently emits the literal word instead of a separator. Verified the hard way:
+//
+//	5A50D36E-…-50EFED17C27Dtab✳ ROADMAP 1300 push_ci permission (python3)
+func paneNamesScript(uuids []string) string {
+	quoted := make([]string, 0, len(uuids))
+	for _, u := range uuids {
+		quoted = append(quoted, `"`+asEscape(u)+`"`)
+	}
+	return "tell application \"iTerm2\"\n" +
+		"\tset wantIDs to {" + strings.Join(quoted, ", ") + "}\n" +
+		"\tset out to \"\"\n" +
+		"\trepeat with w in windows\n" +
+		"\t\trepeat with t in tabs of w\n" +
+		"\t\t\trepeat with s in sessions of t\n" +
+		"\t\t\t\tif wantIDs contains (id of s) then set out to out & (id of s) & \" \" & (name of s) & linefeed\n" +
+		"\t\t\tend repeat\n" +
+		"\t\tend repeat\n" +
+		"\tend repeat\n" +
+		"\treturn out\n" +
+		"end tell\n"
+}
+
+// parsePaneNames turns that output into a map. A name keeps its own spaces and
+// glyphs — only the first space is a separator.
+func parsePaneNames(out string) map[string]string {
+	res := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		uuid, name, ok := strings.Cut(line, " ")
+		if !ok || uuid == "" || strings.TrimSpace(name) == "" {
+			continue
+		}
+		res[uuid] = strings.TrimSpace(name)
+	}
+	return res
+}
+
+// paneNames maps iTerm session ids to their current tab names.
+var paneNames = func(uuids []string) map[string]string {
+	if len(uuids) == 0 {
+		return map[string]string{}
+	}
+	out, err := osaOut(paneNamesScript(uuids))
+	if err != nil {
+		return map[string]string{}
+	}
+	return parsePaneNames(out)
+}
+
+// syncPaneTitles publishes, for each live tail, the current tab name of the
+// agent it is following. The tail itself does the setting — see titleOSC.
+//
+// Polled on the daemon tick rather than driven by focus events, because a title
+// changes while you are looking somewhere else, and watching another agent go
+// from ✳ to ◐ without switching to it is most of the value. A couple of seconds
+// of lag on a title is invisible, which is why polling is fine here and was not
+// for focus.
+func syncPaneTitles(home string, panes map[string]paneEntry, claudes map[string]string) {
+	if len(panes) == 0 {
+		return
+	}
+	uuids := make([]string, 0, len(claudes))
+	for uuid := range claudes {
+		uuids = append(uuids, uuid)
+	}
+	titles := paneTitleTargets(panes, claudes, paneNames(uuids))
+	for tailUUID := range panes {
+		if title, ok := titles[tailUUID]; ok {
+			writePaneTitle(home, tailUUID, stripJobSuffix(title))
+		} else {
+			removePaneTitle(home, tailUUID)
+		}
+	}
+}
+
 // paneLinkPairExists reports whether there is something to link RIGHT NOW: a
 // running claude writing the session this tail is about to follow, sitting in a
 // different iTerm window from us.
@@ -389,8 +471,12 @@ func runPaneLinkDaemon(home string, out io.Writer) error {
 				}
 
 			case <-ticker.C:
-				if len(prunePanes(readPaneRegistry(home), pidAlive)) > 0 {
+				if panes := prunePanes(readPaneRegistry(home), pidAlive); len(panes) > 0 {
 					idleSince = time.Now()
+					if time.Since(claudesAt) > paneLinkClaudeRefresh {
+						claudes, claudesAt = runningClaudePanes(home), time.Now()
+					}
+					syncPaneTitles(home, panes, claudes)
 					continue
 				}
 				if time.Since(idleSince) > paneLinkIdleExit {
@@ -433,13 +519,28 @@ func ensurePaneLinkDaemon(home string) {
 	go func() { _ = cmd.Wait() }() // reap it rather than leaving a zombie behind
 }
 
-// stopPaneLinkDaemon signals a running watcher to exit.
+// stopPaneLinkDaemon signals a running watcher to exit and waits for it to go.
+//
+// The wait is the point. SIGTERM returns immediately, but the daemon still has
+// to unwind and delete its state file — and a `link stop && link start` in that
+// gap has the new daemon read the dying one's state, decide one is already
+// running, and exit, leaving none at all.
 func stopPaneLinkDaemon(home string) bool {
 	st, ok := readPaneLinkState(home)
 	if !ok || !paneLinkRunning(st) {
 		return false
 	}
-	return syscall.Kill(st.Pid, syscall.SIGTERM) == nil
+	if syscall.Kill(st.Pid, syscall.SIGTERM) != nil {
+		return false
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !pidAlive(st.Pid) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return true
 }
 
 // ── setup ──

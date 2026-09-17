@@ -212,6 +212,133 @@ func TestPaneLinkEnabled(t *testing.T) {
 	}
 }
 
+// A session name is text another program chose, and it is about to be written
+// to our terminal inside an escape sequence. Anything that could close that
+// sequence early has to go, or a crafted title is an injection.
+func TestTitleOSC(t *testing.T) {
+	if got, want := titleOSC("plain"), "\x1b]1;plain\x07"; got != want {
+		t.Errorf("titleOSC = %q, want %q", got, want)
+	}
+	for _, bad := range []string{"a\x1bb", "a\x07b", "a\nb", "a\rb", "a\x00b"} {
+		got := titleOSC(bad)
+		if strings.Count(got, "\x1b") != 1 || strings.Count(got, "\x07") != 1 {
+			t.Errorf("titleOSC(%q) = %q: control character survived", bad, got)
+		}
+		if !strings.HasPrefix(got, "\x1b]1;") || !strings.HasSuffix(got, "\x07") {
+			t.Errorf("titleOSC(%q) = %q: not a well-formed OSC", bad, got)
+		}
+	}
+	// Status glyphs and other non-ASCII are the whole point — never stripped.
+	if got := titleOSC("✳ ROADMAP push_ci"); !strings.Contains(got, "✳ ROADMAP push_ci") {
+		t.Errorf("titleOSC dropped a glyph: %q", got)
+	}
+	// An empty title is the clear-the-title call, not a malformed one.
+	if got, want := titleOSC(""), "\x1b]1;\x07"; got != want {
+		t.Errorf("titleOSC(\"\") = %q, want %q", got, want)
+	}
+}
+
+// Absurdly long titles are capped rather than written in full: iTerm truncates
+// for display anyway, and the cost lands on every tick.
+func TestTitleOSCCaps(t *testing.T) {
+	got := titleOSC(strings.Repeat("x", 500))
+	if len([]rune(got)) > titleMaxRunes+8 {
+		t.Errorf("titleOSC did not cap: %d runes", len([]rune(got)))
+	}
+}
+
+// iTerm composes a tab name as "<title> (<job>)", and it would append OUR job
+// to whatever we set — so mirroring the composed string gives a tail tab
+// reading "… (python3) (entire-tail)".
+func TestStripJobSuffix(t *testing.T) {
+	cases := map[string]string{
+		"◑ ROADMAP 1300 push_ci permission (python3)": "◑ ROADMAP 1300 push_ci permission",
+		"◐ TEST TITLE SYNC (entire-tail)":             "◐ TEST TITLE SYNC",
+		"entire-tail":                                 "entire-tail",
+		"":                                            "",
+		// Kept: a multi-word parenthetical is someone's actual title, not a job.
+		"release notes (draft two)": "release notes (draft two)",
+		// Kept: no space before the bracket, so it is part of the word.
+		"build(1)": "build(1)",
+		// Kept: nothing left if we stripped it.
+		"(python3)": "(python3)",
+	}
+	for in, want := range cases {
+		if got := stripJobSuffix(in); got != want {
+			t.Errorf("stripJobSuffix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestPaneTitleTargets(t *testing.T) {
+	panes := map[string]paneEntry{
+		"TAIL-A": {Follow: "sess-1", Pid: 10},
+		"TAIL-B": {Follow: "sess-2", Pid: 11},
+		"TAIL-C": {Follow: "sess-gone", Pid: 12},
+	}
+	claudes := map[string]string{"CLAUDE-1": "sess-1", "CLAUDE-2": "sess-2"}
+	names := map[string]string{"CLAUDE-1": "✳ one", "CLAUDE-2": "◐ two"}
+
+	got := paneTitleTargets(panes, claudes, names)
+	want := map[string]string{"TAIL-A": "✳ one", "TAIL-B": "◐ two"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("paneTitleTargets = %v, want %v", got, want)
+	}
+	// A tail whose claude is gone keeps no entry — the tail then clears its own
+	// title rather than being left showing a session that has stopped.
+	if _, ok := got["TAIL-C"]; ok {
+		t.Errorf("a tail with no running claude must get no title")
+	}
+}
+
+// The separator bug that made titles silently never appear: `tab` inside a
+// `tell application "iTerm2"` block is iTerm's tab class, so the script emitted
+// the literal word. A name keeps every space it has; only the first one splits.
+func TestParsePaneNames(t *testing.T) {
+	out := "5A50D36E-2833-4C83-956A-50EFED17C27D ✳ ROADMAP 1300 push_ci permission (python3)\n" +
+		"802CB271-D382-43EE-9B49-E1E57243526B entire-tail\n" +
+		"\n" +
+		"D0C1A279-8439-45E5-AE13-F35133F15BE4 \n" // a nameless session contributes nothing
+	got := parsePaneNames(out)
+	want := map[string]string{
+		"5A50D36E-2833-4C83-956A-50EFED17C27D": "✳ ROADMAP 1300 push_ci permission (python3)",
+		"802CB271-D382-43EE-9B49-E1E57243526B": "entire-tail",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parsePaneNames = %#v, want %#v", got, want)
+	}
+}
+
+// The script must not contain the bare word that caused it.
+func TestPaneNamesScriptAvoidsTabTerminology(t *testing.T) {
+	s := paneNamesScript([]string{"ONE"})
+	if strings.Contains(s, "& tab &") {
+		t.Errorf("paneNamesScript uses iTerm's tab class as a separator:\n%s", s)
+	}
+	if !strings.Contains(s, `& " " &`) {
+		t.Errorf("paneNamesScript should separate with a space:\n%s", s)
+	}
+}
+
+func TestPaneTitleRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	if readPaneTitle(home, "TAIL-A") != "" {
+		t.Errorf("missing title file should read empty")
+	}
+	writePaneTitle(home, "TAIL-A", "✳ one")
+	if got := readPaneTitle(home, "TAIL-A"); got != "✳ one" {
+		t.Errorf("readPaneTitle = %q", got)
+	}
+	writePaneTitle(home, "TAIL-A", "◐ one")
+	if got := readPaneTitle(home, "TAIL-A"); got != "◐ one" {
+		t.Errorf("after rewrite = %q", got)
+	}
+	removePaneTitle(home, "TAIL-A")
+	if got := readPaneTitle(home, "TAIL-A"); got != "" {
+		t.Errorf("after remove = %q, want empty", got)
+	}
+}
+
 // The loop this feature actually shipped with: our own tab switch is reported
 // back as a focus change, we pair it, we switch the other side, forever. The
 // watcher no longer reports it (panelink.py reads the key window rather than

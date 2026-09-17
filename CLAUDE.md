@@ -715,6 +715,22 @@ needs to change.
   daemon logs every decision with the script's verdict (`stale`, a count, a
   failure) because without it "it keeps switching" is indistinguishable from
   anything else moving tabs, which cost a whole debugging round to learn.
+- **The tail sets its own tab title, and it has to be the tail that does it.**
+  Two tails side by side are otherwise both `entire-tail`. AppleScript cannot
+  set a lasting title: `set name of session` is recomputed from the running job
+  and reverts (measured: back to "entire-tail" after 3s), and `set title of tab`
+  raises an AppleEvent error. `OSC 1` written to your own terminal is what
+  sticks, and only the tail owns the tail's terminal — hence the split, with the
+  daemon publishing to `link/titles/<uuid>` and the tail wearing it (`titleOSC`,
+  emitted only on CHANGE, never into a pipe, cleared on exit). Two details:
+  every control character is stripped out of the title first, because it is text
+  another program chose going into an escape sequence on our terminal; and
+  iTerm's job suffix is removed (`stripJobSuffix`) or the tab reads
+  `… (python3) (entire-tail)`. **Do not use `tab` as a separator in any
+  AppleScript here** — inside `tell application "iTerm2"` it is iTerm's tab
+  CLASS, not the character, and the script silently emits the literal word
+  (`…7C27Dtab✳ ROADMAP…`), which is why `paneNamesScript` splits on a space and
+  why the id goes first.
 - **Two things about the pane link's setup, both learned by shipping them
   wrong.** (1) **A daemon that is RUNNING is not one that is CONNECTED.** With
   iTerm's API off the watcher child starts, fails to connect and dies, every 2s

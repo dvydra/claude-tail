@@ -836,6 +836,31 @@ Failures are all quiet, and one is deliberate: if you click **Deny** on iTerm's
 prompt, the watcher stops instead of respawning — a retry loop would re-prompt
 you forever.
 
+**The tail also wears its agent's tab title.** Two tails side by side are
+otherwise both called `entire-tail`, which tells you nothing about which agent
+each is watching:
+
+```
+window 2877 (agents)              window 4930 (tails)
+├─ ✳ ROADMAP 1300 push_ci         ├─ ✳ ROADMAP 1300 push_ci
+├─ ◑ Alpha two-provider CI        ├─ ◑ Alpha two-provider CI
+└─ ✳ buildkite triage             └─ ✳ buildkite triage
+```
+
+It tracks live, status glyph included, so you can watch another agent go from
+✳ to ◑ without switching to it. Setting it is the tail's own job rather than
+the watcher's, because AppleScript cannot: `set name of session` is recomputed
+from the running job and reverts within seconds, and `set title of tab` raises
+an AppleEvent error. Writing `OSC 1` to your own terminal is what works, and
+only the tail owns the tail's terminal — so the daemon publishes the agent's
+title to `link/titles/<iterm-session-id>` and the tail wears it. Nothing is
+emitted into a pipe, and the tab is handed back on exit.
+
+The job suffix iTerm appends (`(python3)`) is stripped, or the tail's tab would
+read `… (python3) (entire-tail)`. That is a heuristic — only a final
+parenthetical containing no spaces — so a title that genuinely ends in
+`(draft two)` is left alone.
+
 ### Which agent pane A launches (`--claude-bin`)
 
 Pane A runs plain **`claude`** by default. Any claude-compatible wrapper works

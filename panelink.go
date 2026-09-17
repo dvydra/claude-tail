@@ -264,6 +264,132 @@ func paneUUIDFromSessionID(id string) string {
 	return ""
 }
 
+// ── tab titles ──
+//
+// Two entire-tails side by side are both called "entire-tail", which tells you
+// nothing about which agent each is watching. The fix is to show the agent's own
+// tab title on the tail's tab, live, status glyph and all.
+//
+// Only the tail can do the actual setting, which is why this is split across
+// two processes. AppleScript cannot: `set name of session` is recomputed from
+// the running job and reverts within seconds (measured: back to "entire-tail"
+// after 3s), and `set title of tab` raises an AppleEvent error. Writing
+// OSC 1 to your own terminal is the mechanism that works, and only the tail
+// owns the tail's terminal. So the daemon reads the agent's title and leaves it
+// where the tail will find it.
+
+// titleMaxRunes caps what we write. iTerm truncates for display anyway, and the
+// cost of a silly title would be paid on every tick.
+const titleMaxRunes = 160
+
+// titleOSC wraps a title in the escape that sets a terminal's tab name.
+//
+// The title is text ANOTHER program chose, on its way into an escape sequence
+// on our terminal, so every control character is dropped first — an ESC or BEL
+// inside it would end the sequence early and the rest would execute as terminal
+// commands. Everything printable survives, including the ✳/◐ glyphs that are
+// the point of showing it.
+func titleOSC(title string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range title {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		if n >= titleMaxRunes {
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return "\x1b]1;" + b.String() + "\x07"
+}
+
+// stripJobSuffix removes the trailing "(job)" iTerm appends to a tab name.
+//
+// What AppleScript calls a session's `name` is the composed label, so the agent
+// reads back as "◑ ROADMAP 1300 push_ci permission (python3)" — and iTerm would
+// then append OUR job to the copy we set, giving "… (python3) (entire-tail)".
+// There is no raw-title accessor in iTerm's AppleScript dictionary to ask
+// instead, so the suffix comes off here.
+//
+// A heuristic, and bounded deliberately: only a final parenthetical with no
+// spaces in it, which is what a process name looks like. A title ending in
+// "(two words)" is far more likely to be someone's actual title and is kept.
+func stripJobSuffix(name string) string {
+	trimmed := strings.TrimRight(name, " ")
+	if !strings.HasSuffix(trimmed, ")") {
+		return name
+	}
+	open := strings.LastIndexByte(trimmed, '(')
+	if open <= 0 || trimmed[open-1] != ' ' {
+		return name
+	}
+	inner := trimmed[open+1 : len(trimmed)-1]
+	if inner == "" || strings.ContainsAny(inner, " ()") {
+		return name
+	}
+	return strings.TrimRight(trimmed[:open], " ")
+}
+
+func paneTitlesDir(home string) string { return filepath.Join(paneLinkDir(home), "titles") }
+
+func paneTitlePath(home, uuid string) string {
+	return filepath.Join(paneTitlesDir(home), uuid)
+}
+
+// writePaneTitle publishes the title a tail should wear. Written by the daemon
+// into its OWN directory: panes/ belongs to the tails, and having each side
+// write only what it owns is what keeps "who said this" answerable.
+func writePaneTitle(home, uuid, title string) {
+	if uuid == "" {
+		return
+	}
+	if os.MkdirAll(paneTitlesDir(home), 0o700) != nil {
+		return
+	}
+	tmp := paneTitlePath(home, uuid) + ".tmp"
+	if os.WriteFile(tmp, []byte(title), 0o600) != nil {
+		return
+	}
+	_ = os.Rename(tmp, paneTitlePath(home, uuid))
+}
+
+func readPaneTitle(home, uuid string) string {
+	b, err := os.ReadFile(paneTitlePath(home, uuid))
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func removePaneTitle(home, uuid string) {
+	if uuid != "" {
+		_ = os.Remove(paneTitlePath(home, uuid))
+	}
+}
+
+// paneTitleTargets maps each tail to the title of the agent it follows.
+//
+// A tail whose agent isn't running gets NO entry, which the tail reads as "clear
+// my title" — better than leaving it wearing the name of a session that has
+// stopped.
+func paneTitleTargets(panes map[string]paneEntry, claudes, names map[string]string) map[string]string {
+	out := map[string]string{}
+	for tailUUID, e := range panes {
+		for claudeUUID, sess := range claudes {
+			if sess != e.Follow {
+				continue
+			}
+			if name := names[claudeUUID]; name != "" {
+				out[tailUUID] = name
+			}
+			break
+		}
+	}
+	return out
+}
+
 // ── the opt-in gate ──
 
 func paneLinkChoicePath(home string) string {
