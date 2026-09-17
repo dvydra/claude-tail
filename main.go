@@ -50,6 +50,11 @@ func main() {
 			die(err.Error())
 		}
 		return
+	case ActionLink:
+		if err := runPaneLink(cfg.LinkArgs, firstNonEmpty(os.Getenv("HOME"), mustHome()), os.Stdout); err != nil {
+			die(err.Error())
+		}
+		return
 	case ActionUninstallHooks:
 		if err := uninstallHooks(firstNonEmpty(os.Getenv("HOME"), mustHome())); err != nil {
 			die("uninstall-hooks: " + err.Error())
@@ -214,6 +219,21 @@ func run(cfg Config) {
 		die("no session jsonl found for agent=" + agentStr + " (tried $PWD and agent default dirs).")
 	}
 	agent := Agent(agentStr)
+
+	// One-time offer: link this pane to its claude. Asked only once the session
+	// is known, because the question is only worth asking when there is actually
+	// something to link — a claude writing THIS session, in another window. The
+	// cheap disqualifiers are checked first so the osascript pair probe is never
+	// paid by a run that could not ask anyway.
+	if agent == AgentClaude && !cfg.NoPaneLink && ttyUsable() && !paneLinkChoiceRecorded(home) {
+		if shouldOfferPaneLink(paneLinkOfferInputs{
+			isTTY:    true,
+			isClaude: true,
+			hasPair:  paneLinkPairExists(home, sessionIDFromPath(session), ownPaneUUID(os.Getenv)),
+		}) {
+			offerPaneLink(home, bufio.NewReader(os.Stdin), os.Stderr)
+		}
+	}
 
 	loc := time.Local
 	// One signal handler + code channel are shared across the whole picker↔tail
@@ -578,6 +598,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		case setTap:
 			settingsDirty = false
 			return toggleTapAgent(home)
+		case setPaneLink:
+			settingsDirty = false
+			return togglePaneLink(home)
 		}
 		return ""
 	}
@@ -633,13 +656,28 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	if agent == AgentClaude && !cfg.NoTap {
 		tap = newTapWatcher(home, sessionIDFromPath(cur))
 	}
+	// Pane link: publish which session this pane is following, so the watcher can
+	// switch the other window to our claude (and back). Only the session we are
+	// following NOW is knowable here — after a lineage fork our own argv names an
+	// ancestor — so it is republished whenever it changes. Enabled only when the
+	// user said yes; otherwise nothing is written and no daemon is spawned.
+	linkUUID, linkFollow := "", ""
+	if agent == AgentClaude && !cfg.NoPaneLink && paneLinkEnabled(home) {
+		if linkUUID = ownPaneUUID(os.Getenv); linkUUID != "" {
+			linkFollow = sessionIDFromPath(cur)
+			_ = writePaneEntry(home, linkUUID, paneEntry{Follow: linkFollow, Pid: os.Getpid()})
+			ensurePaneLinkDaemon(home)
+			defer removePaneEntry(home, linkUUID) // Ctrl-X back to the tree
+		}
+	}
 	for {
 		select {
 		case code := <-codeCh:
 			// Quit: restore the terminal and do the final flush here, on the
 			// sole writer goroutine (130 for Ctrl-C/SIGINT, 0 for q/Ctrl-D/SIGTERM).
 			restoreTerm()
-			r.endLine() // terminate a deferred body/dots line so exit lands on a fresh row
+			removePaneEntry(home, linkUUID) // os.Exit below skips the defer
+			r.endLine()                     // terminate a deferred body/dots line so exit lands on a fresh row
 			out.Flush()
 			fmt.Fprintln(os.Stderr)
 			os.Exit(code)
@@ -783,6 +821,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 						poll()
 					}
 					idle = 0
+				}
+			}
+			if linkUUID != "" {
+				// Same flip the tap rebinds for. Written only on a change, so the
+				// steady state costs a string compare rather than a file write.
+				if id := sessionIDFromPath(cur); id != linkFollow {
+					linkFollow = id
+					_ = writePaneEntry(home, linkUUID, paneEntry{Follow: id, Pid: os.Getpid()})
 				}
 			}
 			if tap != nil {

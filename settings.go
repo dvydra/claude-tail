@@ -40,6 +40,7 @@ const (
 	setStatusBar
 	setHooks
 	setTap
+	setPaneLink
 )
 
 // settingRow is one changeable line.
@@ -312,6 +313,8 @@ func settingsRowsFor(info helpInfo, home string) []settingRow {
 			Note: "writes ~/.claude/settings.json", Confirm: true},
 		{ID: setTap, Label: "api tap", Value: runningOrNot(tapBaseURL(home) != ""),
 			Note: "launchd agent", Confirm: true},
+		{ID: setPaneLink, Label: "pane link", Value: paneLinkRowValue(home),
+			Note: "iTerm tab follow", Confirm: true},
 	}
 }
 

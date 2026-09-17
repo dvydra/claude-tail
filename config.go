@@ -31,9 +31,11 @@ type Config struct {
 	ClaudeBin        string // --claude-bin: the binary the workspace panes + handover launch
 	ClaudeBinSet     bool   // ClaudeBin came from a flag/env, not the built-in default
 	NoTap            bool   // --no-tap: ignore the API-stream tap even when its daemon is up
+	NoPaneLink       bool   // --no-pane-link: never register this pane, never offer the iTerm tab link
 	NoStatus         bool   // --no-status: don't reserve the bottom row for the status bar
 	NoWrap           bool   // --no-wrap: don't wrap bodies; let the terminal soft-wrap (clean drag-select copy)
 	TapArgs          []string
+	LinkArgs         []string
 }
 
 // The workspace panes and `handover` launch an agent; which binary that is is a
@@ -70,6 +72,7 @@ const (
 	ActionInstallHooks   // `entire-tail install-hooks`
 	ActionUninstallHooks // `entire-tail uninstall-hooks`
 	ActionTap            // `entire-tail tap <start|status|stop|install|uninstall>`
+	ActionLink           // `entire-tail link <start|install|uninstall|stop|status>`
 )
 
 // envTrue reports whether an env var holds a truthy value (1/true/yes/on),
@@ -175,6 +178,10 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 	if len(args) > 0 && args[0] == "tap" {
 		c.TapArgs = args[1:]
 		return c, ActionTap, nil
+	}
+	if len(args) > 0 && args[0] == "link" {
+		c.LinkArgs = args[1:]
+		return c, ActionLink, nil
 	}
 	if len(args) > 0 && args[0] == "install-hooks" {
 		return c, ActionInstallHooks, nil
@@ -293,6 +300,8 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 			c.NoHookInstall = true
 		case a == "--no-tap":
 			c.NoTap = true
+		case a == "--no-pane-link":
+			c.NoPaneLink = true
 		case a == "--no-status":
 			c.NoStatus = true
 		case a == "--no-wrap":

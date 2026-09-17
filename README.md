@@ -768,6 +768,74 @@ to that **session's** folder (wherever it was, not necessarily `$PWD`):
 (The `claude --resume` command is queued into the current pane and runs the
 moment `entire-tail` exits, so that pane becomes A.)
 
+### Pane link: select one side, the other window follows (opt-in)
+
+The workspace above puts claude and its tail in one tab, so both are always on
+screen. A layout it does *not* produce is the one that appears once you have a
+few sessions going: claude sessions as tabs of one window, their tails as tabs
+of another. Click a claude tab there and the other window still shows whichever
+tail you looked at last, so the pair has to be re-aligned by hand every time.
+
+With the pane link on, selecting either side switches the **other window** to the
+tab holding its partner — in both directions, and never the window you are
+working in:
+
+```
+window A (agents)          window B (tails)
+┌───┬───┬───┐              ┌───┬───┬───┐
+│ 1 │[2]│ 3 │   click ──▶  │ 1 │[2]│ 3 │   B switches to the tail of A's tab 2
+└───┴───┴───┘              └───┴───┴───┘   focus stays in A
+```
+
+It never takes focus. Selecting a tab in a window that is not the current one
+leaves `current window` and `current session` untouched (measured, iTerm2
+3.6.11), which is what makes it safe to do automatically — there is no way for
+the two windows to bounce focus off each other. Nothing here activates an app,
+raises a window, or moves the keyboard anywhere.
+
+Pairs are discovered live, so this works for windows you laid out by hand:
+
+- every running entire-tail publishes the session it is following **right now**
+  to `~/.claude/entire-tail/link/panes/<iterm-session-id>.json`, rewritten on a
+  worktree fork, a `/clear` or a relocation (a tail's current target is not in
+  its argv — after a fork its argv names an ancestor);
+- the watcher resolves running claudes to their transcripts itself, every few
+  seconds, with the same `pgrep`/`lsof` join the tree uses. Nothing registers
+  claude, so restarting it in a different tab re-pairs on its own.
+
+Two panes of the same **window** are never linked — you cannot show both at
+once, and switching would drag you off the tab you just chose. That is what
+makes it a no-op in the 3-pane workspace.
+
+Setup is a one-time offer the first time a tail sees a real pair across two
+windows, or run it directly:
+
+```sh
+entire-tail link install      # build the watcher venv, start it
+entire-tail link status       # watching? how many tails and claudes are placed?
+entire-tail link stop         # stop the watcher (a tail restarts it)
+entire-tail link uninstall    # remove the venv, turn it off
+```
+
+The watcher is a ~15-line Python script (embedded in the binary) using iTerm2's
+`FocusMonitor` — the only event-driven way to learn that a neighbouring pane was
+clicked, since `it2api monitor-focus` awaits exactly one update and exits.
+Everything else stays in Go. `link install` builds it a private venv under
+`~/.claude/entire-tail/link/venv` rather than touching your Python, preferring a
+stable interpreter over a `mise`/`pyenv` one (a version-managed path disappears
+when you upgrade, taking a running daemon's interpreter with it). iTerm asks once
+to allow the script to connect; click **Allow**.
+
+The daemon starts on demand from the first tail and exits a minute after the last
+one closes, so there is no launchd agent and nothing runs on a machine that has
+stopped using it. Everything is gated on your yes: declined or unanswered, no
+pane file is written and no watcher is spawned. `--no-pane-link` suppresses it
+for one run, and the `?` panel has a **pane link** row.
+
+Failures are all quiet, and one is deliberate: if you click **Deny** on iTerm's
+prompt, the watcher stops instead of respawning — a retry loop would re-prompt
+you forever.
+
 ### Which agent pane A launches (`--claude-bin`)
 
 Pane A runs plain **`claude`** by default. Any claude-compatible wrapper works
