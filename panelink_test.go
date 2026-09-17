@@ -146,6 +146,15 @@ func TestLinkScript(t *testing.T) {
 	if !strings.Contains(s, "focusWinID") {
 		t.Errorf("linkScript has no same-window guard:\n%s", s)
 	}
+	// Both guards must read the LIVE state, not the event's. An event that has
+	// gone stale sent us switching tabs in the window the user had just moved
+	// to, which is both the wrong window and a feedback loop.
+	if !strings.Contains(s, "current window") || !strings.Contains(s, `return "stale"`) {
+		t.Errorf("linkScript must re-check the focused session against the current window:\n%s", s)
+	}
+	if strings.Contains(s, "if (id of s) is focusedID then set focusWinID") {
+		t.Errorf("linkScript still derives the focused window from the event:\n%s", s)
+	}
 }
 
 // Session ids are UUIDs, but the script builder must not be the place that
@@ -200,6 +209,43 @@ func TestPaneLinkEnabled(t *testing.T) {
 	recordPaneLinkChoice(home, "yes")
 	if !paneLinkEnabled(home) {
 		t.Errorf("accepted: want enabled")
+	}
+}
+
+// The loop this feature actually shipped with: our own tab switch is reported
+// back as a focus change, we pair it, we switch the other side, forever. The
+// watcher no longer reports it (panelink.py reads the key window rather than
+// trusting active_session_changed), and this is the second line of defence —
+// a session we just switched TO cannot be treated as something the user chose.
+func TestSwitchGuardIgnoresOurOwnEcho(t *testing.T) {
+	now := int64(1000)
+	g := newSwitchGuard()
+	g.remember([]string{"PARTNER-1", "PARTNER-2"}, now)
+
+	if !g.isEcho("PARTNER-1", now+50) {
+		t.Errorf("a partner we just selected, 50ms later: want echo")
+	}
+	if !g.isEcho("PARTNER-2", now+switchEchoWindowMS-1) {
+		t.Errorf("just inside the window: want echo")
+	}
+	if g.isEcho("PARTNER-1", now+switchEchoWindowMS+1) {
+		t.Errorf("past the window: want a real event")
+	}
+	if g.isEcho("SOMETHING-ELSE", now+10) {
+		t.Errorf("a session we never selected: want a real event")
+	}
+}
+
+// The guard must not swallow a genuine click. Going back to the pane you came
+// from, after the echo window, is an ordinary focus change.
+func TestSwitchGuardKeepsRealReturns(t *testing.T) {
+	g := newSwitchGuard()
+	g.remember([]string{"TAIL-A"}, 1000)
+	if !g.isEcho("TAIL-A", 1010) {
+		t.Fatalf("setup: want the immediate echo suppressed")
+	}
+	if g.isEcho("TAIL-A", 1000+switchEchoWindowMS+500) {
+		t.Errorf("clicking back a second later must count")
 	}
 }
 

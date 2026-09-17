@@ -69,7 +69,10 @@ func paneLinkVenvPython(home string) string {
 // network. Same rule as the tap's launchctl stubs: a test must not touch the
 // machine's real state.
 var (
-	paneLinkRun    = func(script string) error { return osaRun(script) }
+	// paneLinkRun returns what the script decided ("stale", "no-window", or the
+	// number of tabs switched) rather than just an error: the script is where
+	// both guards live, so its verdict is the only honest thing to log.
+	paneLinkRun    = func(script string) (string, error) { return osaOut(script) }
 	paneLinkPipRun = func(python, dir string) error { return runPaneLinkPip(python, dir) }
 )
 
@@ -302,6 +305,7 @@ func runPaneLinkDaemon(home string, out io.Writer) error {
 	claudes := runningClaudePanes(home)
 	claudesAt := time.Now()
 	idleSince := time.Now()
+	guard := newSwitchGuard()
 	ticker := time.NewTicker(paneLinkTick)
 	defer ticker.Stop()
 
@@ -345,6 +349,11 @@ func runPaneLinkDaemon(home string, out io.Writer) error {
 					logf("connected to iTerm")
 					continue
 				}
+				// Our own tab switch comes back as an event. Dropping it here is
+				// what stops two linked pairs flipping tabs at each other forever.
+				if guard.isEcho(ev.uuid, time.Now().UnixMilli()) {
+					continue
+				}
 				if time.Since(claudesAt) > paneLinkClaudeRefresh {
 					claudes, claudesAt = runningClaudePanes(home), time.Now()
 				}
@@ -362,8 +371,21 @@ func runPaneLinkDaemon(home string, out io.Writer) error {
 				if len(partners) == 0 {
 					continue
 				}
-				if err := paneLinkRun(linkScript(ev.uuid, partners)); err != nil {
-					logf("switch failed: %v", err)
+				// Recorded BEFORE the switch: the event it provokes can arrive
+				// while osascript is still returning.
+				guard.remember(partners, time.Now().UnixMilli())
+				// Logged unconditionally, and with the script's own verdict. This
+				// is the only window onto what the daemon does to someone's
+				// screen; without it a report of "it keeps switching" cannot be
+				// told apart from anything else moving tabs, which cost a whole
+				// debugging round. "stale" means the guards declined — common and
+				// healthy, not a failure.
+				res, err := paneLinkRun(linkScript(ev.uuid, partners))
+				switch {
+				case err != nil:
+					logf("%s → %s: failed: %v", ev.uuid, strings.Join(partners, ", "), err)
+				default:
+					logf("%s → %s: %s", ev.uuid, strings.Join(partners, ", "), strings.TrimSpace(res))
 				}
 
 			case <-ticker.C:

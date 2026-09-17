@@ -141,20 +141,73 @@ func linkPartners(focused string, panes map[string]paneEntry, claudes map[string
 	return out
 }
 
-// linkScript builds the one AppleScript pass that locates the focused session,
-// locates the partners, and selects the partners' tabs.
+// switchEchoWindowMS is how long after selecting a partner's tab an event
+// naming that partner is treated as our own echo rather than a click. Short,
+// because it must not swallow a real return to the pane you came from —
+// iTerm reports the change within a few milliseconds, a human takes hundreds.
+const switchEchoWindowMS = 400
+
+// switchGuard is the second line of defence against the feedback loop this
+// feature shipped with: selecting a partner's tab is itself an iTerm event, so
+// a watcher that reports it hands the daemon its own action, which pairs it and
+// switches the other side, forever. Two linked pairs flip tabs until something
+// is killed.
 //
-// It is one pass on purpose. A tab is addressed by index, and indexes shift when
-// tabs are opened, closed or reordered, so an index found in an earlier call
-// could point at a different tab by the time it is used. Finding and selecting
-// inside a single script removes the gap.
+// The real fix is in panelink.py — the key window's current session cannot echo,
+// because our tab switch never moves focus. This exists because the cost of
+// being wrong again is a UI that thrashes in the user's hands, and because the
+// evidence for the fix (`active_session_changed` naming an unfocused window's
+// session) is the sort of behaviour that can differ across iTerm versions.
+type switchGuard struct {
+	selected map[string]int64 // partner session id → when we selected it (ms)
+}
+
+func newSwitchGuard() *switchGuard { return &switchGuard{selected: map[string]int64{}} }
+
+// remember records the partners we just acted on.
+func (g *switchGuard) remember(partners []string, nowMS int64) {
+	for _, p := range partners {
+		g.selected[p] = nowMS
+	}
+}
+
+// isEcho reports whether this event is one we caused. It also drops entries
+// that have aged out, so the map stays the size of a pairing rather than the
+// size of a session's history.
+func (g *switchGuard) isEcho(uuid string, nowMS int64) bool {
+	for id, at := range g.selected {
+		if nowMS-at >= switchEchoWindowMS {
+			delete(g.selected, id)
+		}
+	}
+	at, ok := g.selected[uuid]
+	return ok && nowMS-at < switchEchoWindowMS
+}
+
+// linkScript builds the one AppleScript pass that checks the event is still
+// current, works out which window must not be touched, and selects the
+// partners' tabs everywhere else.
 //
-// The same-window guard is what makes the 3-pane workspace a no-op: two panes of
-// one tab (or two tabs of one window) cannot both be shown, and selecting the
-// partner's tab would drag the user off the tab they just chose.
+// It is one pass on purpose, and both guards are inside it because both facts
+// go stale in the milliseconds it takes to get here:
 //
-// A select that fails — the tab closed a moment ago — is swallowed, so one dead
-// partner cannot stop the others being switched.
+//   - **The event may already be old.** A focus event names a session, but by
+//     the time the daemon has read the registry and resolved a partner, the user
+//     may have moved on. Acting on it then switched a tab in the window they had
+//     just moved TO — yanking them off the tab they chose, and changing the key
+//     session, which reported straight back to us and bounced the pair between
+//     two windows. So the script re-reads the focused session and does nothing
+//     unless it is still the one the event named.
+//   - **The window to leave alone is the CURRENT one**, asked of iTerm here
+//     rather than derived from the (possibly stale) event's session. Two panes of
+//     one window cannot both be shown, so selecting a partner there would drag
+//     the user off their own tab — and it is what makes the 3-pane workspace a
+//     no-op rather than a special case.
+//
+// A tab is addressed by index and indexes shift as tabs open, close and move, so
+// finding and selecting in one script also removes that gap. A select that fails
+// — the tab closed a moment ago — is swallowed, so one dead partner cannot stop
+// the others being switched.
 func linkScript(focused string, partners []string) string {
 	quoted := make([]string, 0, len(partners))
 	for _, p := range partners {
@@ -164,15 +217,11 @@ func linkScript(focused string, partners []string) string {
 	b.WriteString("tell application \"iTerm2\"\n")
 	b.WriteString("\tset focusedID to \"" + asEscape(focused) + "\"\n")
 	b.WriteString("\tset wantIDs to {" + strings.Join(quoted, ", ") + "}\n")
-	b.WriteString("\tset focusWinID to \"\"\n")
-	b.WriteString("\trepeat with w in windows\n")
-	b.WriteString("\t\trepeat with t in tabs of w\n")
-	b.WriteString("\t\t\trepeat with s in sessions of t\n")
-	b.WriteString("\t\t\t\tif (id of s) is focusedID then set focusWinID to (id of w as text)\n")
-	b.WriteString("\t\t\tend repeat\n")
-	b.WriteString("\t\tend repeat\n")
-	b.WriteString("\tend repeat\n")
-	b.WriteString("\tif focusWinID is \"\" then return \"no-focus\"\n")
+	b.WriteString("\tif (count of windows) is 0 then return \"no-window\"\n")
+	b.WriteString("\tset curWin to current window\n")
+	b.WriteString("\tset curSess to id of current session of current tab of curWin\n")
+	b.WriteString("\tif curSess is not focusedID then return \"stale\"\n")
+	b.WriteString("\tset focusWinID to (id of curWin as text)\n")
 	b.WriteString("\tset hits to {}\n")
 	b.WriteString("\trepeat with w in windows\n")
 	b.WriteString("\t\tif (id of w as text) is not focusWinID then\n")

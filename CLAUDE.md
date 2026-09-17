@@ -696,6 +696,25 @@ needs to change.
   process's env can't be rewritten, so that prefix names the window/tab the
   session was BORN in. Confirmed on real data — a claude reporting `w0t4p0` was
   sitting in tab 3, another reporting `w0t3p0` in tab 4.
+- **The pane link's two guards BOTH have to read live state, and getting that
+  wrong made it flip tabs forever.** A focus event names a session, but by the
+  time the daemon has read the registry and paired it, the user may have moved
+  on — so acting on the event switched a tab in the window they had just moved
+  TO, which both yanked them off their own tab and changed the key session,
+  which came straight back as another event. Two linked pairs bounced between
+  two windows until the daemon was killed. Fixed in two places, and both are
+  needed. (1) `panelink.py` reports the KEY WINDOW's current session and treats
+  the `FocusUpdate` as nothing but a "look again" trigger, because
+  `active_session_changed` names the new active session of ANY window, focused
+  or not — measured: `active_session_changed=5A50D36E` while
+  `app_key_session=802CB271`. (2) `linkScript` asks iTerm for `current window`
+  ITSELF and returns `"stale"` unless the session it was told about is still the
+  focused one, so a late event can never act. Deriving the focused window by
+  locating the event's session (what it did first) is the specific bug — it
+  reads as correct and is a loop. `switchGuard` is a third, cheaper net. The
+  daemon logs every decision with the script's verdict (`stale`, a count, a
+  failure) because without it "it keeps switching" is indistinguishable from
+  anything else moving tabs, which cost a whole debugging round to learn.
 - **Two things about the pane link's setup, both learned by shipping them
   wrong.** (1) **A daemon that is RUNNING is not one that is CONNECTED.** With
   iTerm's API off the watcher child starts, fails to connect and dies, every 2s

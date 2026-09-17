@@ -26,17 +26,23 @@ import sys
 import iterm2
 
 
-def _focused_id(update, app):
-    """The session id now focused, or None if this update doesn't name one.
+def _focused_id(app):
+    """The session the user is actually looking at, or None.
 
-    Prefer the update itself: it states the new active session exactly, with no
-    dependency on how quickly the App object refreshes its own view. Fall back
-    to the app for updates that report a window or tab change without naming a
-    session.
+    The FocusUpdate is deliberately ignored as a source of truth and used only
+    as a "something moved, look again" trigger. `active_session_changed` names
+    the new active session of ANY window, including one with no focus — measured
+    on iTerm2 3.6.11:
+
+        update[active_session_changed.session_id=5A50D36E]  app_key_session=802CB271
+
+    and that is fatal here rather than merely imprecise. Switching a partner's
+    tab is exactly such a change, so a watcher that trusts the update reports
+    our own action back to us, the daemon pairs it and switches the other side,
+    and two linked pairs flip tabs forever. The key window's current session
+    cannot loop that way: our tab switch never moves focus, so it never changes
+    this answer.
     """
-    changed = getattr(update, "active_session_changed", None)
-    if changed is not None and getattr(changed, "session_id", None):
-        return changed.session_id
     window = app.current_terminal_window
     if window is None:
         return None
@@ -44,6 +50,7 @@ def _focused_id(update, app):
     if tab is None:
         return None
     session = tab.current_session
+    # Transiently None between a tab change and the app's view catching up.
     return session.session_id if session is not None else None
 
 
@@ -57,8 +64,8 @@ async def _main(connection):
     last = None
     async with iterm2.FocusMonitor(connection) as monitor:
         while True:
-            update = await monitor.async_get_next_update()
-            session_id = _focused_id(update, app)
+            await monitor.async_get_next_update()
+            session_id = _focused_id(app)
             if not session_id or session_id == last:
                 continue
             last = session_id
