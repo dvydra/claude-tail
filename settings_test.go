@@ -57,11 +57,12 @@ func TestSettingsRowsReflectTheOffStates(t *testing.T) {
 	}
 }
 
-// The two rows that reach outside this process are marked Confirm; nothing else
-// is. A stray → must never edit ~/.claude/settings.json or load a launchd agent.
+// The rows that reach outside this process are marked Confirm; nothing else is.
+// A stray → must never edit ~/.claude/settings.json, load a launchd agent, or
+// build a venv and reach the network.
 func TestSettingsConfirmRowsAreTheGlobalOnes(t *testing.T) {
 	for _, r := range settingsRowsFor(testHelpInfo(), t.TempDir()) {
-		wantConfirm := r.ID == setHooks || r.ID == setTap
+		wantConfirm := r.ID == setHooks || r.ID == setTap || r.ID == setPaneLink
 		if r.Confirm != wantConfirm {
 			t.Errorf("row %q Confirm = %v, want %v", r.Label, r.Confirm, wantConfirm)
 		}
