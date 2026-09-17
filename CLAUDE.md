@@ -488,6 +488,22 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `tapWatcher` follows a sidecar with a byte offset like the transcript
   follower, starting at EOF (never replays history) and rebinding across a
   lineage flip. See the tap notes below for what it deliberately does NOT do.
+- `panelink.go` / `panelinkd.go` / `panelink.py` — the **pane link** (opt-in,
+  macOS/iTerm2): select a claude tab and the OTHER window switches to the tab
+  holding its tail, and back the other way. For the layout the workspace never
+  produces — agents as tabs of one window, tails as tabs of another — where the
+  pair otherwise has to be re-aligned by hand on every switch. `panelink.go` is
+  pure (registry, `linkPartners`, `linkScript`), `panelinkd.go` the daemon +
+  `entire-tail link <start|install|uninstall|stop|status>`, `panelink.py` the
+  embedded ~15-line watcher on iTerm2's `FocusMonitor` — the only event-driven
+  route, since `it2api monitor-focus` awaits exactly ONE update and exits.
+  Pairing is half-registered, half-discovered on purpose: each tail publishes
+  the session it follows NOW to `link/panes/<iterm-uuid>.json` (its argv names
+  an ancestor after a lineage fork, so only it can know), while claudes are
+  re-resolved by the daemon every 5s with `nearby.go`'s join, so restarting
+  claude in another tab re-pairs with no action from the tail. The daemon
+  starts from the first tail and exits 60s after the last, so unlike the tap
+  there's no LaunchAgent — a focus watcher is worthless without a tail
 
 Adding a new agent = write a `normalize` + a discovery function. Nothing else
 needs to change.
@@ -665,6 +681,35 @@ needs to change.
   confirms (and adds the `◉` glyph) but never clears a marker for a session it
   hasn't heard from: no recent API traffic means the agent is waiting on its
   human, not that the pane is gone.
+- **The pane link never takes focus, and that is the only reason it can run by
+  itself.** Measured on iTerm2 3.6.11: selecting a tab in a window that is NOT
+  the current one leaves `current window` and `current session` untouched. So
+  there is no way for the two windows to bounce focus off each other and no
+  suppression window is needed — but it also means a `select tab` cannot stand
+  in for a click when TESTING (it fires no focus event; focus the window first,
+  which cost one wrong "the reverse direction is broken" reading). Nothing here
+  may ever activate an app, raise a window, or move focus. The same-window skip
+  is load-bearing too: two panes of one window can't both be shown, so
+  switching would drag the user off the tab they just picked — which is exactly
+  what makes the 3-pane workspace a no-op rather than a special case. Placement
+  comes from the LIVE tree, never from `ITERM_SESSION_ID`'s `wNtN` prefix: a
+  process's env can't be rewritten, so that prefix names the window/tab the
+  session was BORN in. Confirmed on real data — a claude reporting `w0t4p0` was
+  sitting in tab 3, another reporting `w0t3p0` in tab 4.
+- **Two things about the pane link's setup, both learned by shipping them
+  wrong.** (1) **A daemon that is RUNNING is not one that is CONNECTED.** With
+  iTerm's API off the watcher child starts, fails to connect and dies, every 2s
+  — and the first `link install` cheerfully printed `watching (pid 26120)` at
+  it. The child now announces `!ready` on a live connection and install waits
+  for THAT, not for a pid (`paneLinkLabel`, `TestPaneLinkLabel`). Same lesson as
+  `tap install`, re-learned because "the process exists" is such an easy thing
+  to check. (2) **iTerm's Python API is OFF by default** (`EnableAPIServer`
+  absent = off; the `iterm2-daemon-1.socket` in the support dir is iTermServer's
+  session-restore socket, NOT the API's — don't read it as evidence the API is
+  up). It's checked before anything is built and reported with the exact
+  setting to tick, and deliberately never flipped for the user: the preference
+  is read at launch, so applying it means restarting iTerm and taking every
+  running session with it.
 - **A finished worktree's sessions still group under their repo.** `repoForCwd`
   asks git for the cwd's `origin`, and git cannot answer for a directory that no
   longer exists — which is the NORMAL end state of a worktree (its dir is deleted
