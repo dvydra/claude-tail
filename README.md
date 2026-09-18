@@ -719,8 +719,7 @@ rows of what the agent actually said.
 | key | |
 |---|---|
 | `↑` `↓` | move between sessions |
-| `⏎` | open the 3-pane workspace for it (as in the tree) |
-| `t` | tail it in place |
+| `⏎` `t` | tail it in place |
 | `j` | show the raw registry json for every block |
 | `+` `-` | more / fewer transcript lines |
 | `r` | refresh now |

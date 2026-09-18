@@ -409,7 +409,7 @@ func renderLive(ui liveUI) string {
 		}
 	}
 
-	b.WriteString("\r\n" + dim + "  ↑↓ move · ⏎ workspace · t tail · j json · +/- tail · r refresh · q quit" + reset)
+	b.WriteString("\r\n" + dim + "  ↑↓ move · ⏎/t tail · j json · +/- lines · r refresh · q quit" + reset)
 	return b.String()
 }
 
@@ -431,7 +431,7 @@ func updateLive(ui liveUI, k treeKey, r rune) liveUI {
 		ui.Quit = true
 	case kEnter:
 		if len(ui.Sessions) > 0 {
-			ui.Result = treeWorkspace
+			ui.Result = treeChosen
 		}
 	case kRune:
 		switch r {
@@ -511,8 +511,12 @@ func liveReadStall(elapsed time.Duration, spins int) (int, bool) {
 }
 
 // liveChoice turns a selected row into the treeChoice the rest of the program
-// already knows how to act on, so ⏎ and `t` behave exactly as they do in the
-// tree (workspace launch, in-place tail, the picker↔tail loop in run).
+// already knows how to act on, so the picker↔tail loop in run needs no
+// live-specific code. Both ⏎ and `t` mean the same thing here — tail the
+// selected session in this pane. Unlike the tree, this view lists only sessions
+// that are ALREADY running with an agent in front of them, so the tree's ⏎
+// (launch a 3-pane workspace) has nothing to launch: it would open a second
+// pane onto a session someone is already sitting in.
 func liveChoice(ui liveUI) treeChoice {
 	if ui.Result == treeNone || len(ui.Sessions) == 0 {
 		return treeChoice{Result: treeNone}

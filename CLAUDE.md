@@ -124,9 +124,12 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   turn, which is also when the transcript appears — so "no entry" and "nothing
   to tail" are the same fact, not a gap. Split the usual three ways
   (`collectLiveSessions` + `liveBlockLines`/`renderLive` + `updateLive`, then the
-  tty driver `runLiveTUI`), and `liveChoice` hands back a `treeChoice` so `⏎`/`t`
-  reuse `resolveTreeChoice` — the workspace launch and the picker↔tail loop in
-  `run` need no live-specific code. The read is raw+TIMED (the `focus.go`
+  tty driver `runLiveTUI`), and `liveChoice` hands back a `treeChoice` so the
+  picker↔tail loop in `run` needs no live-specific code. **`⏎` and `t` are the
+  same key here** (both `treeChosen`): every row is a session that already has
+  an agent sitting in front of it, so the tree's `⏎` — launch a 3-pane
+  workspace — has nothing to launch, it would only open a second pane onto a
+  session someone is already using. The read is raw+TIMED (the `focus.go`
   contract, including its `(0, io.EOF)`-is-a-timeout gotcha) so a quiet terminal
   still re-polls. Two rendering decisions are deliberate: a worktree's checkout
   is named ONCE (`~/src/repo  ⑂ live-view`) because the full worktree path
