@@ -369,8 +369,10 @@ func TestUpdateLiveKeys(t *testing.T) {
 	if ui := updateLive(base, kRune, 'r'); !ui.Refresh {
 		t.Error("r did not request a refresh")
 	}
-	if ui := updateLive(base, kEnter, 0); ui.Result != treeWorkspace {
-		t.Errorf("Enter result = %v, want treeWorkspace", ui.Result)
+	// ⏎ is `t`: every row here is a session someone is already sitting in, so
+	// there is no workspace to launch — both keys tail it in this pane.
+	if ui := updateLive(base, kEnter, 0); ui.Result != treeChosen {
+		t.Errorf("Enter result = %v, want treeChosen", ui.Result)
 	}
 	if ui := updateLive(base, kRune, 't'); ui.Result != treeChosen {
 		t.Errorf("t result = %v, want treeChosen", ui.Result)
@@ -404,8 +406,8 @@ func TestLiveChoiceCarriesSessionIdentity(t *testing.T) {
 	s, _ := parseLiveSession([]byte(liveFixture))
 	s.Path = "/Users/dvydra/.claude/projects/slug/21c1a476-e137-4951-8a9a-1bb471096870.jsonl"
 	s.Profile = personalProfile
-	c := liveChoice(liveUI{Sessions: []liveSession{s}, Result: treeWorkspace})
-	if c.Result != treeWorkspace {
+	c := liveChoice(liveUI{Sessions: []liveSession{s}, Result: treeChosen})
+	if c.Result != treeChosen {
 		t.Errorf("Result = %v", c.Result)
 	}
 	if c.Path != s.Path || c.ID != s.SessionID || c.Cwd != s.Cwd {
