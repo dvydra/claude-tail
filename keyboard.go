@@ -24,6 +24,7 @@ const (
 	keyToggleMrkdwn
 	keyToggleWrap
 	keyDrift
+	keyHunk
 	keyFocus // not a keyActionFor result: the `→` escape sequence decodes to it
 )
 
@@ -55,6 +56,8 @@ func keyActionFor(b byte) keyAction {
 		return keyDrift
 	case 'w', 'W':
 		return keyToggleWrap
+	case 'h', 'H':
+		return keyHunk
 	}
 	return keyNone
 }
@@ -148,6 +151,12 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 				<-resumeCh
 			case keyDrift:
 				overlayCh <- keyDrift
+				<-resumeCh
+			case keyHunk:
+				// Same hand-off again, though what takes the screen is a child
+				// process rather than an overlay we draw. The parking matters
+				// more here, not less: hunk reads this very fd.
+				overlayCh <- keyHunk
 				<-resumeCh
 			case keyNone:
 			default:

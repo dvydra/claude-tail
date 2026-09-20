@@ -349,6 +349,38 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   on `resumeCh`, sharing the SAME tty fd (two fds on one tty race for input).
   **Gotcha:** a raw timed read reports a 0-byte timeout as `(0, io.EOF)` — treat
   that as a follow tick, not end-of-input, or the overlay exits instantly
+- `hunk.go` — the `h` key: **hand the whole pane to [hunk](https://hunk.dev)**
+  for a diff of the tailed session's working tree, and take it back on quit.
+  Same hand-off as `?`/`→` (keyboard signals `overlayCh` and parks on
+  `resumeCh`, one tty reader) with one difference that shapes the file: what
+  owns the screen is a CHILD PROCESS, not an overlay we draw. Four things are
+  deliberate. (1) **The terminal modes are left alone** around the spawn — hunk
+  sets its own raw mode and restores what it inherited (our cbreak), which is
+  exactly the state the keyboard reader needs back; a restore-to-cooked-then-
+  re-cbreak dance adds two failure paths and buys nothing. (2) **`planHunk`
+  decides everything BEFORE the screen is handed over**, which is what keeps the
+  two no-op cases (hunk not installed; the session's cwd deleted, the normal end
+  state of a worktree) from suspending the bar and blanking the tail for a beat
+  — a flicker for a key that was never going to do anything reads as broken, not
+  absent. (3) **`hunkBin` falls back to `~/.hunk/bin`**: hunk.dev's install.sh
+  drops a standalone binary there and does NOT add it to PATH, so a PATH-only
+  lookup reports "not installed" on a machine that has it (this one). (4) The
+  agent hand-off is **the one hunk's docs prescribe, not one we invented** —
+  there is no session id to pass, no env var and no handshake file; the TUI
+  registers with a local loopback daemon and the agent finds it with `hunk
+  session get --repo <path>`. So `runHunk` waits for the daemon to confirm the
+  session (bounded, `hunkReadyTimeout`) and then types `hunkPrompt` into the
+  claude in THIS iTerm tab. The tab is the whole horizon for the reason
+  nearby.go gives; within it the claude writing the tailed transcript wins, a
+  lone claude is taken on adopt.go's exactly-one rule, and anything ambiguous
+  gives back "" so the prompt goes to the clipboard rather than into someone
+  else's work. `hunkNotifyScript` addresses the pane **by session id, never by
+  index** (panelink.go's lesson: indexes shift) and wraps the write in `try`,
+  since the pane may have closed while hunk was up. Verified live against iTerm
+  3.6.11: the script matched a real session by uuid and typed the prompt
+  verbatim, backticks intact. Pure `planHunk`/`hunkBin`/`hunkClaudePane`/
+  `hunkNotifyScript` are unit-tested; the spawn and `osascript` are the thin IO
+  layer
 - `help.go` — the alt-screen **panel chrome**: `drawPanel` (a centered bordered
   box, title in the top border, caller-supplied hint in the bottom one) plus
   `helpInfo`, `visWidth` and `padVisible`. It used to hold a read-only `?` card;
