@@ -406,7 +406,7 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
 - `status.go` — the **bottom status bar**. The tail is a streaming view, so a
   row pinned to the bottom has to come from the terminal rather than from us
   repainting: `DECSTBM` (`ESC [ 1 ; h-1 r`) shrinks the scrolling region and the
-  transcript scrolls underneath a row we own. Three things there are
+  transcript scrolls underneath a row we own. Four things there are
   load-bearing. (1) **DECSTBM homes the cursor** — every region change is wrapped
   in `ESC 7`/`ESC 8` or the next line of transcript overwrites the backfill.
   (2) **The row must be free before the region shrinks**: after a full-screen
@@ -418,10 +418,24 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   place the deferred trailing newline is settled early). (3) **`close()` before
   restoring the terminal modes**, or the shell inherits a terminal that can only
   scroll h-1 rows. The alt-screen overlays get the whole screen back via
-  `suspend`/`resume`. Pure `statusLine`/`statusLefts`/`statusRights` (widest
-  variant that fits — the render settings give way before the session id) and
-  `parseCursorReport` are unit-tested; a nil `*statusBar` is inert, which is the
-  piped / `--no-status` path
+  `suspend`/`resume`. (4) **Giving a row up means ERASING it** (`eraseRow`), not
+  just `clearRegion` — `ESC [ r` hands the rows back to the scrolling region and
+  leaves every glyph where it was, and a terminal resets DECSTBM on resize
+  anyway, so the abandoned bar scrolls up the transcript as a ghost. It shipped
+  without that for a while and the symptom is unmistakable: a column of stale
+  bars marching up the screen, each a little wider than the last, because
+  `resize` ran per SIGWINCH and a window drag fires dozens. **Both** halves of
+  the fix matter — the erase, and the debounce that moved `status.resize()` into
+  the same `winchSettled` branch as the re-wrap, so a drag costs one row move
+  rather than one per size step (each also spends a blank line on
+  `scrollUpOneRow`). Erasing by remembered row is best-effort: a width change
+  reflows, so the row can have shifted — accepted because that path re-renders
+  the transcript below it anyway, and a wrongly-blanked line beats a permanent
+  ghost. Pure `statusLine`/`statusLefts`/`statusRights` (widest variant that fits
+  — the render settings give way before the session id) and `parseCursorReport`
+  are unit-tested, and `out`/`size` are fields (not `s.tty` directly) purely so
+  the row arithmetic is testable without a terminal; a nil `*statusBar` is inert,
+  which is the piped / `--no-status` path
 - `theme.go` / `config.go` / `main.go` — themes, flags+env, wiring
 - `keyboard.go` — live single-key controls via cbreak. **The keyboard only ever
   signals; the render goroutine does all of it.** Every display key

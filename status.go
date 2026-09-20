@@ -62,7 +62,14 @@ type statusInfo struct {
 }
 
 type statusBar struct {
-	tty      *os.File
+	tty *os.File
+	// out is where every escape sequence goes, and size is where the terminal
+	// dimensions come from. Both are the tty in a real run; they exist as fields
+	// so the row arithmetic — which row is claimed, which is given back — is
+	// testable without one. `tty` itself stays for the DSR round-trip, which
+	// needs a real terminal to answer.
+	out      io.Writer
+	size     func() (int, int)
 	w, h     int
 	msg      string
 	msgUntil time.Time
@@ -83,7 +90,7 @@ func newStatusBar(tty *os.File) *statusBar {
 	if w < statusMinWidth || h < 4 {
 		return nil
 	}
-	s := &statusBar{tty: tty, w: w, h: h}
+	s := &statusBar{tty: tty, out: tty, size: func() (int, int) { return termSize(tty) }, w: w, h: h}
 	s.reserveRow()
 	s.setRegion()
 	return s
@@ -98,7 +105,7 @@ func (s *statusBar) reserveRow() {
 	if row, ok := queryCursorRow(s.tty); ok && row < s.h {
 		return
 	}
-	scrollUpOneRow(s.tty)
+	scrollUpOneRow(s.out)
 }
 
 // scrollUpOneRow frees the bottom row AND leaves the cursor above it.
@@ -112,15 +119,23 @@ func (s *statusBar) reserveRow() {
 //
 // Two newlines put two blank rows at the bottom; the cursor-up then parks on the
 // first of them, with the bar's row free below.
-func scrollUpOneRow(tty *os.File) { io.WriteString(tty, "\n\n\x1b[A") }
+func scrollUpOneRow(w io.Writer) { io.WriteString(w, "\n\n\x1b[A") }
 
 func (s *statusBar) setRegion() {
 	// ESC 7 … ESC 8 because DECSTBM homes the cursor (see the file comment).
-	fmt.Fprintf(s.tty, "\x1b7\x1b[1;%dr\x1b8", s.h-1)
+	fmt.Fprintf(s.out, "\x1b7\x1b[1;%dr\x1b8", s.h-1)
 }
 
 func (s *statusBar) clearRegion() {
-	io.WriteString(s.tty, "\x1b7\x1b[r\x1b8")
+	io.WriteString(s.out, "\x1b7\x1b[r\x1b8")
+}
+
+// eraseRow blanks one row and puts the cursor back. This is the half
+// clearRegion does NOT do: `ESC [ r` hands the rows back to the scrolling
+// region but leaves every glyph on them, so the bar has to be wiped explicitly
+// whenever we stop owning the row it is sitting on.
+func (s *statusBar) eraseRow(row int) {
+	fmt.Fprintf(s.out, "\x1b7\x1b[%d;1H\x1b[2K\x1b8", row)
 }
 
 // setMessage puts a transient yellow message up for statusMsgTTL.
@@ -148,18 +163,34 @@ func (s *statusBar) update(info statusInfo, now time.Time) {
 	s.drawn = line
 	// Save cursor, jump outside the scrolling region, clear the row, write,
 	// come back. Nothing else may write to the terminal in between.
-	fmt.Fprintf(s.tty, "\x1b7\x1b[%d;1H\x1b[2K%s\x1b8", s.h, line)
+	fmt.Fprintf(s.out, "\x1b7\x1b[%d;1H\x1b[2K%s\x1b8", s.h, line)
 }
 
-// resize re-reads the terminal size and re-establishes the region. The row the
-// bar lives on has moved, so the old one is cleared first.
+// resize re-reads the terminal size and re-establishes the region.
+//
+// The ERASE is the load-bearing part. A terminal resets DECSTBM when the screen
+// is resized, so the row the bar was on is already an ordinary scrolling row by
+// the time this runs — with the bar's text still on it. Give it up without
+// wiping it and it scrolls away up the transcript as a ghost bar. The live loop
+// used to call this on every SIGWINCH, so a window dragged from small to large
+// left a whole column of them, one per size step, each a little wider than the
+// last (that's the bug report). It's debounced now — see the winch case in
+// main.go — but one ghost per resize is still one too many.
+//
+// Erasing by remembered row is best-effort by nature: a width change makes the
+// terminal reflow, which can shift that row. The cost of being wrong is one
+// blanked line in a transcript the re-wrap is about to reprint below anyway,
+// against a stale bar sitting in the scrollback forever.
 func (s *statusBar) resize() {
 	if s == nil {
 		return
 	}
-	w, h := termSize(s.tty)
+	w, h := s.size()
 	if w == s.w && h == s.h {
 		return
+	}
+	if !s.off {
+		s.eraseRow(s.h)
 	}
 	s.clearRegion()
 	grew := h != s.h
@@ -172,7 +203,7 @@ func (s *statusBar) resize() {
 	// owns the tty and would swallow a DSR reply — so reserve unconditionally.
 	// Costs a blank line per resize; the alternative is a dead-looking tail.
 	if grew {
-		scrollUpOneRow(s.tty)
+		scrollUpOneRow(s.out)
 	}
 	s.setRegion()
 }
@@ -194,8 +225,14 @@ func (s *statusBar) resume() {
 		return
 	}
 	s.off = false
-	s.w, s.h = termSize(s.tty)
-	s.drawn = ""
+	w, h := s.size()
+	if h != s.h {
+		// Resized while the overlay was up. Same ghost as in resize(): the row
+		// the bar was on before the overlay came back with the main screen, and
+		// we are about to claim a different one.
+		s.eraseRow(s.h)
+	}
+	s.w, s.h, s.drawn = w, h, ""
 	s.setRegion()
 }
 
@@ -206,7 +243,7 @@ func (s *statusBar) close() {
 	if s == nil {
 		return
 	}
-	fmt.Fprintf(s.tty, "\x1b7\x1b[%d;1H\x1b[2K\x1b8", s.h)
+	s.eraseRow(s.h)
 	s.clearRegion()
 	s.off = true
 }

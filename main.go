@@ -790,12 +790,13 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			status.update(statusNow(), time.Now())
 			resumeCh <- struct{}{}
 		case <-winchCh:
-			// The bar reclaims its row immediately (cheap), but the re-wrap is
-			// deferred to the ticker: SIGWINCH fires continuously while a window
-			// edge is dragged and re-rendering the transcript per signal would
-			// bury the screen.
-			status.resize()
-			status.update(statusNow(), time.Now())
+			// BOTH halves of a resize wait for the ticker, and for the same
+			// reason: SIGWINCH fires continuously while a window edge is dragged.
+			// The re-wrap is the expensive one (a full transcript re-render), but
+			// moving the bar isn't free either — every move gives a row back and
+			// claims another, which costs a blank line (scrollUpOneRow) and, if
+			// the erase lands a row off after a reflow, a stale bar. Reacting per
+			// signal walked a column of both up the screen on one slow drag.
 			winchAt = time.Now()
 		case <-ticker.C:
 			// A resize changes the wrap width, and printed lines can't be
@@ -804,6 +805,10 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// edge (height only) costs nothing.
 			if winchSettled(winchAt, time.Now()) {
 				winchAt = time.Time{}
+				// The bar takes its row back first, so the region is right before
+				// any re-rendered transcript starts scrolling underneath it. The
+				// repaint itself rides the status.update at the end of this tick.
+				status.resize()
 				if r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff)) {
 					rerender("⟳ resized")
 				}
