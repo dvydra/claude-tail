@@ -71,14 +71,17 @@ func TestPlanHunk(t *testing.T) {
 			wantRun: false, wantMsg: "hunk: session folder is gone",
 		},
 		{
+			// Msg is a refusal only. What to say when hunk is DONE depends on a
+			// daemon that hasn't been started yet, so the plan must not guess at
+			// it — that's hunkOutcome's job.
 			name: "pane found", bin: "/b/hunk", dir: "/repo", dirOK: true, pane: "UUID-1",
-			wantRun: true, wantMsg: "hunk ended — claude was told to load the skill",
+			wantRun: true, wantMsg: "",
 		},
 		{
-			// No pane to type into is not a failure: the prompt goes to the
-			// clipboard so it's one paste away wherever claude actually is.
+			// No pane to type into is not a refusal: the review still happens,
+			// and the prompt goes to the clipboard so it's one paste away.
 			name: "no pane", bin: "/b/hunk", dir: "/repo", dirOK: true, pane: "",
-			wantRun: true, wantMsg: "hunk ended — prompt for claude copied to the clipboard",
+			wantRun: true, wantMsg: "",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -89,7 +92,36 @@ func TestPlanHunk(t *testing.T) {
 			if p.Msg != c.wantMsg {
 				t.Errorf("Msg = %q, want %q", p.Msg, c.wantMsg)
 			}
+			if c.wantRun && p.Pane != c.pane {
+				t.Errorf("Pane = %q, want %q carried through to the run", p.Pane, c.pane)
+			}
 		})
+	}
+}
+
+// Every outcome says something, and each says a DIFFERENT thing. The one that
+// matters is hunkUnclaimed: the review happened but the agent was never told,
+// and from the tail's side of the screen that is indistinguishable from
+// success. An earlier version reported "claude was told to load the skill"
+// whether or not a byte had been sent, because the wording was decided before
+// hunk had even started.
+func TestHunkOutcomeMessages(t *testing.T) {
+	seen := map[string]hunkOutcome{}
+	for _, o := range []hunkOutcome{hunkNotRun, hunkPrompted, hunkCopied, hunkUnclaimed} {
+		msg := o.msg()
+		if msg == "" {
+			t.Errorf("outcome %d has no message", o)
+		}
+		if prev, dup := seen[msg]; dup {
+			t.Errorf("outcomes %d and %d share the message %q", prev, o, msg)
+		}
+		seen[msg] = o
+	}
+	if got := hunkUnclaimed.msg(); !strings.Contains(got, "wasn't told") {
+		t.Errorf("hunkUnclaimed says %q, want it to say the agent wasn't told", got)
+	}
+	if got := hunkPrompted.msg(); strings.Contains(got, "clipboard") {
+		t.Errorf("hunkPrompted says %q, want it not to mention the clipboard", got)
 	}
 }
 

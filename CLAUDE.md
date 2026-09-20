@@ -358,11 +358,16 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   sets its own raw mode and restores what it inherited (our cbreak), which is
   exactly the state the keyboard reader needs back; a restore-to-cooked-then-
   re-cbreak dance adds two failure paths and buys nothing. (2) **`planHunk`
-  decides everything BEFORE the screen is handed over**, which is what keeps the
-  two no-op cases (hunk not installed; the session's cwd deleted, the normal end
-  state of a worktree) from suspending the bar and blanking the tail for a beat
-  — a flicker for a key that was never going to do anything reads as broken, not
-  absent. (3) **`hunkBin` falls back to `~/.hunk/bin`**: hunk.dev's install.sh
+  decides everything KNOWABLE before the screen is handed over**, which is what
+  keeps the two no-op cases (hunk not installed; the session's cwd deleted, the
+  normal end state of a worktree) from suspending the bar and blanking the tail
+  for a beat — a flicker for a key that was never going to do anything reads as
+  broken, not absent. Its `Msg` is a **refusal only**: what to say afterwards
+  depends on a daemon that hasn't started yet when the plan is made, so it comes
+  back from `runHunk` as a `hunkOutcome`. Shipped the other way first and the bar
+  reported "claude was told to load the skill" whether or not a byte had been
+  sent — and from the tail's side of the screen that is indistinguishable from
+  success, which is exactly why `hunkUnclaimed` says so out loud. (3) **`hunkBin` falls back to `~/.hunk/bin`**: hunk.dev's install.sh
   drops a standalone binary there and does NOT add it to PATH, so a PATH-only
   lookup reports "not installed" on a machine that has it (this one). (4) The
   agent hand-off is **the one hunk's docs prescribe, not one we invented** —

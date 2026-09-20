@@ -54,23 +54,57 @@ type hunkPlan struct {
 	Bin  string // the hunk binary; empty means don't hand the screen over at all
 	Dir  string // the session's cwd — what gets reviewed
 	Pane string // iTerm session uuid to type the prompt into; "" → clipboard
-	Msg  string // the status-bar line once we're back (or why we never left)
+	Msg  string // why we are NOT handing the screen over; empty when we are
 }
 
 // planHunk decides what the key does. dirOK is whether Dir still exists: the
 // normal end state of a worktree is that its directory has been deleted, and
 // `hunk diff` in a missing cwd would fail inside the alt-screen, which is the
 // worst place to read an error.
+//
+// Msg is only ever a REFUSAL. What to say afterwards is not knowable here — the
+// prompt depends on the daemon confirming a session that hasn't started yet —
+// so that line comes back from runHunk as a hunkOutcome instead.
 func planHunk(bin, dir string, dirOK bool, pane string) hunkPlan {
 	switch {
 	case bin == "":
 		return hunkPlan{Msg: "hunk not installed — see hunk.dev"}
 	case !dirOK:
 		return hunkPlan{Msg: "hunk: session folder is gone"}
-	case pane == "":
-		return hunkPlan{Bin: bin, Dir: dir, Msg: "hunk ended — prompt for claude copied to the clipboard"}
 	}
-	return hunkPlan{Bin: bin, Dir: dir, Pane: pane, Msg: "hunk ended — claude was told to load the skill"}
+	return hunkPlan{Bin: bin, Dir: dir, Pane: pane}
+}
+
+// hunkOutcome is what actually happened while hunk had the screen — which is
+// the only honest source for the line the status bar shows afterwards.
+//
+// The plan can't supply it. Whether the agent was told anything depends on the
+// daemon registering a session that hasn't been started yet when the plan is
+// made, and on an osascript that runs while hunk is up. An earlier version
+// decided the wording up front and reported "claude was told to load the skill"
+// whether or not a single byte had been sent.
+type hunkOutcome int
+
+const (
+	hunkNotRun    hunkOutcome = iota // never started (or failed to)
+	hunkPrompted                     // the prompt was typed into the claude pane
+	hunkCopied                       // no pane to type into → the clipboard
+	hunkUnclaimed                    // the daemon never reported a session; nothing sent
+)
+
+func (o hunkOutcome) msg() string {
+	switch o {
+	case hunkPrompted:
+		return "hunk ended — claude was told to load the skill"
+	case hunkCopied:
+		return "hunk ended — prompt for claude copied to the clipboard"
+	case hunkUnclaimed:
+		// Worth saying rather than staying quiet: the review happened, but the
+		// agent knows nothing about it, and the difference is invisible from
+		// the tail's side of the screen.
+		return "hunk ended — no session registered, so claude wasn't told"
+	}
+	return "hunk didn't start"
 }
 
 // hunkBin finds the review binary: PATH first, then ~/.hunk/bin, which is where
@@ -132,8 +166,10 @@ func hunkClaudePane(ownTab, cur string, procs []claudeProc, sessionOf func(claud
 // bar. Split out so main.go's overlay switch stays a switch over intent.
 func hunkOverlay(tty *os.File, home, cur, dir string) string {
 	p := planHunk(hunkBin(home, exec.LookPath), dir, isDir(dir), hunkPaneFor(home, cur))
-	runHunk(tty, p)
-	return p.Msg
+	if p.Bin == "" {
+		return p.Msg // a refusal; the screen was never handed over
+	}
+	return runHunk(tty, p).msg()
 }
 
 // hunkPaneFor resolves the claude pane to prompt, or "" when there isn't one we
@@ -173,23 +209,44 @@ func hunkNotifyScript(pane, prompt string) string {
 	return b.String()
 }
 
-// runHunk hands the tty to hunk and blocks until it exits. The IO half: the
-// decisions were all made by planHunk.
+// runHunk hands the tty to hunk and blocks until it exits, reporting what
+// actually happened. The IO half: every DECISION was made by planHunk.
 //
 // The prompt is sent from a goroutine rather than before the spawn, because the
 // agent's first move is `hunk session get --repo .` and the daemon only knows
-// about the session once the TUI has started. It is best-effort throughout — a
-// prompt that never lands leaves a perfectly good review on screen.
-func runHunk(tty *os.File, p hunkPlan) {
+// about the session once the TUI has started. It stays best-effort — a prompt
+// that never lands leaves a perfectly good review on screen — but the outcome
+// is reported rather than assumed, so the status bar can't claim the agent was
+// told something it wasn't.
+func runHunk(tty *os.File, p hunkPlan) hunkOutcome {
 	if p.Bin == "" {
-		return
+		return hunkNotRun
 	}
 	cmd := exec.Command(p.Bin, "diff")
 	cmd.Dir = p.Dir
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+	// The child gets OUR OWN stdio, not the `/dev/tty` fd the keyboard reader
+	// uses — and that distinction is the whole difference between a working
+	// review and a dead one.
+	//
+	// `/dev/tty` is the controlling-terminal CLONE device (major 2, minor 0); a
+	// fresh open of it is not a file description on the pty itself. Hand that to
+	// a child and a plain read()-based TUI never notices (verified: `less`
+	// spawned exactly this way still quits on `q`), but hunk draws its whole UI
+	// and then receives no keystroke at all — libuv's tty init doesn't get what
+	// it needs from the clone device. Shipped that way once and the review came
+	// up completely inert, with no way out but closing the pane.
+	//
+	// os.Stdin/Stdout/Stderr are the pty (`/dev/ttys015`), which is precisely
+	// what a shell hands a program it launches. Safe unconditionally here: `h`
+	// is only offered on a tty in the first place (openControlTTY requires
+	// isCharDevice(os.Stdin)).
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
-		return
+		return hunkNotRun
 	}
+	// The outcome is written on the goroutine and read after <-done, which
+	// happens-after the close — so no lock, and -race stays quiet.
+	out := hunkUnclaimed
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -197,13 +254,18 @@ func runHunk(tty *os.File, p hunkPlan) {
 			return
 		}
 		if p.Pane == "" {
-			_ = clipboardWrite(hunkPrompt, tty)
+			if clipboardWrite(hunkPrompt, tty) == nil {
+				out = hunkCopied
+			}
 			return
 		}
-		_ = osaRun(hunkNotifyScript(p.Pane, hunkPrompt))
+		if osaRun(hunkNotifyScript(p.Pane, hunkPrompt)) == nil {
+			out = hunkPrompted
+		}
 	}()
 	_ = cmd.Wait()
 	<-done
+	return out
 }
 
 // hunkWaitReady polls the loopback daemon until it reports a session for dir.
