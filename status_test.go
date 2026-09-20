@@ -195,6 +195,59 @@ func TestNilStatusBarIsInert(t *testing.T) {
 	s.close()
 }
 
+// A resize has to take the OLD bar row back. Nothing else does: clearRegion
+// only restores DECSTBM, so the glyphs stay where they were — and with the
+// region full-screen again that row scrolls up into the transcript as a stale
+// bar. A window dragged bigger fires a SIGWINCH per size step, and each one
+// used to leave one behind: a column of ghost bars marching up the screen,
+// each a little wider than the last. Reported from a real session.
+func TestResizeErasesTheRowItLeaves(t *testing.T) {
+	var buf strings.Builder
+	s := &statusBar{out: &buf, size: fixedSize(120, 40), w: 80, h: 24, drawn: "stale"}
+	s.resize()
+
+	got := buf.String()
+	erase, region := "\x1b[24;1H\x1b[2K", "\x1b[1;39r"
+	i, j := strings.Index(got, erase), strings.Index(got, region)
+	if i < 0 {
+		t.Fatalf("resize wrote %q, want an erase of the old row (%q)", got, erase)
+	}
+	// Before the new region is claimed: afterwards the old row is already
+	// scrolling, and the erase would take a line of transcript with it.
+	if j < 0 || i > j {
+		t.Errorf("resize wrote %q, want the erase before the new region %q", got, region)
+	}
+	if s.drawn != "" {
+		t.Errorf("resize left drawn=%q, want it cleared so the bar repaints", s.drawn)
+	}
+}
+
+// The same ghost by the other path: an overlay covers the bar, the window is
+// resized while it's up, and resume claims a different row than suspend left.
+func TestResumeErasesTheRowItLeaves(t *testing.T) {
+	var buf strings.Builder
+	s := &statusBar{out: &buf, size: fixedSize(80, 40), w: 80, h: 24, off: true}
+	s.resume()
+
+	if got, want := buf.String(), "\x1b[24;1H\x1b[2K"; !strings.Contains(got, want) {
+		t.Errorf("resume wrote %q, want an erase of the old row (%q)", got, want)
+	}
+}
+
+// A resize that moves nothing writes nothing — the live loop calls this on
+// every settled SIGWINCH, including one that dragged a window edge back to
+// where it started.
+func TestResizeToSameSizeIsSilent(t *testing.T) {
+	var buf strings.Builder
+	s := &statusBar{out: &buf, size: fixedSize(80, 24), w: 80, h: 24}
+	s.resize()
+	if got := buf.String(); got != "" {
+		t.Errorf("resize to the same size wrote %q, want nothing", got)
+	}
+}
+
+func fixedSize(w, h int) func() (int, int) { return func() (int, int) { return w, h } }
+
 func TestStatusKeysRouteToActions(t *testing.T) {
 	// Everything that changes the view (or copies) is applied on the render
 	// goroutine, so it must map to an action rather than being handled inline.
