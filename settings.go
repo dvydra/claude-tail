@@ -417,6 +417,7 @@ func settingsKeys(treeEnabled bool) []string {
 		kv("", "(press again within 3s to add the one before it)"),
 		kv("r", "re-render the history on demand"),
 		kv("d", "drift check — what you asked for vs what you're doing"),
+		kv("h", "review this session's changes in hunk (takes the pane)"),
 		kv("→", "focus subagents"),
 	}
 	if treeEnabled {
