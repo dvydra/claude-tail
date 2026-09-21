@@ -8,6 +8,35 @@ import (
 	"testing"
 )
 
+// A full-screen child that CRASHES never disables the input modes it turned
+// on. Mouse reporting left on means the terminal answers every mouse move with
+// an escape sequence, fed straight into the tail's keyboard reader — the tail
+// looks possessed and the only cure is `reset`.
+func TestInputModeResetDisablesEveryReportingMode(t *testing.T) {
+	for name, seq := range map[string]string{
+		"mouse (normal)":       "\x1b[?1000l",
+		"mouse (button-event)": "\x1b[?1002l",
+		"mouse (any-event)":    "\x1b[?1003l",
+		"focus reporting":      "\x1b[?1004l",
+		"SGR extended coords":  "\x1b[?1006l",
+		"bracketed paste":      "\x1b[?2004l",
+	} {
+		if !strings.Contains(inputModeReset, seq) {
+			t.Errorf("inputModeReset doesn't disable %s (%q):\n%q", name, seq, inputModeReset)
+		}
+	}
+	// Every mode is DISABLED — an `h` here would switch one on, which is the
+	// one way this constant could make things worse than doing nothing.
+	if strings.Contains(inputModeReset, "h") {
+		t.Errorf("inputModeReset enables a mode: %q", inputModeReset)
+	}
+	// The alt screen stays out of it on purpose: undoing `?1049` when the child
+	// already left it restores a saved cursor position and would move ours.
+	if strings.Contains(inputModeReset, "1049") {
+		t.Errorf("inputModeReset touches the alt screen: %q", inputModeReset)
+	}
+}
+
 func TestHunkKeyRoutesToOverlay(t *testing.T) {
 	// `h` has to reach the render goroutine through overlayCh, not actionCh:
 	// hunk is a full-screen child process, so the keyboard reader must stop

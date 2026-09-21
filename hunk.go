@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -264,9 +265,30 @@ func runHunk(tty *os.File, p hunkPlan) hunkOutcome {
 		}
 	}()
 	_ = cmd.Wait()
+	io.WriteString(tty, inputModeReset)
 	<-done
 	return out
 }
+
+// inputModeReset turns off every terminal input mode a full-screen child may
+// have switched on: mouse reporting (normal, button-event, any-event), the SGR
+// extended encoding those are usually paired with, focus reporting, and
+// bracketed paste.
+//
+// A child that exits cleanly disables its own — hunk does. One that CRASHES
+// does not, and what it leaves behind is a terminal that answers every mouse
+// move with an escape sequence, straight into the tail's keyboard reader. The
+// tail then looks possessed and the only cure is `reset`, which is a lot to ask
+// of someone whose diff viewer just died.
+//
+// Sent unconditionally after the child, because disabling a mode that was never
+// enabled is a no-op — cheaper than working out which ones hunk actually used.
+// It goes HERE rather than in status.resume(), which is where it was first
+// suggested: a nil status bar (--no-status, and the piped path) makes resume
+// inert, and the mode would survive exactly the run that had no bar to redraw.
+// Deliberately NOT included: the alt screen (`?1049l`). Undoing that when the
+// child already left it restores a saved cursor position and would move ours.
+const inputModeReset = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?2004l"
 
 // hunkWaitReady polls the loopback daemon until it reports a session for dir.
 // `session get` is the documented way to ask; its exit status is the answer, so
