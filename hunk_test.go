@@ -230,3 +230,61 @@ func TestHunkPromptMatchesTheDocumentedOne(t *testing.T) {
 		t.Errorf("hunkPrompt = %q, want the documented %q", hunkPrompt, want)
 	}
 }
+
+// The session's cwd is the one at the END of the transcript, not the start.
+// A session that re-enters a worktree keeps writing to the same transcript from
+// its new directory, so the head's cwd names a checkout the agent left behind —
+// the same reason tailMeta takes the branch from the tail.
+func TestTailCwdTakesTheNewestOne(t *testing.T) {
+	lines := splitLines([]byte(`{"type":"user","cwd":"/repo","gitBranch":"main"}
+{"type":"assistant","cwd":"/repo"}
+{"type":"user","cwd":"/repo/.claude/worktrees/task","gitBranch":"wt"}
+{"type":"assistant","cwd":"/repo/.claude/worktrees/task"}
+`))
+	if got, want := tailCwd(lines), "/repo/.claude/worktrees/task"; got != want {
+		t.Errorf("tailCwd = %q, want %q", got, want)
+	}
+}
+
+// A tail window rarely starts on a line boundary, and records without a cwd
+// (tool results, summaries, the pr-link) are the bulk of what's in it.
+func TestTailCwdSkipsUnusableLines(t *testing.T) {
+	lines := splitLines([]byte(`{"type":"user","cwd":"/re` + "\n" + `{"type":"user","cwd":"/repo"}
+{"type":"summary","summary":"a session"}
+{"type":"pr-link","prNumber":7}
+
+not json at all
+`))
+	if got, want := tailCwd(lines), "/repo"; got != want {
+		t.Errorf("tailCwd = %q, want %q", got, want)
+	}
+	if got := tailCwd(nil); got != "" {
+		t.Errorf("tailCwd(nil) = %q, want empty", got)
+	}
+}
+
+// hunkReviewDir is what `h` reviews. The transcript wins because it is the one
+// place that knows where the agent is NOW; our own pwd was fixed at startup.
+func TestHunkReviewDirPrefersTheSession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	body := `{"type":"user","cwd":"/repo"}` + "\n" + `{"type":"assistant","cwd":"/repo/.claude/worktrees/task"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := hunkReviewDir(path, "/somewhere/else"), "/repo/.claude/worktrees/task"; got != want {
+		t.Errorf("hunkReviewDir = %q, want the session's cwd %q", got, want)
+	}
+	// No transcript to read (a missing file, or a codex/agy session whose
+	// records carry no cwd at all) leaves the pre-existing behaviour intact.
+	if got, want := hunkReviewDir(filepath.Join(dir, "gone.jsonl"), "/somewhere/else"), "/somewhere/else"; got != want {
+		t.Errorf("hunkReviewDir on a missing file = %q, want the pwd fallback %q", got, want)
+	}
+	empty := filepath.Join(dir, "empty.jsonl")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := hunkReviewDir(empty, "/somewhere/else"), "/somewhere/else"; got != want {
+		t.Errorf("hunkReviewDir on an empty file = %q, want the pwd fallback %q", got, want)
+	}
+}

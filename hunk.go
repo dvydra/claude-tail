@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -165,12 +167,86 @@ func hunkClaudePane(ownTab, cur string, procs []claudeProc, sessionOf func(claud
 // hunkOverlay is the live loop's entire `h` case: work out what can happen,
 // hand the screen over if anything can, and give back the line for the status
 // bar. Split out so main.go's overlay switch stays a switch over intent.
-func hunkOverlay(tty *os.File, home, cur, dir string) string {
+func hunkOverlay(tty *os.File, home, cur, pwd string) string {
+	dir := hunkReviewDir(cur, pwd)
 	p := planHunk(hunkBin(home, exec.LookPath), dir, isDir(dir), hunkPaneFor(home, cur))
 	if p.Bin == "" {
 		return p.Msg // a refusal; the screen was never handed over
 	}
 	return runHunk(tty, p).msg()
+}
+
+// hunkReviewDir is the directory `h` hands to hunk — and getting it from the
+// TRANSCRIPT rather than from our own pwd is the whole point.
+//
+// A hunk session's root is fixed for its lifetime: `session reload --source`
+// refuses any path outside the root it launched from, so the cwd chosen here is
+// the only one this review will ever have. Our pwd is the wrong source for it.
+// It is fixed when entire-tail starts (re-based once, on adopt) and nothing
+// moves it afterwards — while the session we are tailing moves all the time.
+// An `EnterWorktree` keeps the same session id and moves `<id>.jsonl` into the
+// project dir for the new cwd; `relocatedSession` follows the file, so the tail
+// carries on correctly from inside the worktree while our pwd still names the
+// checkout it forked from. Pressing `h` there reviewed the parent checkout — a
+// diff of somebody else's tree, which is exactly as wrong as it sounds and
+// reads as "hunk is broken" rather than "entire-tail pointed it at the wrong
+// place".
+//
+// The transcript answers it for free: every Claude user/assistant record
+// carries the cwd it was written from, and the newest one is where the agent is
+// NOW. Read at press time rather than tracked as state — a fact fetched when
+// it's used can't go stale, and the read is one bounded tail window.
+//
+// pwd stays the fallback, for an agent whose records carry no cwd (codex, agy)
+// and for a transcript we can't read. A cwd that no longer exists is NOT fallen
+// back on: the normal end of a worktree is that its directory is deleted, and
+// the honest answer there is planHunk's refusal, not a review of the checkout
+// next door.
+func hunkReviewDir(cur, pwd string) string {
+	if d := sessionCwdNow(cur); d != "" {
+		return d
+	}
+	return pwd
+}
+
+// sessionCwdNow reads a transcript's bounded tail window and returns the cwd the
+// session is writing from now. Empty when the file can't be read or holds no
+// cwd at all.
+//
+// Distinct from entire.go's `sessionCwd`, which answers the same question from
+// the transcript's HEAD — where the session STARTED — and is what the workspace
+// launcher cds a resumed pane to.
+func sessionCwdNow(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	return tailCwd(splitLines(tailWindow(f)))
+}
+
+// tailCwd walks a tail window backward for the newest user/assistant cwd.
+//
+// Backward, and from the tail, for the reason tailMeta gives for the branch: a
+// session can hop directories mid-flight, so the head's cwd names where it
+// STARTED. The `"cwd"` pre-filter keeps the tail's bulk (tool results, pr-link,
+// summary records) from being JSON-parsed, and the window's partial first line
+// simply fails to parse and is skipped.
+func tailCwd(lines [][]byte) string {
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 || !bytes.Contains(line, []byte(`"cwd"`)) {
+			continue
+		}
+		var ev claudeMetaEvent
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		if (ev.Type == "user" || ev.Type == "assistant") && ev.Cwd != "" {
+			return ev.Cwd
+		}
+	}
+	return ""
 }
 
 // hunkPaneFor resolves the claude pane to prompt, or "" when there isn't one we

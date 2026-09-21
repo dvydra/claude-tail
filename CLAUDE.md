@@ -353,7 +353,7 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   for a diff of the tailed session's working tree, and take it back on quit.
   Same hand-off as `?`/`→` (keyboard signals `overlayCh` and parks on
   `resumeCh`, one tty reader) with one difference that shapes the file: what
-  owns the screen is a CHILD PROCESS, not an overlay we draw. Five things are
+  owns the screen is a CHILD PROCESS, not an overlay we draw. Six things are
   deliberate. (1) **The terminal modes are left alone** around the spawn — hunk
   sets its own raw mode and restores what it inherited (our cbreak), which is
   exactly the state the keyboard reader needs back; a restore-to-cooked-then-
@@ -394,8 +394,31 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   index** (panelink.go's lesson: indexes shift) and wraps the write in `try`,
   since the pane may have closed while hunk was up. Verified live against iTerm
   3.6.11: the script matched a real session by uuid and typed the prompt
-  verbatim, backticks intact. Pure `planHunk`/`hunkBin`/`hunkClaudePane`/
-  `hunkNotifyScript` are unit-tested; the spawn and `osascript` are the thin IO
+  verbatim, backticks intact. (6) **The directory reviewed comes from the
+  TRANSCRIPT, not from our pwd** (`hunkReviewDir`). A hunk session's root is
+  fixed for its lifetime — `session reload --source` refuses any path outside
+  the root it launched from (measured) — so the cwd picked at spawn is the only
+  one that review will ever have. Our `pwd` is fixed when entire-tail starts
+  (re-based once, on adopt) while the session moves: an `EnterWorktree` keeps
+  the same id and moves `<id>.jsonl` into the new cwd's project dir, so
+  `relocatedSession` follows the file and the tail carries on from inside the
+  worktree while `pwd` still names the checkout it forked from — and `h` there
+  reviewed the PARENT checkout, a diff of a tree nobody was working in. Every
+  Claude user/assistant record carries its cwd, so `sessionCwdNow`/`tailCwd`
+  take the newest one from the same bounded tail window `loadClaudeMeta`
+  already uses — the tail for the reason `tailMeta` reads the *branch* from the
+  tail, since the head names where the session STARTED. Read at press time
+  rather than tracked, because a fact fetched when it's used can't go stale.
+  `pwd` remains the fallback (codex/agy records carry no cwd; an unreadable
+  transcript), but a cwd that no longer EXISTS is not fallen back on — the end
+  of a worktree is that its dir is deleted, and planHunk's refusal is the honest
+  answer there, not a review of the checkout next door. **Don't confuse it with
+  entire.go's `sessionCwd`**, which answers the same question from the HEAD (it
+  cds a resumed workspace, and has the same staleness for a session that moved —
+  untouched here only because changing where a resume lands is its own change).
+  Pure
+  `planHunk`/`hunkBin`/`hunkClaudePane`/`hunkNotifyScript`/`tailCwd`/
+  `hunkReviewDir` are unit-tested; the spawn and `osascript` are the thin IO
   layer
 - `help.go` — the alt-screen **panel chrome**: `drawPanel` (a centered bordered
   box, title in the top border, caller-supplied hint in the bottom one) plus
