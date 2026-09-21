@@ -353,11 +353,22 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   for a diff of the tailed session's working tree, and take it back on quit.
   Same hand-off as `?`/`→` (keyboard signals `overlayCh` and parks on
   `resumeCh`, one tty reader) with one difference that shapes the file: what
-  owns the screen is a CHILD PROCESS, not an overlay we draw. Four things are
+  owns the screen is a CHILD PROCESS, not an overlay we draw. Five things are
   deliberate. (1) **The terminal modes are left alone** around the spawn — hunk
   sets its own raw mode and restores what it inherited (our cbreak), which is
   exactly the state the keyboard reader needs back; a restore-to-cooked-then-
-  re-cbreak dance adds two failure paths and buys nothing. (2) **`planHunk`
+  re-cbreak dance adds two failure paths and buys nothing. But **`inputModeReset`
+  IS sent after it exits**: a child that quits cleanly disables its own mouse
+  reporting (hunk does, and its mouse support is entirely its own — it works
+  because the child now holds the real pty), while one that CRASHES leaves the
+  terminal answering every mouse move with an escape sequence fed straight into
+  our keyboard reader, which reads as a possessed tail curable only by `reset`.
+  Sent unconditionally, since disabling a mode nothing enabled is a no-op, and
+  sent from `runHunk` rather than `status.resume()` (where it was first
+  suggested) because a nil bar — `--no-status`, and the piped path — makes
+  `resume` inert, so the mode would survive exactly the run with no bar to
+  redraw. The alt screen is deliberately NOT in it: undoing `?1049` when the
+  child already left it restores a saved cursor and would move ours. (2) **`planHunk`
   decides everything KNOWABLE before the screen is handed over**, which is what
   keeps the two no-op cases (hunk not installed; the session's cwd deleted, the
   normal end state of a worktree) from suspending the bar and blanking the tail
