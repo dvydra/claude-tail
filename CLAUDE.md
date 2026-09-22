@@ -293,6 +293,22 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
 - `wraptext.go` — the **word wrapper** applied to glamour's rendered output
   (`wrapANSI`), because glamour's own mis-counts hyphens; see the load-bearing
   note below
+- `paste.go` — **what the human pasted into the prompt.** Claude Code wraps it in
+  `<pasted_content id="…">` … `</pasted_content id="…">`, each tag alone on its
+  line — and that pair is not valid HTML (the closing tag repeats the
+  attributes), so glamour treats it as a raw tag and ESCAPES it: the reader was
+  shown `<\pasted_content id="e840">` and `<\/pasted_content id="e840">`, plus an
+  id that means nothing to them. `markPastes` (called from the claude adapter's
+  user path) replaces the pair with an italic `⎘ pasted N lines` marker and
+  passes the pasted text through **byte-for-byte** — it's the human's words, and
+  it's also what the collapse threshold counts. Two rules are deliberate: a tag
+  is only a wrapper when it is **alone on its line** (inline, it's a human
+  writing *about* the wrapper — this very session did that), and blank lines are
+  inserted around the marker only where the source lacks them, or the marker gets
+  absorbed into the paragraph above and the paste's last line into the prose
+  below. An empty wrapper renders nothing rather than "pasted 0 lines". This is
+  the same class of problem as `tasknote.go` — glamour eating an unknown tag —
+  and has the same shape of fix
 - `toolresult.go` — parse Claude `toolUseResult` into diffs / output / read-summary
 - `tail.go` — follow loop (byte-offset resume for claude/codex; whole-file
   re-read + `step_index` dedup for agy)
@@ -935,6 +951,21 @@ needs to change.
   gone. The cost is real (a long session reprints in full on every keypress) and
   it was accepted knowingly; the win is that scrollback always holds one
   complete transcript in the settings you just chose.
+  **That last sentence only became TRUE once `rerenderPrefix` wiped the old copy
+  first** (round three). A complete copy appended below an equally complete copy
+  is not a re-render, it is a duplicate: every `c`/`t`/`T`/`w`/`r` press stacked
+  another full transcript underneath the last, and scrolling up walked back
+  through every stale variant of the session — reported as "I expect collapse to
+  rerender not duplicate". So a re-render now sends `ESC [ H`, `ESC [ 2 J` and
+  `ESC [ 3 J` before reprinting. All three are load-bearing: without the
+  scrollback erase (`3J`) the stale copies are simply one screen up, which is the
+  whole complaint. Wiping is safe **precisely because the copy is complete** —
+  the only thing a clear can destroy is output this very call is about to
+  reprint, so the cap that was removed above is also what makes this possible.
+  Two more: it is a **tty-only** prefix (a pipe gets "", so the goldens and every
+  `--no-pick` run are byte-identical — the `wrapWidth` rule again), and `ESC [ 2 J`
+  erases the status bar's row along with everything else, which is fine only
+  because `note` redraws the bar immediately after every action.
   The collapse marker's wording is `Renderer.collapseHint`, chosen in `run`
   before backfill (so the whole screen agrees): `press c to expand` on a
   terminal, and the flag on a pipe — which is what the goldens pin.

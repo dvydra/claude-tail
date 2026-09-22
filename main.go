@@ -416,7 +416,13 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// confusing (scroll up out of the re-render and you're back in the stale one,
 	// with no seam to tell you), and rendering a session turns out to be cheap
 	// enough that the cap bought nothing. The full copy also leaves your
-	// scrollback holding one complete transcript in the settings you just chose.
+	// scrollback holding one complete transcript in the settings you just chose —
+	// which is literally true only because rerenderPrefix wipes the old one
+	// first. Without that, "re-render" reads as "duplicate": every c/t/T/w press
+	// stacked another full copy underneath the last, and scrolling up walked back
+	// through every stale variant. Wiping is safe precisely BECAUSE the copy is
+	// complete — the only thing a clear can destroy is output this very call is
+	// about to reprint.
 	rerender := func(banner string) {
 		d, err := os.ReadFile(cur)
 		if err != nil {
@@ -435,6 +441,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		}
 		r.w = prevW
 
+		io.WriteString(out, rerenderPrefix(isCharDevice(os.Stdout)))
 		io.WriteString(out, "\n"+r.theme.DimANSI+banner+reset+"\n\n")
 		io.WriteString(out, buf.String())
 		offset = liveOffset(d)
@@ -931,6 +938,21 @@ func winchSettled(winchAt, now time.Time) bool {
 // unwrapped, each paragraph is a single logical line the terminal soft-wraps, so
 // the terminal rejoins it on copy and a mouse drag-select yields one unbroken
 // paragraph. Wrapping trades that for breaks that land between words.
+// rerenderPrefix is what a re-render sends before reprinting the transcript:
+// cursor home, erase the screen, erase the SCROLLBACK (`ESC [ 3 J`). All three
+// matter — without the scrollback erase the stale copies are still there, one
+// screen up, which is the whole complaint.
+//
+// A pipe gets nothing, so the goldens and every `--no-pick` run are byte-identical
+// to before. The status bar redraws itself right after (`note`), since `ESC [ 2 J`
+// erases the whole display including the row the bar owns.
+func rerenderPrefix(tty bool) string {
+	if !tty {
+		return ""
+	}
+	return "\x1b[H\x1b[2J\x1b[3J"
+}
+
 func wrapWidth(f *os.File, noWrap bool) int {
 	if noWrap || !isCharDevice(f) {
 		return 0

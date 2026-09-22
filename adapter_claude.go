@@ -92,7 +92,7 @@ func normalizeClaude(line []byte, loc *time.Location) []Record {
 			if isSyntheticUser(ev.Origin.Kind, ev.PromptSource, ev.IsMeta) {
 				return nil
 			}
-			return []Record{{Kind: KindUser, Ts: ts, Body: unwrapCommand(s)}}
+			return []Record{{Kind: KindUser, Ts: ts, Body: markPastes(unwrapCommand(s))}}
 		}
 		var blocks []claudeBlock
 		if json.Unmarshal(ev.Message.Content, &blocks) != nil {
