@@ -310,10 +310,32 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   no forward pointer, so the printed ids are the only way to find the
   continuation; then streams the child from its start. `cur` (mutable) replaces the immutable
   `session` param inside the live loop's poll/reload/rollover closures. **A
-  `/clear` is followed for free by this same path** — verified live, it mints a
-  new `<id>.jsonl` whose `worktreeSession.sessionId` is the pre-clear session
-  (same field as a worktree re-enter), so `forkPointer`/`lineageChild` adopt it
-  with no `/clear`-specific code (`TestForkPointerClear`). The live divider only
+  `/clear` is NOT followed by this path, and believing it was cost a silent
+  freeze.** `worktree-state` is a record about the WORKTREE: it is re-emitted by
+  every session in a worktree's lineage and always names the session that
+  *entered* the worktree. So a `/clear` inside a worktree comes out looking like
+  a fork — the post-clear file re-emits it, its `sessionId` is already in our
+  lineage set, `lineageChild` adopts — and that is what "verified live" saw (the
+  fixture in `TestForkPointerClear` is itself worktree data, `worktreePath:
+  /x/.claude/worktrees/wt`). A `/clear` in a **plain checkout** writes no pointer
+  in either direction: the old transcript stops, the new one has no
+  `worktree-state` record, and nothing on disk names the other file. Measured on
+  Claude Code 2.1.278 — `b52a3e4b`→`a82e0c86` in entire-ci-webhooks: zero
+  `worktreeSession` records, zero cross-references. Hence the third rollover
+  shape, `registryChild` — read, not guessed, from the same registry `live.go`
+  reads: **a `/clear` rewrites the running session's `<config-dir>/sessions/<pid>.json`
+  entry in place**, same pid, same cwd, new `sessionId`, so the PID is the only
+  surviving link. Two things there are load-bearing. (1) The host pid is
+  **pinned while the session is still ours** (`registryHostPID`, on the idle
+  ticks that precede any `/clear`) — by the time the flip happens the registry
+  no longer names an id we know, so a lazy lookup at the moment of need finds
+  nothing. It is re-pinned when the pid dies, so quitting Claude and resuming
+  the same session under a new process doesn't leave the tail watching a corpse;
+  the steady state is one `pidAlive` syscall per idle tick, not a registry scan.
+  (2) Adoption **waits for the new transcript to exist** — the id is minted at
+  the clear, the file only when the first turn lands — and re-checks on the next
+  idle tick until then. Still no "newest file in the dir" heuristic anywhere, so
+  a concurrent unrelated Claude in the same repo is never adopted. The live divider only
   names the flip in *this* window; **`--mark-continuation`** (opt-in, off by
   default — entire-tail is otherwise strictly read-only on transcripts) also
   leaves the pointer on disk: `markContinuation` appends a Claude-Code-native

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,11 +78,11 @@ func TestForkPointer(t *testing.T) {
 }
 
 func TestForkPointerClear(t *testing.T) {
-	// A /clear does NOT keep the same file — it mints a new <id>.jsonl in the
-	// same project dir whose worktree-state carries worktreeSession.sessionId =
-	// the pre-clear session (verified live: baa1307f forked from 8a853bad on a
-	// /clear). It is the SAME field a worktree re-enter writes, just with the
-	// full worktree metadata alongside, so lineage catches /clear for free.
+	// A /clear inside a WORKTREE session mints a new <id>.jsonl that re-emits the
+	// worktree-state record, so its pointer is already in our lineage set and
+	// lineageChild adopts it. Note what this fixture actually is: worktree data
+	// (see worktreePath). The same /clear in a plain checkout writes no record at
+	// all — that case is TestRegistryChildFollowsClear.
 	head := []byte(`{"type":"mode","mode":"normal","sessionId":"baa1307f"}
 {"type":"worktree-state","sessionId":"baa1307f","worktreeSession":{"originalCwd":"/x","preEnterOriginalCwd":"/x","worktreePath":"/x/.claude/worktrees/wt","worktreeName":"wt","worktreeBranch":"wt-branch","originalBranch":"main","originalHeadCommit":"ec0221c","sessionId":"8a853bad"}}
 {"type":"file-history-snapshot"}`)
@@ -217,5 +218,63 @@ func TestLineageChildEmptyFileIgnored(t *testing.T) {
 	os.WriteFile(child, []byte(""), 0o644) // forked file announced but not yet written
 	if p, _ := lineageChild(dir, cur, map[string]bool{"f4d95ea2": true}); p != "" {
 		t.Fatalf("adopted an empty child: %q", p)
+	}
+}
+
+// writeRegistryEntry drops one Claude-Code running-session registry file.
+func writeRegistryEntry(t *testing.T, dir string, pid int, id, cwd string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"pid":%d,"sessionId":%q,"cwd":%q,"status":"idle"}`, pid, id, cwd)
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.json", pid)), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegistryHostPID(t *testing.T) {
+	dir := t.TempDir()
+	roots := []liveRoot{{Dir: dir}}
+	alive := func(int) bool { return true }
+	writeRegistryEntry(t, dir, 111, "aaaaaaaa-0000-4000-8000-000000000001", "/repo")
+	writeRegistryEntry(t, dir, 222, "bbbbbbbb-0000-4000-8000-000000000002", "/other")
+
+	lineage := map[string]bool{"bbbbbbbb-0000-4000-8000-000000000002": true}
+	if got := registryHostPID(roots, lineage, alive); got != 222 {
+		t.Fatalf("registryHostPID = %d, want 222", got)
+	}
+	if got := registryHostPID(roots, map[string]bool{"nope": true}, alive); got != 0 {
+		t.Fatalf("registryHostPID(unknown) = %d, want 0", got)
+	}
+}
+
+// TestRegistryChildFollowsClear pins the one link a /clear leaves behind in a
+// plain checkout: neither transcript points at the other, but the SAME pid's
+// registry entry is rewritten in place to name the new session id.
+func TestRegistryChildFollowsClear(t *testing.T) {
+	dir := t.TempDir()
+	roots := []liveRoot{{Dir: dir}}
+	alive := func(int) bool { return true }
+	const oldID = "aaaaaaaa-0000-4000-8000-000000000001"
+	const newID = "cccccccc-0000-4000-8000-000000000003"
+	lineage := map[string]bool{oldID: true}
+
+	writeRegistryEntry(t, dir, 111, oldID, "/repo")
+	if _, ok := registryChild(roots, 111, lineage, alive); ok {
+		t.Fatal("registryChild fired while the pid still hosts our own session")
+	}
+
+	writeRegistryEntry(t, dir, 111, newID, "/repo") // the /clear
+	s, ok := registryChild(roots, 111, lineage, alive)
+	if !ok || s.SessionID != newID {
+		t.Fatalf("registryChild = %+v, %v; want %s", s, ok, newID)
+	}
+
+	if _, ok := registryChild(roots, 111, lineage, func(int) bool { return false }); ok {
+		t.Fatal("registryChild adopted from a dead pid")
+	}
+	if _, ok := registryChild(roots, 999, lineage, alive); ok {
+		t.Fatal("registryChild adopted from a pid that is not our host")
 	}
 }
