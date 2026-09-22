@@ -39,10 +39,15 @@ func sessionIDFromPath(p string) string {
 
 // forkPointer scans the opening records of a Claude session file for a worktree
 // fork pointer — worktreeSession.sessionId, the id of the session this one was
-// forked from on a worktree re-enter. A /clear writes the SAME field (a new
-// <id>.jsonl whose worktreeSession.sessionId is the pre-clear session, alongside
-// the full worktree metadata), so lineage rollover follows /clear for free.
-// Returns "" if there is none.
+// forked from on a worktree re-enter. Returns "" if there is none.
+//
+// This record is about the WORKTREE, not about forking in general: it is
+// re-emitted by every session in a worktree's lineage and always names the
+// session that entered the worktree. A /clear inside a worktree therefore comes
+// out looking like a fork (the post-clear file re-emits the record, and its
+// sessionId is in our lineage set), which is why /clear used to look like it was
+// followed for free. It isn't: a /clear in a PLAIN checkout writes no pointer at
+// all, in either direction. That case is registryChild's job.
 func forkPointer(head []byte) string {
 	for _, line := range splitLines(head) {
 		var rec struct {
@@ -229,4 +234,52 @@ func lineageChild(dir, curPath string, lineage map[string]bool) (string, string)
 		}
 	}
 	return "", ""
+}
+
+// A /clear leaves NOTHING on disk to follow. The old transcript just stops; the
+// new one carries no pointer back (only a worktree session gets a worktree-state
+// record, which is what made /clear look followed — see forkPointer). So the
+// link is read from the same place live.go reads liveness: Claude Code's
+// running-session registry, where the SAME pid's entry is rewritten in place to
+// name the new id, with the cwd unchanged. pid → session, stated rather than
+// guessed; no "newest file in the dir" heuristic, so a concurrent unrelated
+// Claude in the same repo is still never adopted.
+//
+// It takes two steps because by the time the flip has happened the mapping we
+// need is already gone: the host pid is pinned while the session is still
+// current (registryHostPID, on the idle ticks that precede any /clear), and only
+// then can a later entry under that pid be recognised as our continuation.
+
+// registryHostPID returns the pid of the running Claude whose registry entry
+// names a session in `lineage` — the process hosting the session we follow. 0
+// when there is none: a resumed-but-not-running session, a non-Claude agent, or
+// a registry we can't read. alive is injected for testability (liveAlive in
+// production, which also rejects a recycled pid).
+func registryHostPID(roots []liveRoot, lineage map[string]bool, alive func(pid int) bool) int {
+	for _, s := range collectLiveSessions(roots, alive) {
+		if lineage[s.SessionID] {
+			return s.PID
+		}
+	}
+	return 0
+}
+
+// registryChild returns the session `pid` hosts NOW, when that is one we have
+// not already followed — i.e. the process re-registered under a new id, which is
+// what a /clear does. ok=false while the pid still names one of our own ids (the
+// steady state), when the process is gone, or when the id is malformed.
+func registryChild(roots []liveRoot, pid int, lineage map[string]bool, alive func(pid int) bool) (liveSession, bool) {
+	if pid <= 0 {
+		return liveSession{}, false
+	}
+	for _, s := range collectLiveSessions(roots, alive) {
+		if s.PID != pid {
+			continue
+		}
+		if lineage[s.SessionID] || !validSessionID(s.SessionID) {
+			return liveSession{}, false
+		}
+		return s, true
+	}
+	return liveSession{}, false
 }

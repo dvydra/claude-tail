@@ -371,6 +371,12 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	cur := session
 	projectDir := filepath.Dir(cur)
 	lineage := map[string]bool{sessionIDFromPath(cur): true}
+	// hostPID is the running Claude that owns the session we follow, pinned from
+	// the registry while the session is still current — a /clear rewrites that
+	// entry in place, so the pid is the only thing left that links the two files
+	// (see registryChild). 0 until an idle tick finds it, and re-pinned there
+	// whenever it is lost.
+	hostPID := 0
 	offset := liveOffset(data)
 	agyKeep := newAgyDedup(maxStepIndex(lines))
 	var agyLastSize, agyLastMtime int64 = -1, -1
@@ -458,14 +464,27 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	}
 	// cycleTheme is the `T` key.
 	cycleTheme := func() string { return stepThemeTo(+1, true) }
-	// rollover follows the session across a Claude worktree fork. When the
-	// current file has gone quiet and a sibling in the same project dir forked
-	// from our lineage, switch to it and stream from its start (fork children are
-	// short at the moment they appear). Claude-only: worktree-state pointers are a
-	// Claude construct, and agy/codex don't rotate session ids mid-run.
+	// rollover follows the session when Claude Code rotates its id. Three shapes,
+	// tried in that order: a worktree fork (a sibling in this project dir whose
+	// worktree-state names one of our ids), a worktree cwd switch (the same file
+	// under a different project dir) and a /clear (a new id under the same pid,
+	// with nothing on disk linking the two). Claude-only: those are Claude
+	// constructs, and agy/codex don't rotate session ids mid-run.
 	rollover := func() bool {
 		if agent != AgentClaude {
 			return false
+		}
+		// Keep the host pid fresh while the session is still ours — after a /clear
+		// the registry no longer names any id we know, so this cannot be deferred
+		// to the moment it is needed. Idle ticks are the only ones that get here,
+		// and any /clear is preceded by plenty of them.
+		// A dead pid is re-pinned too, so quitting Claude and resuming the same
+		// session under a new process doesn't leave us watching a corpse. pidAlive
+		// is a bare signal-0, so the steady state costs one syscall per idle tick
+		// rather than a registry scan.
+		roots := liveRoots(home)
+		if hostPID == 0 || !pidAlive(hostPID) {
+			hostPID = registryHostPID(roots, lineage, liveAlive)
 		}
 		np, nid := lineageChild(projectDir, cur, lineage)
 		if np == "" {
@@ -479,22 +498,39 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// a worktree cwd switch relocates it within THAT root. Searching the
 			// work root for it would silently never find the move.
 			rp := relocatedSession(projectsRootOf(cur), sessionIDFromPath(cur), cur)
-			if rp == "" {
+			if rp != "" {
+				// Only adopt once the relocated file has caught up to at least our byte
+				// offset. A candidate still mid-write (size < offset) would trip
+				// appendStep's truncation reset and re-render the whole prefix; skip it
+				// and re-check on the next idle tick instead.
+				if fi, err := os.Stat(rp); err != nil || fi.Size() < offset {
+					return false
+				}
+				r.endLine() // close any open dot-streak bracket before the note
+				io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ following session into "+filepath.Base(filepath.Dir(rp))+reset+"\n\n")
+				cur = rp
+				projectDir = filepath.Dir(rp)
+				agyLastSize, agyLastMtime = -1, -1
+				return true
+			}
+			// Nothing on disk points anywhere, which is exactly what a /clear leaves
+			// behind. Ask the registry what our pid is running now; a new id there is
+			// the continuation. Wait for its transcript to exist — the id is minted at
+			// the clear, the file only when the first turn lands — and re-check on the
+			// next idle tick until then.
+			s, ok := registryChild(roots, hostPID, lineage, liveAlive)
+			if !ok {
 				return false
 			}
-			// Only adopt once the relocated file has caught up to at least our byte
-			// offset. A candidate still mid-write (size < offset) would trip
-			// appendStep's truncation reset and re-render the whole prefix; skip it
-			// and re-check on the next idle tick instead.
-			if fi, err := os.Stat(rp); err != nil || fi.Size() < offset {
+			p := liveTranscriptPath(home, s)
+			if p == "" || p == cur {
 				return false
 			}
-			r.endLine() // close any open dot-streak bracket before the note
-			io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ following session into "+filepath.Base(filepath.Dir(rp))+reset+"\n\n")
-			cur = rp
-			projectDir = filepath.Dir(rp)
-			agyLastSize, agyLastMtime = -1, -1
-			return true
+			if fi, err := os.Stat(p); err != nil || fi.Size() == 0 {
+				return false
+			}
+			np, nid = p, s.SessionID
+			projectDir = filepath.Dir(p)
 		}
 		// Name both ends of the flip. On disk the old file just stops with no
 		// forward pointer, so without the ids printed here the continuation is

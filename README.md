@@ -1218,11 +1218,15 @@ renderer.
 Claude Code mints a **new** `<id>.jsonl` (same project dir) when it re-enters a
 worktree or when you `/clear` — the old file just stops. A plain tail would
 freeze there. entire-tail instead keeps a *lineage* of the session ids it owns
-and, once the current file falls quiet, adopts the sibling whose
-`worktreeSession.sessionId` fork-pointer is in that lineage (matching the
+and, once the current file falls quiet, adopts the successor — matching an
 explicit pointer, never "newest file", so a concurrent unrelated Claude in the
-same repo is never picked up). At the flip it prints a two-line boundary naming
-both ends so you can find either file on disk:
+same repo is never picked up. A **worktree** fork says so on disk: the new
+file's `worktreeSession.sessionId` names the session it came from. A **`/clear`
+in a plain checkout says nothing at all** — neither file references the other —
+so the successor is read from Claude Code's running-session registry instead,
+where the same pid's entry is rewritten in place to name the new session id. At
+the flip it prints a two-line boundary naming both ends so you can find either
+file on disk:
 
 ```
 ⟳ continued in <new-id>        ← tail of the old session
