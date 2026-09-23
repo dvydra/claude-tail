@@ -9,12 +9,13 @@ import (
 	"time"
 )
 
-// adopt.go auto-adopts the Claude session running in the sibling iTerm pane.
+// adopt.go finds the `claude`s in the other panes of our iTerm tab, and the
+// transcript each one writes.
 //
-// entire-tail is meant to run in a second pane next to the agent. When it's
-// launched bare (no --follow-session, no positional file, no search) it can find
-// that exact `claude` process and tail its session with zero flags — instead of
-// dropping to the tree picker.
+// entire-tail is meant to run in a second pane next to the agent. Launched bare
+// (bareStart) beside one, it opens --live with the cursor on that claude's
+// session (paneClaudePIDs → liveCursorFor). nearby.go, hunk.go and panelinkd.go
+// reuse the same process matching and resolveClaudeSession.
 //
 // The session id is NOT interrogable from a bare `claude`: it is absent from the
 // process argv, its environment (no CLAUDE_* vars), and its open files (the
@@ -194,25 +195,23 @@ func lsofCwd(pid int) string {
 	return parseLsofCwd(out)
 }
 
-// adoptPaneSession returns the transcript path AND cwd of the lone `claude`
-// sharing our iTerm tab, or ("","") when there isn't exactly one (so the caller
-// falls through to the tree/discovery). The cwd lets the caller re-base pwd onto
-// the adopted agent's repo, so the cwd-mismatch note and the Ctrl-X tree reflect
-// what's actually being watched. Off iTerm — or with pgrep/lsof absent — ("","").
-func adoptPaneSession(home string, getenv func(string) string) (string, string) {
+// paneClaudePIDs returns the `claude`s sharing our iTerm tab, i.e. the agents
+// in the other panes of this split. Nil off iTerm, or with pgrep/lsof absent.
+func paneClaudePIDs(getenv func(string) string) []int {
 	ownTab := itermTab(getenv("ITERM_SESSION_ID"))
-	if ownTab == "" {
-		return "", ""
+	if ownTab == "" || !pickerToolsAvailable() {
+		return nil
 	}
-	if !pickerToolsAvailable() { // needs pgrep + lsof
-		return "", ""
-	}
-	sibs := siblingPIDs(ownTab, claudeProcs())
-	if len(sibs) != 1 {
-		return "", "" // zero → nothing to adopt; many → ambiguous, let the tree decide
-	}
-	cwd := lsofCwd(sibs[0])
-	return resolveClaudeSession(home, cwd, psCommand(sibs[0])), cwd
+	return siblingPIDs(ownTab, claudeProcs())
+}
+
+// bareStart reports whether nothing on the command line or in the env already
+// chose what to show, so the mode is ours to pick from the pane layout.
+// --no-pick (tail $PWD directly) and -p (always the tree) are both choices.
+func bareStart(cfg Config, agent string) bool {
+	return cfg.FollowSession == "" && !cfg.WaitNew && !cfg.Live &&
+		cfg.Search == "" && len(cfg.Positional) == 0 && cfg.Pick == "auto" &&
+		(agent == "auto" || agent == "claude")
 }
 
 // resolveClaudeSession maps a pane's claude (its cwd + argv) to a transcript

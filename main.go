@@ -88,6 +88,16 @@ func run(cfg Config) {
 	resolved := false
 	session := ""
 
+	// The mode is picked from where we were started. A bare run in a pane beside
+	// a claude in this iTerm tab opens --live with the cursor on that claude's
+	// session; anything else gets the tree, whose ⏎ lays out the workspace when
+	// this tab has no split (itermSinglePane) and tails in place when it does.
+	var paneClaudes []int
+	if bareStart(cfg, agentStr) && ttyUsable() {
+		paneClaudes = paneClaudePIDs(os.Getenv)
+	}
+	autoLive := len(paneClaudes) > 0
+
 	if cfg.FollowSession != "" {
 		// The workspace pins a session id (claude --session-id) and hands it to us,
 		// so we follow exactly that file — waiting for it to appear, immune to any
@@ -107,11 +117,11 @@ func run(cfg Config) {
 		if agentStr == "auto" {
 			agentStr = string(AgentClaude)
 		}
-	} else if cfg.Live {
+	} else if cfg.Live || autoLive {
 		// --live: pick from the sessions that are actually running, read out of
 		// Claude Code's own registry. Piped (ok=false) it has already dumped the
 		// list, so there is nothing left to tail.
-		c, ok := runLive(home, theme)
+		c, ok := runLive(home, theme, paneClaudes)
 		if !ok {
 			return
 		}
@@ -154,28 +164,9 @@ func run(cfg Config) {
 		}
 	}
 
-	// Auto-adopt: launched bare in a pane beside a single `claude` in this iTerm
-	// tab? Tail exactly its session, skipping the tree. Matched by iTerm tab so a
-	// claude elsewhere is never grabbed; self-disables off iTerm or when the tab
-	// holds zero/many claudes. Explicit -p/--pick (always) opts out.
-	adopted := false
-	if session == "" && cfg.Pick != "always" && (agentStr == "auto" || agentStr == "claude") {
-		if p, cwd := adoptPaneSession(home, os.Getenv); p != "" {
-			fmt.Fprintln(os.Stderr, "entire-tail: adopted the claude session in this iTerm tab")
-			session = p
-			adopted = true
-			if cwd != "" {
-				pwd = cwd // watch the adopted agent's repo, not ours
-			}
-			if agentStr == "auto" {
-				agentStr = string(AgentClaude)
-			}
-		}
-	}
-
 	if session == "" && shouldOfferHookInstall(hookOfferInputs{
 		isTTY:            ttyUsable(),
-		adopted:          adopted,
+		adopted:          autoLive,
 		alreadyInstalled: hookInstalledFor(home),
 		choiceRecorded:   hookChoiceRecorded(home),
 		noHookInstall:    cfg.NoHookInstall,

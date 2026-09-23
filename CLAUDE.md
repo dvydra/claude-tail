@@ -165,9 +165,16 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   the `--local` view's live markers, plus `runPicker`/`resolveTreeChoice`. The
   tree is the DEFAULT entry point (bare `entire-tail` on a tty); `--no-pick` /
   piped runs / explicit SESSION_FILE skip it and tail directly
-- `adopt.go` — **auto-adopts the Claude in the sibling iTerm pane.** A bare
-  `entire-tail` (no `--follow-session`/positional/search) run in a pane beside a
-  `claude` tails THAT session with no flags, before falling to the tree. The
+- `adopt.go` — **finds the Claude in the sibling iTerm pane, which picks the
+  start mode.** A bare `entire-tail` (`bareStart`: no `--live`/`-p`/`--no-pick`/
+  `--follow-session`/positional/search) run in a pane beside a `claude` opens
+  `--live` with the cursor on that claude's row (`paneClaudePIDs` →
+  `liveCursorFor`, an exact pid match against the registry, first load only);
+  otherwise the tree, whose `⏎` lays out the workspace in an unsplit tab
+  (`itermSinglePane`). This replaced tailing the lone sibling directly
+  (`adoptPaneSession`): `--live`'s `⏎` gets there in one key and also handles
+  a tab with two claudes. The rest below still describes how `nearby.go`,
+  `hunk.go` and `panelinkd.go` resolve a pane's claude. The
   session id isn't interrogable from a bare `claude` — it's absent from argv,
   env (no `CLAUDE_*` vars), and open files (the transcript is open-append-closed,
   never held; verified live) — so we pin the *process* and resolve its file. The

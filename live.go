@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -463,6 +464,18 @@ func (ui *liveUI) clampLive() {
 	ui.Cursor = max(0, min(ui.Cursor, len(ui.Sessions)-1))
 }
 
+// liveCursorFor is the index of the first session run by one of pids (the
+// claudes in our own iTerm tab), or -1. The registry is keyed by pid, so this
+// is an exact match rather than a guess from cwd or mtime.
+func liveCursorFor(sessions []liveSession, pids []int) int {
+	for i, s := range sessions {
+		if slices.Contains(pids, s.PID) {
+			return i
+		}
+	}
+	return -1
+}
+
 // liveWindow picks the run of blocks to draw: the cursor's block always, then as
 // many neighbours as the row budget allows, reaching upwards first so the list
 // reads top-down until the cursor is pushed off the bottom. Blocks are variable
@@ -652,12 +665,13 @@ func refreshTails(sessions []liveSession, n int, home string, theme Theme, cache
 // runLive is the `--live` entry point. On a tty it runs the interactive view and
 // returns the picked session; piped, it prints a static dump and returns
 // ok=false so the caller exits without tailing anything.
-func runLive(home string, theme Theme) (treeChoice, bool) {
+// prefer is the pids whose session the cursor starts on (nil: the first row).
+func runLive(home string, theme Theme, prefer []int) (treeChoice, bool) {
 	if ttyUsable() {
 		// treeNone here means the alt-screen never opened (no /dev/tty, stty
 		// refused). Fall through to the dump rather than exiting silently — the
 		// user asked to see what's live, so print it.
-		if c := runLiveTUI(home, theme); c.Result != treeNone {
+		if c := runLiveTUI(home, theme, prefer); c.Result != treeNone {
 			return c, true
 		}
 	}
@@ -691,7 +705,7 @@ func dumpLive(w io.Writer, sessions []liveSession, haveRegistry bool, home strin
 //
 // Gotcha inherited from focus.go: a timed read reports a 0-byte timeout as
 // (0, io.EOF). Treating that as end-of-input exits the view instantly.
-func runLiveTUI(home string, theme Theme) treeChoice {
+func runLiveTUI(home string, theme Theme, prefer []int) treeChoice {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return treeChoice{Result: treeNone}
@@ -719,6 +733,12 @@ func runLiveTUI(home string, theme Theme) treeChoice {
 			ui.Sessions, ui.NoRegistry = sessions, !haveRegistry
 			ui.Tails = refreshTails(ui.Sessions, ui.TailN, home, theme, cache)
 			ui.Now = time.Now().Unix()
+			if prefer != nil { // first load only: after that the cursor is the user's
+				if i := liveCursorFor(ui.Sessions, prefer); i >= 0 {
+					ui.Cursor = i
+				}
+				prefer = nil
+			}
 			last = time.Now()
 			ui.clampLive()
 		}

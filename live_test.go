@@ -528,3 +528,16 @@ func TestRenderLiveMarksCursor(t *testing.T) {
 		t.Errorf("want exactly one cursor mark, got %d:\n%s", strings.Count(out, liveCursorMark), out)
 	}
 }
+
+func TestLiveCursorFor(t *testing.T) {
+	ss := []liveSession{{PID: 10}, {PID: 20}, {PID: 30}}
+	if got := liveCursorFor(ss, []int{30, 20}); got != 1 {
+		t.Errorf("got %d, want the first row a pane pid runs (1)", got)
+	}
+	if got := liveCursorFor(ss, []int{99}); got != -1 {
+		t.Errorf("got %d, want -1 for a pid with no registry entry", got)
+	}
+	if got := liveCursorFor(ss, nil); got != -1 {
+		t.Errorf("got %d, want -1 with no pane claudes", got)
+	}
+}
