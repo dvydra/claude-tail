@@ -96,33 +96,23 @@ All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 convenience — flags override env vars when both are set. The legacy
 `CLAUDE_TAIL_*` variants are still honored.
 
-### Auto-adopt the pane's agent (iTerm2, macOS)
+### It picks its own mode (iTerm2, macOS)
 
-entire-tail is built to run in a pane next to the agent — so when you launch it
-bare and there's **exactly one `claude` in the same iTerm tab**, it skips the
-picker and tails *that* session directly. Split a pane, run `entire-tail`, done —
-no ids, no picking.
+Run `entire-tail` bare and the pane layout decides what you get:
 
-The catch it works around: Claude Code doesn't expose its session id to
-outsiders — it's not in the process argv, not in the environment, and the
-transcript file is opened-appended-closed per write (never held open), so you
-can't `lsof` it either. Instead entire-tail pins the *process*: every terminal
-carries `ITERM_SESSION_ID` (`wNtNpM:…` — window, tab, pane) in its environment,
-so it takes its own tab and adopts the lone `claude` sharing it (read via `ps
-eww`). A claude in another tab or window is **never** grabbed; with zero or
-several claudes in the tab it quietly falls back to the tree. It then resolves
-that claude's transcript — exactly if the claude was launched with
-`--session-id`/`--resume`, otherwise the actively-written session in its project
-dir. Worktree-fork and `/clear` rollovers are then followed as usual (see
-[Following a Claude session across a fork](#following-a-claude-session-across-a-fork)).
-Force the tree instead with `-p`. Off iTerm (or non-macOS) this is inert and the
-tree/`--no-pick` behavior is unchanged.
+| Where you ran it | What opens |
+|---|---|
+| a tab with no split | the tree; `⏎` lays out the 3-pane workspace here |
+| a pane beside a `claude` in the same tab | `--live`, cursor on that claude's session; `⏎` tails it |
+| anywhere else | the tree; `⏎` tails in place |
 
-### …and when it can't, the tree points at it
+Any flag that already says what to show (`--live`, `-p`, `--no-pick`, `--follow-session`, a file, a search) skips the detection.
 
-Adopt gives up on purpose in two cases — a tab holding **two** claudes, and
-`Ctrl-X`, which asks for the tree — and you used to land in a list with no clue
-which row was the agent you were just looking at.
+How it finds "a claude in this tab": every terminal carries `ITERM_SESSION_ID` (`wNtNpM:…`, window, tab, pane) in its environment, so entire-tail keeps the `claude` processes whose tab matches its own (read via `ps eww`). A claude in another tab or window never counts. The cursor then lands on the right `--live` row exactly, because Claude Code's session registry is keyed by pid. With two claudes in the tab it lands on the first; both rows are there. Off iTerm (or non-macOS) there's nothing to match and you get the tree.
+
+### …and the tree points at it too
+
+`Ctrl-X` from a tail asks for the tree, and you used to land in a list with no clue which row was the agent you were just looking at.
 
 So the tree runs the same placement without the "exactly one" rule: every running
 claude is located by its `ITERM_SESSION_ID` and resolved to the transcript it's

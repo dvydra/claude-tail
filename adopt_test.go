@@ -144,3 +144,28 @@ func TestResolveClaudeSession(t *testing.T) {
 		t.Errorf("empty project dir: got %q, want \"\"", got)
 	}
 }
+
+func TestBareStart(t *testing.T) {
+	bare := Config{Pick: "auto"}
+	if !bareStart(bare, "auto") || !bareStart(bare, "claude") {
+		t.Fatal("a bare run should pick its own mode")
+	}
+	if bareStart(bare, "codex") {
+		t.Error("codex has no registry; a codex run must not open --live")
+	}
+	for name, mut := range map[string]func(*Config){
+		"follow-session": func(c *Config) { c.FollowSession = "x" },
+		"wait-new":       func(c *Config) { c.WaitNew = true },
+		"live":           func(c *Config) { c.Live = true },
+		"search":         func(c *Config) { c.Search = "q" },
+		"positional":     func(c *Config) { c.Positional = []string{"f"} },
+		"-p":             func(c *Config) { c.Pick = "always" },
+		"--no-pick":      func(c *Config) { c.Pick = "never" },
+	} {
+		c := bare
+		mut(&c)
+		if bareStart(c, "auto") {
+			t.Errorf("%s already chose what to show", name)
+		}
+	}
+}
