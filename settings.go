@@ -414,10 +414,8 @@ func settingsContext(info helpInfo) []string {
 
 // resumeCommand is the shell line that resumes a Claude session by hand: the
 // workspace launches its agent without typing anything, so the line isn't in
-// shell history and this is where to find it. cwd is where the session is NOW
-// (sessionCwdNow) — Claude looks a session up under the project dir of the cwd
-// it's started in, and a session that hopped into a worktree lives under that
-// one. acctEnv is accountEnvPrefix's, so a personal session resumes as personal.
+// shell history and this is where to find it. cwd is workspaceCwd's, the same
+// folder the workspace opens in. acctEnv is accountEnvPrefix's, so a personal session resumes as personal.
 // "" for anything that isn't a session id (a fixture, a reconstructed temp file).
 func resumeCommand(cwd, id, bin, acctEnv string) string {
 	if !validSessionID(id) {
@@ -440,7 +438,7 @@ func sessionResume(cfg Config, agent Agent, home, cur string) string {
 	}
 	bin := resolveClaudeBin(cfg, exec.LookPath, io.Discard)
 	acct := accountEnvPrefix(profileByName(home, profileForPath(home, cur)))
-	return resumeCommand(sessionCwdNow(cur), strings.TrimSuffix(filepath.Base(cur), ".jsonl"), bin, acct)
+	return resumeCommand(workspaceCwd(cur), strings.TrimSuffix(filepath.Base(cur), ".jsonl"), bin, acct)
 }
 
 // settingsKeys is the key map. The keys that have a row of their own above are

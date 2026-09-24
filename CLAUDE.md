@@ -472,9 +472,12 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   transcript), but a cwd that no longer EXISTS is not fallen back on — the end
   of a worktree is that its dir is deleted, and planHunk's refusal is the honest
   answer there, not a review of the checkout next door. **Don't confuse it with
-  entire.go's `sessionCwd`**, which answers the same question from the HEAD (it
-  cds a resumed workspace, and has the same staleness for a session that moved —
-  untouched here only because changing where a resume lands is its own change).
+  entire.go's `sessionCwd`**, which answers the same question from the HEAD
+  (where the session STARTED). A resumed workspace used to cd there, so a
+  session that had moved into a worktree reopened in the parent checkout; it
+  now uses `workspaceCwd` — this file's `sessionCwdNow` while that dir exists,
+  `sessionCwd` once the worktree is gone — and so does the `?` panel's resume
+  line, so the two always name the same folder.
   Pure
   `planHunk`/`hunkBin`/`hunkClaudePane`/`hunkNotifyScript`/`tailCwd`/
   `hunkReviewDir` are unit-tested; the spawn and `osascript` are the thin IO
