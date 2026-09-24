@@ -418,8 +418,23 @@ func parseEntireTime(s string) int64 {
 	return 0
 }
 
-// sessionCwd reads a Claude session's recorded working directory (for cd'ing the
-// iTerm workspace), falling back to the file's parent dir.
+// workspaceCwd is where a resumed session opens — the workspace's panes and the
+// `?` panel's resume line: the cwd the session is in NOW (sessionCwdNow), when
+// that still exists. A session that ran EnterWorktree keeps its id but moves
+// its transcript under the worktree's project dir, so resuming it from the
+// checkout it started in opened the agent, the tail and the shell all in the
+// wrong tree. A worktree that has since been removed (the normal end state
+// once its work merges) falls back to where the session started, rather than
+// cd'ing into nothing.
+func workspaceCwd(path string) string {
+	if d := sessionCwdNow(path); d != "" && isDir(d) {
+		return d
+	}
+	return sessionCwd(path)
+}
+
+// sessionCwd reads a Claude session's recorded working directory from the
+// transcript's head (where it STARTED), falling back to the file's parent dir.
 func sessionCwd(path string) string {
 	if cwd := loadClaudeMeta(path).Cwd; cwd != "" {
 		return cwd

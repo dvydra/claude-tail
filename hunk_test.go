@@ -265,6 +265,30 @@ not json at all
 
 // hunkReviewDir is what `h` reviews. The transcript wins because it is the one
 // place that knows where the agent is NOW; our own pwd was fixed at startup.
+// A resumed workspace opens where the session is now — inside the worktree it
+// moved into — and falls back to where it started once that worktree is gone.
+func TestWorkspaceCwd(t *testing.T) {
+	dir := t.TempDir()
+	start, wt := filepath.Join(dir, "repo"), filepath.Join(dir, "repo", ".claude", "worktrees", "task")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "session.jsonl")
+	body := `{"type":"user","cwd":"` + start + `"}` + "\n" + `{"type":"assistant","cwd":"` + wt + `"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := workspaceCwd(path); got != wt {
+		t.Errorf("workspaceCwd = %q, want the worktree the session is in now %q", got, wt)
+	}
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatal(err)
+	}
+	if got := workspaceCwd(path); got != start {
+		t.Errorf("worktree removed: workspaceCwd = %q, want where the session started %q", got, start)
+	}
+}
+
 func TestHunkReviewDirPrefersTheSession(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")

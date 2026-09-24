@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -400,11 +402,43 @@ func lastLine(s string) string {
 // settingsContext is the read-only "what am I looking at" block: the startup
 // banner's facts that aren't settings.
 func settingsContext(info helpInfo) []string {
-	return []string{
+	L := []string{
 		fmt.Sprintf("%-9s %s", "agent", info.Agent),
 		fmt.Sprintf("%-9s %s", "session", info.Session),
-		fmt.Sprintf("%-9s %s (%d..%d of %d)", "backfill", info.Backfill, info.From, info.Total, info.Total),
 	}
+	if info.Resume != "" {
+		L = append(L, fmt.Sprintf("%-9s %s", "resume", info.Resume))
+	}
+	return append(L, fmt.Sprintf("%-9s %s (%d..%d of %d)", "backfill", info.Backfill, info.From, info.Total, info.Total))
+}
+
+// resumeCommand is the shell line that resumes a Claude session by hand: the
+// workspace launches its agent without typing anything, so the line isn't in
+// shell history and this is where to find it. cwd is workspaceCwd's, the same
+// folder the workspace opens in. acctEnv is accountEnvPrefix's, so a personal session resumes as personal.
+// "" for anything that isn't a session id (a fixture, a reconstructed temp file).
+func resumeCommand(cwd, id, bin, acctEnv string) string {
+	if !validSessionID(id) {
+		return ""
+	}
+	line := acctEnv + shQuote(bin) + " --resume " + shQuote(id)
+	if cwd == "" {
+		return line
+	}
+	return "cd " + shQuote(cwd) + " && " + line
+}
+
+// sessionResume is resumeCommand for the transcript being tailed — Claude only,
+// since the other agents resume differently or not at all. The binary is the
+// same preference the workspace launches (resolveClaudeBin, warnings already
+// given at startup), named as typed rather than resolved: this line is read.
+func sessionResume(cfg Config, agent Agent, home, cur string) string {
+	if agent != AgentClaude {
+		return ""
+	}
+	bin := resolveClaudeBin(cfg, exec.LookPath, io.Discard)
+	acct := accountEnvPrefix(profileByName(home, profileForPath(home, cur)))
+	return resumeCommand(workspaceCwd(cur), strings.TrimSuffix(filepath.Base(cur), ".jsonl"), bin, acct)
 }
 
 // settingsKeys is the key map. The keys that have a row of their own above are

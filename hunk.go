@@ -214,8 +214,8 @@ func hunkReviewDir(cur, pwd string) string {
 // cwd at all.
 //
 // Distinct from entire.go's `sessionCwd`, which answers the same question from
-// the transcript's HEAD — where the session STARTED — and is what the workspace
-// launcher cds a resumed pane to.
+// the transcript's HEAD — where the session STARTED. The workspace launcher
+// prefers this one too, via workspaceCwd.
 func sessionCwdNow(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
