@@ -223,8 +223,22 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   workspace for a FRESH session in `$PWD` (new window if the current
   one is already split, since there's nothing to tail in place). Pure `workspaceScript`
   builder split from the `osaRun` executor so quoting/layout are unit-tested
-  without launching iTerm. The queued-agent trick: the command is written to
-  the current pane's tty and runs once entire-tail exits. Both panes **pin a
+  without launching iTerm. **No pane is typed into** (`workspaceLaunch`): B and
+  C are created with `split … command`, each wrapped by `paneCommand` in
+  `$SHELL -lc '<cmd>; exec $SHELL -l'` so the pane is still a shell when the
+  command ends (a started pane otherwise closes with it), and pane A is the
+  picker's own pane, which `execAgent` replaces with `/bin/sh -c <agent line>`
+  after the splits exist (a fresh workspace in an already-split window starts A
+  as `create window … command` instead). This replaced `write text`, which
+  echoed every command, printed A's twice (echo while we held the tty, then at
+  the prompt), and queued A's line in the tty input buffer. `/bin/sh` rather
+  than a Go exec of the agent because the line carries the `cd` and
+  accountEnvPrefix's Keychain substitution, which must stay the shell's.
+  `paneBin` resolves the agent to an absolute path first, since a login shell
+  skips the rc files where `~/.local/bin` usually joins PATH. iTerm splits
+  `command` with shell quoting, `'\''` included (verified live, 3.6.11). The
+  cost: the resume line is no longer in shell history, so the `?` panel shows
+  it (`resumeCommand`, under `session`). Both panes **pin a
   shared session id** — fresh: `<bin> --session-id <id>` + `entire-tail
   --follow-session <id>`; resume: `<bin> --resume <id>` + `--follow-session
   <id>` — so the tail latches onto exactly that session even with other Claude

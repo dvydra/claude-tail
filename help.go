@@ -18,6 +18,7 @@ import (
 type helpInfo struct {
 	Agent       Agent
 	Session     string // transcript path (tildified for display)
+	Resume      string // resumeCommand for this session; "" when there's none
 	Theme       string
 	ThemeSwatch string // themeSwatch(theme): the colour strip shown beside the name
 	Backfill    string // the --backfill spec, e.g. "all"

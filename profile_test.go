@@ -459,8 +459,8 @@ func TestWorkspaceScriptsCarryTheAccountEnv(t *testing.T) {
 	acct := accountEnvPrefix(claudeProfile{Name: personalProfile, Dir: "/home/me/.claude-personal"})
 
 	for name, s := range map[string]string{
-		"resume": workspaceScript("/work/proj", id, self, "claude", acct, ""),
-		"fresh":  newWorkspaceScript("/work/proj", self, id, "claude", acct, ""),
+		"resume": workspaceScript("/work/proj", id, self, "claude", acct, "").lines(),
+		"fresh":  newWorkspaceScript("/work/proj", self, id, "claude", acct, "", true).lines(),
 	} {
 		if !strings.Contains(s, "CLAUDE_CONFIG_DIR=") {
 			t.Errorf("%s: agent pane missing the account env:\n%s", name, s)
@@ -479,8 +479,8 @@ func TestWorkspaceScriptsUnchangedForDefaultAccount(t *testing.T) {
 	id := "11111111-2222-4333-8444-555555555555"
 	self := "/usr/local/bin/entire-tail"
 	for name, c := range map[string]struct{ script, wantAgent string }{
-		"resume": {workspaceScript("/work/proj", id, self, "claude", "", ""), "cd '/work/proj' && 'claude' --resume '" + id + "'"},
-		"fresh":  {newWorkspaceScript("/work/proj", self, id, "claude", "", ""), "cd '/work/proj' && 'claude' --session-id '" + id + "'"},
+		"resume": {workspaceScript("/work/proj", id, self, "claude", "", "").lines(), "cd '/work/proj' && 'claude' --resume '" + id + "'"},
+		"fresh":  {newWorkspaceScript("/work/proj", self, id, "claude", "", "", true).lines(), "cd '/work/proj' && 'claude' --session-id '" + id + "'"},
 	} {
 		if !strings.Contains(c.script, c.wantAgent) {
 			t.Errorf("%s: default-account launch changed shape, want %q in:\n%s", name, c.wantAgent, c.script)

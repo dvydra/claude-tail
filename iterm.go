@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // newSessionID mints a random v4 UUID for the launcher's `--session-id`. crypto/rand
@@ -84,7 +85,7 @@ func osaRun(script string) error {
 	return nil
 }
 
-// launchWorkspace opens a new iTerm window with the three-pane dev layout:
+// launchWorkspace opens the three-pane dev layout in the current window:
 //
 //	A │ B    A = <bin> (the agent), B = entire-tail (full-height right column),
 //	C │ B    C = a plain shell.
@@ -96,8 +97,86 @@ func osaRun(script string) error {
 // the work account's credentials would not be a resume at all, so A carries that
 // account's env (see accountEnvPrefix). B needs none — it globs every account's
 // projects root.
+//
+// It returns only on failure: on success this process BECOMES pane A's agent.
 func launchWorkspace(cwd, resumeID, bin string, prof claudeProfile) error {
-	return osaRun(workspaceScript(cwd, resumeID, selfPath(), bin, accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir()))))
+	return startWorkspace(workspaceScript(cwd, resumeID, selfPath(), paneBin(bin), accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir()))))
+}
+
+// workspaceLaunch is a workspace split by how each pane gets its command.
+// Script is the AppleScript that creates the other panes, each STARTED with its
+// command (`split … command`), so no pane is ever typed into. Agent is pane A's
+// shell command line; when InPlace, pane A is the pane we're running in, and
+// startWorkspace execs Agent here once Script has run.
+//
+// The panes used to be driven by `write text`, which types a command as if at
+// the keyboard. That put every command on screen (A's twice: echoed while we
+// still held the tty, then again at the prompt that ran it) and queued A's line
+// in the tty's input buffer, where anything typed before the agent took over
+// landed behind it.
+type workspaceLaunch struct {
+	Script      string
+	Agent       string
+	Tail, Shell string // panes B and C's command lines, as started inside Script
+	InPlace     bool
+}
+
+// startWorkspace runs a workspaceLaunch. It returns only on failure.
+func startWorkspace(w workspaceLaunch) error {
+	if err := osaRun(w.Script); err != nil {
+		return err
+	}
+	if !w.InPlace {
+		os.Exit(0)
+	}
+	if err := execAgent(w.Agent); err != nil {
+		// The other panes are already up, so name what pane A should have run.
+		fmt.Fprintln(os.Stderr, "entire-tail: start the agent with: "+w.Agent)
+		return err
+	}
+	return nil
+}
+
+// execAgent replaces this process with pane A's agent, through /bin/sh because
+// the line carries shell syntax: the `cd`, and accountEnvPrefix's Keychain
+// command substitution, which has to stay the shell's (see accountEnvPrefix for
+// why the token never passes through us). When the agent exits, the pane is back
+// at the shell that started entire-tail — in the directory it started in, since
+// the `cd` happened in the child. syscall.Exec returns only on error.
+func execAgent(cmdline string) error {
+	return syscall.Exec("/bin/sh", []string{"sh", "-c", cmdline}, os.Environ())
+}
+
+// paneShell is the shell a started pane runs its command under and becomes
+// afterwards.
+func paneShell() string {
+	if sh := os.Getenv("SHELL"); filepath.IsAbs(sh) {
+		return sh
+	}
+	return "/bin/zsh"
+}
+
+// paneCommand wraps a shell command line for iTerm's `command`: run it under a
+// login shell, then replace that with an interactive one, so the pane is still a
+// shell after the tail quits or the agent exits (a started command's pane
+// otherwise closes with it). iTerm splits `command` with shell quoting rules,
+// `'\”` included — verified live on iTerm 3.6.11.
+func paneCommand(shell, cmd string) string {
+	return shQuote(shell) + " -lc " + shQuote(cmd+"; exec "+shQuote(shell)+" -l")
+}
+
+// paneBin resolves the agent binary to an absolute path while we still have the
+// PATH of the interactive shell that started us. A started pane's login shell
+// skips the rc files, so a PATH entry added there would be missing. Unresolvable
+// → as given, so the pane reports "not found" rather than us guessing.
+func paneBin(bin string) string {
+	if strings.ContainsRune(bin, '/') {
+		return bin
+	}
+	if p, err := exec.LookPath(bin); err == nil {
+		return p
+	}
+	return bin
 }
 
 // tapEnvPrefix returns the shell assignment that routes a launched agent's API
@@ -142,9 +221,9 @@ func homeDir() string { return firstNonEmpty(os.Getenv("HOME"), mustHome()) }
 // cwd (the tree's `n` key): A = a new agent with a pinned session id, B =
 // entire-tail following exactly that id, C = a shell.
 // prof picks the account the new agent runs as — the tree's `n` uses the default
-// one, `@` the personal one.
+// one, `@` the personal one. Returns only on failure (see startWorkspace).
 func launchNewWorkspace(cwd, bin string, prof claudeProfile) error {
-	return osaRun(newWorkspaceScript(cwd, selfPath(), newSessionID(), bin, accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir()))))
+	return startWorkspace(newWorkspaceScript(cwd, selfPath(), newSessionID(), paneBin(bin), accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir())), itermSinglePane()))
 }
 
 // pinsSessionID reports whether bin forwards Claude's `--session-id` to the
@@ -170,8 +249,9 @@ func pinsSessionID(bin string) bool {
 // newWorkspaceScript lays out a fresh-session workspace. Unlike the resume
 // workspace (whose caller only fires it in a single-pane window, else tails in
 // place), a fresh session has nothing to tail in place — so this splits the
-// current window when it's a single pane, else opens a NEW window rather than
-// carving up an existing split.
+// current window when it's a single pane (inPlace: pane A is this one), else
+// opens a NEW window, started with A's command, rather than carving up an
+// existing split.
 //
 //	A = <bin> --session-id <id>    B = entire-tail --follow-session <id>
 //	C = shell                          (waits for A's file, then follows it +forks)
@@ -181,9 +261,9 @@ func pinsSessionID(bin string) bool {
 // the same repo. That only works when bin forwards the flag — see pinsSessionID;
 // a launcher that doesn't gets no id and B falls back to --wait-new.
 // acctEnv (accountEnvPrefix) leads the assignments so the account decision reads
-// first in the queued command line; it is "" for the default account, leaving
+// first in the agent's command line; it is "" for the default account, leaving
 // that launch byte-identical to the pre-profiles one.
-func newWorkspaceScript(cwd, self, sessionID, bin, acctEnv, tapEnv string) string {
+func newWorkspaceScript(cwd, self, sessionID, bin, acctEnv, tapEnv string, inPlace bool) workspaceLaunch {
 	cd := "cd " + shQuote(cwd)
 	a := cd + " && " + acctEnv + tapEnv + shQuote(bin)
 	b := cd + " && " + shQuote(self)
@@ -193,52 +273,45 @@ func newWorkspaceScript(cwd, self, sessionID, bin, acctEnv, tapEnv string) strin
 	} else {
 		b += " --wait-new"
 	}
-	c := cd
-	return fmt.Sprintf(`tell application "iTerm2"
-	if (count of sessions of current tab of current window) > 1 then
-		create window with default profile
-	end if
-	tell current window
-		set a to current session
-		tell a
-			set b to (split vertically with default profile)
-			set c to (split horizontally with default profile)
-		end tell
-		tell a to write text "%s"
-		tell b to write text "%s"
-		tell c to write text "%s"
-		select a
-	end tell
-end tell`, asEscape(a), asEscape(b), asEscape(c))
+	return workspaceLaunch{Script: splitScript(a, b, cd, inPlace), Agent: a, Tail: b, Shell: cd, InPlace: inPlace}
 }
 
-// workspaceScript builds the AppleScript for the 3-pane workspace:
+// workspaceScript builds the 3-pane workspace:
 //
 //	A │ B    A = <bin> --resume <id>
 //	--+ B    B = entire-tail --follow-session <id>
 //	C │ B    C = shell
 //
 // It reuses the CURRENT window (the caller only invokes this when the window is a
-// single pane — see itermSinglePane): the pane running the picker becomes A, and
-// A's command is queued to its tty and runs the moment entire-tail exits. All
-// three panes cd into the picked session's folder. B follows by id (not the file
-// path) so a worktree fork of the resumed session is followed too.
-func workspaceScript(cwd, resumeID, self, bin, acctEnv, tapEnv string) string {
+// single pane — see itermSinglePane): the pane running the picker becomes A,
+// which entire-tail execs into once B and C are up. All three panes cd into the
+// picked session's folder. B follows by id (not the file path) so a worktree
+// fork of the resumed session is followed too.
+func workspaceScript(cwd, resumeID, self, bin, acctEnv, tapEnv string) workspaceLaunch {
 	cd := "cd " + shQuote(cwd)
 	a := cd + " && " + acctEnv + tapEnv + shQuote(bin) + " --resume " + shQuote(resumeID)
 	b := cd + " && " + shQuote(self) + " --follow-session " + shQuote(resumeID)
-	c := cd
+	return workspaceLaunch{Script: splitScript(a, b, cd, true), Agent: a, Tail: b, Shell: cd, InPlace: true}
+}
+
+// splitScript is the AppleScript for the layout. B and C are started with their
+// command lines. A is either this pane (inPlace — the caller execs a once the
+// script has run) or a new window started with a.
+func splitScript(a, b, c string, inPlace bool) string {
+	sh := paneShell()
+	cmd := func(s string) string { return asEscape(paneCommand(sh, s)) }
+	open := "\ttell current window"
+	if !inPlace {
+		open = "\tcreate window with default profile command \"" + cmd(a) + "\"\n" + open
+	}
 	return fmt.Sprintf(`tell application "iTerm2"
-	tell current window
+%s
 		set a to current session
 		tell a
-			set b to (split vertically with default profile)
-			set c to (split horizontally with default profile)
+			set b to (split vertically with default profile command "%s")
+			set c to (split horizontally with default profile command "%s")
 		end tell
-		tell a to write text "%s"
-		tell b to write text "%s"
-		tell c to write text "%s"
 		select a
 	end tell
-end tell`, asEscape(a), asEscape(b), asEscape(c))
+end tell`, open, cmd(b), cmd(c))
 }
