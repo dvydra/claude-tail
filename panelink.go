@@ -12,10 +12,10 @@ import (
 // together, and the AppleScript that acts on that.
 //
 // The problem it solves is a layout the workspace launcher doesn't produce. When
-// a claude and the entire-tail watching it are panes of ONE tab (`⏎`/`n`,
+// an agent and the entire-tail watching it are panes of ONE tab (`⏎`/`c`/`a`,
 // iterm.go), both are on screen and there is nothing to do. When they are tabs
-// of two DIFFERENT windows — claude sessions in one window, their tails in
-// another — selecting a claude leaves the other window showing whichever tail
+// of two DIFFERENT windows, agent sessions in one window and their tails in
+// another, selecting an agent leaves the other window showing whichever tail
 // happened to be selected last, and the pair has to be re-aligned by hand every
 // time attention moves.
 //
@@ -38,6 +38,7 @@ import (
 // `--follow-session X` may well be streaming X's grandchild by now.
 type paneEntry struct {
 	Follow string `json:"follow_session"`
+	Agent  Agent  `json:"agent,omitempty"`
 	Pid    int    `json:"pid"`
 }
 
@@ -110,35 +111,42 @@ func prunePanes(panes map[string]paneEntry, alive func(int) bool) map[string]pan
 // linkPartners returns the iTerm session ids that should follow the one just
 // selected, in sorted order so a run is reproducible.
 //
-// panes is the tail registry (iTerm session id → what it follows); claudes maps
-// a running claude's iTerm session id → the transcript it is writing, resolved
-// by the daemon rather than registered by anyone, so a claude restarted in a new
+// panes is the tail registry (iTerm session id → what it follows); agents maps a
+// running agent's iTerm session id → the session it is writing, resolved by the
+// daemon rather than registered by anyone, so an agent restarted in a new
 // tab re-pairs on its own.
 //
 // Both directions are the same lookup from opposite ends. Anything unknown —
-// a shell, an editor, a claude nothing is watching — has no partner and produces
+// a shell, an editor, or an agent nothing is watching has no partner and produces
 // no action at all, not even an osascript call.
-func linkPartners(focused string, panes map[string]paneEntry, claudes map[string]string) []string {
+func linkPartners(focused string, panes map[string]paneEntry, agents map[string]string) []string {
 	if focused == "" {
 		return nil
 	}
 	var out []string
 	if e, ok := panes[focused]; ok {
-		for uuid, sess := range claudes {
-			if sess == e.Follow {
+		for uuid, sess := range agents {
+			if sess == paneSessionKey(e.Agent, e.Follow) || (e.Agent == "" && sess == e.Follow) {
 				out = append(out, uuid)
 			}
 		}
-	} else if sess, ok := claudes[focused]; ok {
+	} else if sess, ok := agents[focused]; ok {
 		// Two tails in two windows may watch one session; switch both.
 		for uuid, e := range panes {
-			if e.Follow == sess {
+			if paneSessionKey(e.Agent, e.Follow) == sess || (e.Agent == "" && e.Follow == sess) {
 				out = append(out, uuid)
 			}
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+func paneSessionKey(agent Agent, id string) string {
+	if agent == "" {
+		return id
+	}
+	return string(agent) + ":" + id
 }
 
 // linkScript builds the one AppleScript pass that locates the focused session,
@@ -245,7 +253,7 @@ func paneLinkEnabled(home string) bool {
 // paneLinkOfferInputs are the pure inputs to the one-time offer decision.
 type paneLinkOfferInputs struct {
 	isTTY          bool
-	isClaude       bool
+	isSupported    bool
 	hasPair        bool // a registered-or-registerable tail and its claude, in different windows
 	choiceRecorded bool
 	noPaneLink     bool
@@ -262,7 +270,7 @@ type paneLinkOfferInputs struct {
 // The check runs once before backfill and never mid-stream: a streaming viewer
 // must not stop to ask a question.
 func shouldOfferPaneLink(g paneLinkOfferInputs) bool {
-	if !g.isTTY || !g.isClaude {
+	if !g.isTTY || !g.isSupported {
 		return false
 	}
 	if !g.hasPair {

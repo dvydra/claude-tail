@@ -97,8 +97,8 @@ func openControlTTY() (tty *os.File, saved string, ok bool) {
 // When treeEnabled is true, Ctrl-X signals treeCh and the goroutine RETURNS
 // (stops reading), so the tree picker that follows is the sole reader of the tty;
 // the caller's live loop restores the tty and re-enters the picker. When false
-// (non-Claude session / no tree in scope), Ctrl-X is ignored — the tree is
-// Claude-only, so there's nothing to go back to.
+// (non-Claude/Amp session or no tree in scope), Ctrl-X is ignored because
+// there's nothing to go back to.
 func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<- int, actionCh chan<- keyAction, overlayCh chan<- keyAction, treeCh chan<- struct{}, resumeCh <-chan struct{}) func() {
 	var once sync.Once
 	restore := func() {

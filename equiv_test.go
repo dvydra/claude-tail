@@ -24,6 +24,8 @@ type fixtureCase struct {
 var fixtureCases = []fixtureCase{
 	{"claude_dots", AgentClaude, "claude_session.jsonl", "dots", 5},
 	{"claude_lines", AgentClaude, "claude_session.jsonl", "lines", 5},
+	{"amp_dots", AgentAmp, "amp_export.json", "dots", 5},
+	{"amp_lines", AgentAmp, "amp_export.json", "lines", 5},
 	{"codex_dots", AgentCodex, "codex_session.jsonl", "dots", 5},
 	{"agy_dots", AgentAgy, "agy_session.jsonl", "dots", 5},
 }
@@ -44,7 +46,11 @@ func renderFixture(t *testing.T, fc fixtureCase, loc *time.Location) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range splitLines(data) {
+	lines := splitLines(data)
+	if fc.agent == AgentAmp {
+		lines = ampMessageLines(data)
+	}
+	for _, line := range lines {
 		for _, rec := range normalize(fc.agent, line, loc) {
 			r.emit(rec)
 		}

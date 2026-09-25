@@ -31,15 +31,19 @@ import (
 // ── data model ──────────────────────────────────────────────────────────────
 
 type treeSession struct {
-	Path    string
-	ID      string // filename stem = session uuid
-	Mtime   int64
-	Branch  string
-	Snippet string
-	Repo    string // owner/repo (search hits) — used to reconstruct cloud-only transcripts
-	Msgs    int    // rough count: user+assistant events (checkpoints for entire rows)
-	Live    bool   // a running claude process holds this session's folder
-	cwd     string // recovered .cwd (build-only; folder carries the display copy)
+	Agent    Agent
+	Mode     string
+	Executor string
+	State    string
+	Path     string
+	ID       string // filename stem = session uuid
+	Mtime    int64
+	Branch   string
+	Snippet  string
+	Repo     string // owner/repo (search hits) — used to reconstruct cloud-only transcripts
+	Msgs     int    // rough count: user+assistant events (checkpoints for entire rows)
+	Live     bool   // a running claude process holds this session's folder
+	cwd      string // recovered .cwd (build-only; folder carries the display copy)
 
 	// Profile names the Claude account that owns this session — "" for the
 	// default one, "personal" for the second config dir (see profile.go). It
@@ -268,6 +272,7 @@ func claudeFolderSessions(dir string, cutoff int64, force bool) []treeSession {
 
 func sessionFromMeta(m fileMeta) treeSession {
 	s := treeSession{
+		Agent: AgentClaude,
 		Path:  m.path,
 		ID:    strings.TrimSuffix(filepath.Base(m.path), ".jsonl"),
 		Mtime: m.mtime,
@@ -631,27 +636,29 @@ func sessionMatches(s treeSession, f string) bool {
 // ── UI state + reducer (pure) ────────────────────────────────────────────────
 
 type treeUI struct {
-	Tree            sessionTree
-	Theme           Theme
-	Rows            []treeRow
-	Cursor          int
-	Top             int // first visible row (scroll offset)
-	Width           int
-	Height          int // body rows available (excludes header + footer)
-	Filter          string
-	Filtering       bool
-	Quit            bool
-	NewWorkspace    bool        // 'n'/'@' → fresh session workspace; ends the loop
-	NewWorkspaceDir string      // folder under the cursor when 'n' pressed ("" = $PWD)
-	NewWorkspaceAcc string      // account for the fresh session: "" = default, "personal" = '@'
-	SummaryReq      bool        // 'i' → show the highlighted session's combined info view
-	Sel             treeSession // the session captured for the info view
-	Chosen          string      // selected session path; non-empty ends the loop
-	ChosenCwd       string      // folder cwd of the selection (for the iTerm launcher)
-	ChosenID        string      // session id of the selection (for claude --resume)
-	ChosenRepo      string      // repo of the selection (to reconstruct a cloud-only transcript)
-	ChosenAcc       string      // account owning the selection (which credentials to resume with)
-	Workspace       bool        // selection should open the iTerm workspace, not tail
+	Tree              sessionTree
+	Theme             Theme
+	Rows              []treeRow
+	Cursor            int
+	Top               int // first visible row (scroll offset)
+	Width             int
+	Height            int // body rows available (excludes header + footer)
+	Filter            string
+	Filtering         bool
+	Quit              bool
+	NewWorkspace      bool // 'n'/'@' → fresh session workspace; ends the loop
+	NewWorkspaceAgent Agent
+	NewWorkspaceDir   string      // folder under the cursor when 'n' pressed ("" = $PWD)
+	NewWorkspaceAcc   string      // account for the fresh session: "" = default, "personal" = '@'
+	SummaryReq        bool        // 'i' → show the highlighted session's combined info view
+	Sel               treeSession // the session captured for the info view
+	Chosen            string      // selected session path; non-empty ends the loop
+	ChosenCwd         string      // folder cwd of the selection (for the iTerm launcher)
+	ChosenID          string      // session id of the selection (for claude --resume)
+	ChosenRepo        string      // repo of the selection (to reconstruct a cloud-only transcript)
+	ChosenAcc         string      // account owning the selection (which credentials to resume with)
+	ChosenAgent       Agent
+	Workspace         bool // selection should open the iTerm workspace, not tail
 }
 
 type treeKey int
@@ -739,14 +746,16 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 			ui.Cursor = len(ui.Rows) - 1
 		case ' ':
 			ui.Cursor += ui.pageStep() // pager convention: space = page down
-		case 'n', 'N':
-			ui.startNewWorkspace("")
+		case 'c', 'C', 'n', 'N':
+			ui.startNewWorkspace(AgentClaude, "")
+		case 'a', 'A':
+			ui.startNewWorkspace(AgentAmp, "")
 		case '@':
 			// Same workspace, second account. A separate key rather than inferring
 			// the account from the cursor: `n` must keep meaning exactly what it
 			// always meant, and "which account am I about to start as" is not a
 			// thing to guess at.
-			ui.startNewWorkspace(personalProfile)
+			ui.startNewWorkspace(AgentClaude, personalProfile)
 		case 'i', 'I':
 			if s, ok := ui.currentSession(); ok {
 				ui.Sel, ui.SummaryReq = s, true
@@ -801,7 +810,7 @@ func (ui *treeUI) activate() {
 		return
 	}
 	if row.Session == -1 {
-		ui.startNewWorkspace("") // Enter on a folder → fresh session workspace (same as `n`)
+		ui.startNewWorkspace(AgentClaude, "") // Enter on a folder defaults to Claude.
 		return
 	}
 	ui.selectSession(true) // Enter on a session → open the iTerm workspace
@@ -810,8 +819,9 @@ func (ui *treeUI) activate() {
 // startNewWorkspace requests a fresh session workspace in the highlighted
 // folder's dir (else $PWD), running as account `acc` ("" = the default one).
 // Bound to `n` and Enter-on-a-folder (default account) and `@` (personal).
-func (ui *treeUI) startNewWorkspace(acc string) {
+func (ui *treeUI) startNewWorkspace(agent Agent, acc string) {
 	ui.NewWorkspace = true
+	ui.NewWorkspaceAgent = agent
 	ui.NewWorkspaceAcc = acc
 	if row, ok := ui.current(); ok {
 		ui.NewWorkspaceDir = ui.Tree.Folders[row.Folder].Dir
@@ -834,6 +844,7 @@ func (ui *treeUI) selectSession(workspace bool) {
 	ui.ChosenID = s.ID
 	ui.ChosenRepo = s.Repo
 	ui.ChosenAcc = s.Profile
+	ui.ChosenAgent = s.Agent
 	ui.Workspace = workspace
 }
 
@@ -986,6 +997,17 @@ func prCell(s treeSession) string {
 	return strings.Repeat(" ", pad) + label
 }
 
+func agentMark(agent Agent) string {
+	switch agent {
+	case AgentClaude:
+		return "C "
+	case AgentAmp:
+		return "A "
+	default:
+		return "  "
+	}
+}
+
 func composeSessionRow(s treeSession, now int64, restore string) string {
 	bullet := "○"
 	if s.Live {
@@ -1000,11 +1022,11 @@ func composeSessionRow(s treeSession, now int64, restore string) string {
 	if s.Branch != "" {
 		branch = "[" + s.Branch + "] "
 	}
-	// The account marker is a fixed two-column cell (blank for the default
-	// account) so ids stay in one column in a folder holding both.
+	// Agent and account markers use fixed-width cells so ids stay aligned in a
+	// folder containing both agents or both Claude accounts.
 	// Age is %-8s so the longest label ("just now") still pads to a fixed column —
 	// a %-7s would let "just now" overflow and push everything right by one.
-	return fmt.Sprintf("    %s %s%s%-8s  %-8s  %s  %s%s", bullet, nearbyMark(s.Nearby, restore), profileMark(s.Profile, restore), shortID(s.ID), relAge(s.Mtime, now), prCell(s), branch, s.Snippet)
+	return fmt.Sprintf("    %s %s%s%s%-8s  %-8s  %s  %s%s", bullet, agentMark(s.Agent), nearbyMark(s.Nearby, restore), profileMark(s.Profile, restore), shortID(s.ID), relAge(s.Mtime, now), prCell(s), branch, s.Snippet)
 }
 
 // styleRow applies the cursor marker, recency color, and width truncation.
@@ -1040,7 +1062,7 @@ func renderRow(ui treeUI, i int) string {
 }
 
 func composeHeader() string {
-	return "  CLAUDE SESSIONS  ↑↓ · → expand · ⏎ workspace↗ · i info · t tail · n new↗ · @ new personal↗ · / filter · q"
+	return "  AGENT SESSIONS  ↑↓ · → expand · ⏎ workspace↗ · i info · t tail · c Claude↗ · a Amp↗ · @ personal↗ · / filter · q"
 }
 
 func composeFooter(ui treeUI) string {
@@ -1113,7 +1135,7 @@ func renderList(w io.Writer, t sessionTree, color bool) {
 				branch = "[" + s.Branch + "] "
 			}
 			stier := classifyTier(s.Mtime, t.Now, s.Live)
-			line := fmt.Sprintf("  %s%-8s  %-8s  %s  %s%s", profileMark(s.Profile, restore(stier)), shortID(s.ID), relAge(s.Mtime, t.Now), prCell(s), branch, s.Snippet)
+			line := fmt.Sprintf("  %s%s%-8s  %-8s  %s  %s%s", agentMark(s.Agent), profileMark(s.Profile, restore(stier)), shortID(s.ID), relAge(s.Mtime, t.Now), prCell(s), branch, s.Snippet)
 			writeColored(w, line, stier, color)
 		}
 	}
@@ -1160,6 +1182,7 @@ const (
 // session id, and repo the iTerm launcher / transcript reconstruction need.
 type treeChoice struct {
 	Result treeResult
+	Agent  Agent
 	Path   string
 	Cwd    string
 	ID     string
@@ -1231,14 +1254,14 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 			continue
 		}
 		if ui.NewWorkspace {
-			return treeChoice{Result: treeNewWorkspace, Cwd: firstNonEmpty(ui.NewWorkspaceDir, ui.Tree.Pwd), Account: ui.NewWorkspaceAcc}
+			return treeChoice{Result: treeNewWorkspace, Agent: ui.NewWorkspaceAgent, Cwd: firstNonEmpty(ui.NewWorkspaceDir, ui.Tree.Pwd), Account: ui.NewWorkspaceAcc}
 		}
 		if ui.Chosen != "" {
 			res := treeChosen
 			if ui.Workspace {
 				res = treeWorkspace
 			}
-			return treeChoice{Result: res, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID, Repo: ui.ChosenRepo, Account: ui.ChosenAcc}
+			return treeChoice{Result: res, Agent: ui.ChosenAgent, Path: ui.Chosen, Cwd: ui.ChosenCwd, ID: ui.ChosenID, Repo: ui.ChosenRepo, Account: ui.ChosenAcc}
 		}
 	}
 }

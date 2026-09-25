@@ -70,8 +70,8 @@ func TestShouldOfferHookInstall(t *testing.T) {
 		t.Fatal("clean interactive Claude run should offer")
 	}
 	cases := []struct {
-		name  string
-		mut   func(*hookOfferInputs)
+		name string
+		mut  func(*hookOfferInputs)
 	}{
 		{"not tty", func(i *hookOfferInputs) { i.isTTY = false }},
 		{"adopted", func(i *hookOfferInputs) { i.adopted = true }},

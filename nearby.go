@@ -1,5 +1,10 @@
 package main
 
+import (
+	"os/exec"
+	"strconv"
+)
+
 // nearby.go answers "which of these sessions is the agent sitting one pane
 // away?" — the question the tree could never answer before.
 //
@@ -60,6 +65,19 @@ func nearbySessions(home string, getenv func(string) string) map[string]paneProx
 			continue
 		}
 		if id := sessionIDFromPath(path); id != "" && out[id] < prox {
+			out[id] = prox
+		}
+	}
+	for _, p := range ampProcs() {
+		prox := proximityOf(p.itermID, tab)
+		if prox == paneFar {
+			continue
+		}
+		files, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(p.pid), "-Fn").Output()
+		if err != nil {
+			continue
+		}
+		if id := ampThreadIDFromLsof(files); id != "" && out[id] < prox {
 			out[id] = prox
 		}
 	}

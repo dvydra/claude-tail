@@ -38,6 +38,22 @@ func TestSettingsRowsShowLiveValues(t *testing.T) {
 	}
 }
 
+func TestAmpSettingsHideClaudeOnlyRows(t *testing.T) {
+	info := testHelpInfo()
+	info.Agent = AgentAmp
+	rows := settingsRowsFor(info, t.TempDir())
+	seen := map[settingID]bool{}
+	for _, row := range rows {
+		seen[row.ID] = true
+	}
+	if seen[setHooks] || seen[setTap] {
+		t.Fatalf("Amp settings include Claude-only rows: %+v", rows)
+	}
+	if !seen[setPaneLink] {
+		t.Fatal("Amp settings omitted pane link")
+	}
+}
+
 // Wrap suspended by `w`, and collapse turned off, have to read as such —
 // otherwise prose running off the right edge looks like a bug rather than a mode
 // you chose.
@@ -210,11 +226,11 @@ func TestSettingsLinesKeepTheHelpContent(t *testing.T) {
 	}
 }
 
-// Ctrl-X is Claude-only (the tree has nothing to go back to elsewhere), so the
-// panel must not advertise it for codex/agy.
+// Ctrl-X is available only when the current agent has a tree, so the panel must
+// not advertise it for codex/agy.
 func TestSettingsKeysHidesTreeKeyWhenDisabled(t *testing.T) {
 	if got := strings.Join(settingsKeys(false), "\n"); strings.Contains(got, "Ctrl-X") {
-		t.Errorf("Ctrl-X shown for a non-Claude session:\n%s", got)
+		t.Errorf("Ctrl-X shown for a session without a tree:\n%s", got)
 	}
 }
 

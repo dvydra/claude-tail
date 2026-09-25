@@ -215,7 +215,7 @@ func TestParseCLIActions(t *testing.T) {
 }
 
 func TestValidateAgent(t *testing.T) {
-	for _, ok := range []string{"auto", "claude", "codex", "agy"} {
+	for _, ok := range []string{"auto", "claude", "amp", "codex", "agy"} {
 		if v, err := validateAgent(ok); err != nil || v != ok {
 			t.Errorf("validateAgent(%q) = %q,%v", ok, v, err)
 		}
@@ -225,6 +225,26 @@ func TestValidateAgent(t *testing.T) {
 	}
 	if _, err := validateAgent("bogus"); err == nil {
 		t.Error("expected error for bogus agent")
+	}
+}
+
+func TestAmpInventoryRequiredOnlyForInventoryModes(t *testing.T) {
+	base := Config{}
+	if !ampInventoryRequired("amp", base, false) {
+		t.Fatal("plain Amp discovery should require an inventory")
+	}
+	for name, cfg := range map[string]Config{
+		"live":       {Live: true},
+		"search":     {Search: "query"},
+		"positional": {Positional: []string{"query"}},
+		"wait-new":   {WaitNew: true},
+	} {
+		if ampInventoryRequired("amp", cfg, false) {
+			t.Errorf("%s should use its own Amp source without an inventory preflight", name)
+		}
+	}
+	if ampInventoryRequired("claude", base, false) || ampInventoryRequired("amp", base, true) {
+		t.Fatal("non-Amp and explicit-file modes should not require Amp inventory")
 	}
 }
 

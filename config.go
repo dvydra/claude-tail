@@ -11,7 +11,7 @@ import (
 // validation happens in main once the session is known.
 type Config struct {
 	Positional       []string // bare args: one session file to tail, else (joined) a search query
-	Agent            string   // auto|claude|codex|agy
+	Agent            string   // auto|claude|amp|codex|agy
 	Theme            string
 	Backfill         string
 	GlowStyle        string
@@ -20,12 +20,12 @@ type Config struct {
 	Pick             string // auto|always|never
 	Days             string // window for the session tree (empty = per-mode default)
 	List             bool   // --list: static ls-style dump instead of the TUI
-	Live             bool   // --live: only the sessions running right now, read from Claude's own registry
-	Local            bool   // --local: pure ~/.claude crawl, folder-grouped (no git/cloud)
+	Live             bool   // --live: running Claude and Amp sessions from their activity sources
+	Local            bool   // --local: local Claude plus cached Amp, folder-grouped (no network)
 	Cloud            bool   // --cloud: refresh entire's cloud metadata (slow) then enrich
 	Search           string // --search: content-search sessions, ranked by relevance
-	WaitNew          bool   // --wait-new: block until a new Claude session appears in $PWD, then tail it
-	FollowSession    string // --follow-session <id>: tail exactly $PWD's <id>.jsonl (waiting for it), following forks
+	WaitNew          bool   // --wait-new: block until a new Claude session or Amp thread appears in $PWD
+	FollowSession    string // --follow-session <id>: follow a Claude UUID or Amp T- id
 	MarkContinuation bool   // --mark-continuation: at a Claude lineage flip, write a forward-pointer record into the stopped file
 	NoHookInstall    bool   // --no-hook-install: suppress the first-run pending-hook offer
 	ClaudeBin        string // --claude-bin: the binary the workspace panes + handover launch
@@ -373,12 +373,12 @@ func resolveDays(s string, def int) (int, error) {
 // validateAgent checks the --agent value and maps the antigravity alias.
 func validateAgent(s string) (string, error) {
 	switch s {
-	case "auto", "claude", "codex", "agy":
+	case "auto", "claude", "amp", "codex", "agy":
 		return s, nil
 	case "antigravity":
 		return "agy", nil
 	}
-	return "", fmt.Errorf("invalid --agent value: %s (want 'auto', 'claude', 'codex', or 'agy')", s)
+	return "", fmt.Errorf("invalid --agent value: %s (want 'auto', 'claude', 'amp', 'codex', or 'agy')", s)
 }
 
 // validateToolStyle checks the --tool-style value. full/dots/hidden are the

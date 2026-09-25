@@ -29,9 +29,11 @@ Read tool. Shape:
 }
 ```
 
-Each session: `sessionId`, `repo`, `cwd`, `title`, `state` (live|ended),
-`lastActivity`, `tokens`, `transcriptPath`, `trailUrls[]`, `prUrls[]`,
-`entireSessionIds[]`.
+Each session: `sessionId`, `agent` (`claude` or `amp`), `repo`, `cwd`, `title`,
+`state` (live|ended), `lastActivity`, `tokens`, `transcriptPath`, `trailUrls[]`,
+`prUrls[]`, `entireSessionIds[]`. For Claude, `transcriptPath` is a local JSONL
+file. For Amp, it is the thread URL; export the transcript with
+`amp threads export <sessionId>`.
 
 ## Output
 
@@ -62,14 +64,18 @@ Overwrite an existing file for the same work (handover is safe to re-run).
 
 ## Per-group procedure
 
-A group holds one or more sessions. **Read every session's transcript
-(`transcriptPath`) in the group and synthesise across them.**
+A group holds one or more sessions. **Read every session's transcript in the
+group and synthesise across them.** Read a Claude session from `transcriptPath`.
+For an Amp session, run `amp threads export <sessionId>` and read the returned
+JSON. If an Amp export fails, record that the transcript was unavailable and
+continue with the manifest metadata; do not treat its URL as a local file.
 
 1. **Summary & where we left it** — 2–4 sentences: what the work is, what's done,
    what's mid-flight, and the **next concrete step**. Be specific — name the
    files, branches, and commands in play.
-2. **Sessions** — list every session id in the group; give a
-   `claude --resume <id>` command for the most recent one; note live vs ended.
+2. **Sessions** — list every session id and agent in the group; note live vs
+   ended. Give the matching resume command for the most recent one:
+   `claude --resume <id>` for Claude or `amp threads continue <id>` for Amp.
 3. **Entire sessions** — from each session's `entireSessionIds` plus any
    referenced in the transcript.
 4. **Trails & PRs** — start from `trailUrls`/`prUrls`, then scan the transcript
@@ -106,7 +112,7 @@ A group holds one or more sessions. **Read every session's transcript
 ```markdown
 # <repo> — <short work title>
 
-- **Sessions:** <id1> · <id2> …   (resume: `claude --resume <id1>`)
+- **Sessions:** <agent1> <id1> · <agent2> <id2> …   (resume: `<agent-specific command>`)
 - **State:** <live | ended>  ·  last activity <ts>
 
 ## Summary & where we left it

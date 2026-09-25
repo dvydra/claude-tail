@@ -1,0 +1,21 @@
+─── ▶ USER ─────────────────────────────── 2026-09-25 10:00:00
+Check the build and ask before shipping.
+─── ◀ AGENT ────────────────────────────── 2026-09-25 10:00:01
+I’ll inspect it.
+⏺ finder(Find the build configuration)
+⏺ shell_command(go test ./...)
+  ⎿  main.go:1-42
+  ⎿  exit 0
+     ok
+     pass
+⏺ ▸ agent: Review the change (reviewer)
+⏺ ▸ agent: Investigate release T-child456 (thread)
+⁉ WAITING FOR YOUR ANSWER
+Ship now?
+  1. Yes
+  2. No
+  3. Other
+  ⎿  {"threadID":"T-child456"}
+  ⋯ 2026-09-25 10:00:05
+✔ DONE — over to you
+Build passes. Waiting for your choice.

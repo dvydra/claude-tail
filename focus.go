@@ -28,13 +28,19 @@ func focusBody(h int) int { return max(h-focusChrome, 1) }
 // shared tty (the same fd the keyboard goroutine reads — it's parked for the
 // overlay's lifetime, so there's a single reader). A no-op (with a one-line
 // stderr hint) when there's no tty or no subagents yet.
-func runFocus(tty *os.File, mainPath, home string, theme Theme) {
+func runFocus(tty *os.File, agent Agent, mainPath, home string, theme Theme) {
 	if tty == nil {
 		return
 	}
 	chans := discoverSubagents(mainPath)
+	if agent == AgentAmp {
+		id := sessionIDFromPath(mainPath)
+		if parent, err := ampExportThread(home, id, true); err == nil {
+			chans = ampChildChannels(home, parent, false)
+		}
+	}
 	if len(chans) == 0 {
-		fmt.Fprintln(os.Stderr, "entire-tail: no subagents in this session yet")
+		fmt.Fprintln(os.Stderr, "entire-tail: no focusable subagents or child threads in this session yet")
 		return
 	}
 	// The tty is currently in cbreak (the live-tail mode); switch to raw+timed
@@ -52,10 +58,13 @@ func runFocus(tty *os.File, mainPath, home string, theme Theme) {
 	sel := len(chans) - 1 // default to the most recently spawned
 	var lines []string
 	lastSig := ""
+	lastAmpRefresh := time.Time{}
 	top := 0
 	atBottom := true
 
 	load := func() {
+		refreshAmpChannel(home, &chans[sel])
+		lastAmpRefresh = time.Now()
 		lines = renderChannel(chans[sel], home, theme)
 		lastSig = fileSig(chans[sel].Path)
 	}
@@ -69,6 +78,10 @@ func runFocus(tty *os.File, mainPath, home string, theme Theme) {
 	buf := make([]byte, 16)
 	for {
 		w, h := termSize(tty)
+		if chans[sel].Agent == AgentAmp && time.Since(lastAmpRefresh) >= 2*time.Second {
+			refreshAmpChannel(home, &chans[sel])
+			lastAmpRefresh = time.Now()
+		}
 		if sig := fileSig(chans[sel].Path); sig != lastSig { // followed file grew
 			lines = renderChannel(chans[sel], home, theme)
 			lastSig = sig
@@ -143,7 +156,10 @@ func renderChannel(ch subagentChannel, home string, theme Theme) []string {
 	if err != nil {
 		return []string{"  (cannot render this subagent)"}
 	}
-	agent := detectAgentForFile(home, ch.Path)
+	agent := ch.Agent
+	if agent == "" {
+		agent = detectAgentForFile(home, ch.Path)
+	}
 	loc := time.Local
 	for _, l := range tailLines(ch.Path, 800) {
 		for _, rec := range normalize(agent, l, loc) {

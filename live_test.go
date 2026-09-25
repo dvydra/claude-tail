@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -149,6 +150,37 @@ func TestCollectLiveSessionsMissingDir(t *testing.T) {
 	if got != nil {
 		t.Errorf("missing registry dir returned %v, want nil", got)
 	}
+}
+
+func TestClaudeLiveDoesNotUseAmpSources(t *testing.T) {
+	if liveUsesAmp(AgentClaude) {
+		t.Fatal("Claude-only live mode should not start Amp activity or export commands")
+	}
+	if !liveUsesAmp(AgentAmp) || !liveUsesAmp("") {
+		t.Fatal("Amp and combined live modes should use Amp activity sources")
+	}
+}
+
+func TestAmpLiveSnapshotsMaterializeFreshTranscript(t *testing.T) {
+	home := t.TempDir()
+	old := ampRun
+	t.Cleanup(func() { ampRun = old })
+	ampRun = func(context.Context, ...string) ([]byte, error) {
+		return []byte(`{"v":1,"id":"T-live","messages":[{"role":"assistant","createdAt":"2026-09-25T10:00:00Z","content":[{"type":"text","text":"fresh"}]}]}`), nil
+	}
+
+	snapshots := newAmpLiveSnapshots(home)
+	snapshots.update([]liveSession{{Agent: AgentAmp, SessionID: "T-live"}})
+	defer snapshots.close()
+	path := ampSnapshotPath(home, "T-live")
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil && strings.Contains(string(data), "fresh") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("live Amp snapshot was not materialized")
 }
 
 func TestUptime(t *testing.T) {
@@ -322,12 +354,20 @@ func TestLiveBlockLinesIdleUsesStatusAge(t *testing.T) {
 
 func TestRenderLiveEmptyStates(t *testing.T) {
 	got := renderLive(liveUI{Width: 60, Height: 20})
-	if !strings.Contains(got, "no live claude sessions") {
+	if !strings.Contains(got, "no live Claude or Amp sessions") {
 		t.Errorf("empty state missing:\n%s", got)
 	}
 	got = renderLive(liveUI{Width: 60, Height: 20, NoRegistry: true})
 	if !strings.Contains(got, "2.1.273") {
 		t.Errorf("no-registry state should name the version requirement:\n%s", got)
+	}
+	got = renderLive(liveUI{Width: 60, Height: 20, Filter: AgentClaude})
+	if !strings.Contains(got, "no live Claude sessions") || strings.Contains(got, "Amp") {
+		t.Errorf("Claude-only empty state mentions the wrong agent:\n%s", got)
+	}
+	got = renderLive(liveUI{Width: 60, Height: 20, Filter: AgentAmp, NoRegistry: true})
+	if !strings.Contains(got, "no Amp activity source") || strings.Contains(got, "Claude") {
+		t.Errorf("Amp-only unavailable state mentions the wrong agent:\n%s", got)
 	}
 }
 
@@ -404,6 +444,7 @@ func TestUpdateLiveNoSessionsIgnoresActions(t *testing.T) {
 
 func TestLiveChoiceCarriesSessionIdentity(t *testing.T) {
 	s, _ := parseLiveSession([]byte(liveFixture))
+	s.Agent = AgentAmp
 	s.Path = "/Users/dvydra/.claude/projects/slug/21c1a476-e137-4951-8a9a-1bb471096870.jsonl"
 	s.Profile = personalProfile
 	c := liveChoice(liveUI{Sessions: []liveSession{s}, Result: treeChosen})
@@ -413,8 +454,28 @@ func TestLiveChoiceCarriesSessionIdentity(t *testing.T) {
 	if c.Path != s.Path || c.ID != s.SessionID || c.Cwd != s.Cwd {
 		t.Errorf("choice = %+v, want the session's path/id/cwd", c)
 	}
+	if c.Agent != AgentAmp {
+		t.Errorf("Agent = %q, want Amp", c.Agent)
+	}
 	if c.Account != personalProfile {
 		t.Errorf("Account = %q, want %q", c.Account, personalProfile)
+	}
+}
+
+func TestFilterLiveSessionsByAgent(t *testing.T) {
+	sessions := []liveSession{
+		{SessionID: "claude-default"},
+		{Agent: AgentClaude, SessionID: "claude-explicit"},
+		{Agent: AgentAmp, SessionID: "T-amp"},
+	}
+	if got := filterLiveSessions(append([]liveSession(nil), sessions...), ""); len(got) != 3 {
+		t.Fatalf("combined=%+v", got)
+	}
+	if got := filterLiveSessions(append([]liveSession(nil), sessions...), AgentClaude); len(got) != 2 || got[0].SessionID != "claude-default" {
+		t.Fatalf("claude=%+v", got)
+	}
+	if got := filterLiveSessions(append([]liveSession(nil), sessions...), AgentAmp); len(got) != 1 || got[0].SessionID != "T-amp" {
+		t.Fatalf("amp=%+v", got)
 	}
 }
 

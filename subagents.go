@@ -21,11 +21,14 @@ import (
 
 // subagentChannel is one subagent transcript the focus overlay can open.
 type subagentChannel struct {
+	Agent       Agent
 	AgentID     string
+	ThreadID    string
 	Description string // task description (from meta.json)
 	AgentType   string // e.g. "general-purpose"
 	Path        string // absolute path to the subagent .jsonl
 	SpawnTs     int64  // unix seconds of its first record (for stable ordering)
+	State       string
 }
 
 type subagentMeta struct {
@@ -54,7 +57,7 @@ func discoverSubagents(mainPath string) []subagentChannel {
 	var chans []subagentChannel
 	for _, p := range matches {
 		id := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), "agent-"), ".jsonl")
-		ch := subagentChannel{AgentID: id, Path: p}
+		ch := subagentChannel{Agent: AgentClaude, AgentID: id, Path: p}
 		if m, ok := readSubagentMeta(strings.TrimSuffix(p, ".jsonl") + ".meta.json"); ok {
 			ch.Description, ch.AgentType = m.Description, m.AgentType
 		}
@@ -89,6 +92,9 @@ func readSubagentMeta(path string) (subagentMeta, bool) {
 // its file was touched within the last few seconds) and its elapsed run time
 // (first → last record timestamp).
 func (c subagentChannel) status(now int64) (running bool, dur time.Duration) {
+	if c.Agent == AgentAmp {
+		return c.State != "idle" && c.State != "complete" && c.State != "done", 0
+	}
 	fi, err := os.Stat(c.Path)
 	if err != nil {
 		return false, 0

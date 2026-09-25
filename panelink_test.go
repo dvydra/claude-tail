@@ -161,7 +161,7 @@ func TestLinkScriptEscapes(t *testing.T) {
 }
 
 func TestShouldOfferPaneLink(t *testing.T) {
-	ok := paneLinkOfferInputs{isTTY: true, isClaude: true, hasPair: true}
+	ok := paneLinkOfferInputs{isTTY: true, isSupported: true, hasPair: true}
 	if !shouldOfferPaneLink(ok) {
 		t.Errorf("clean eligible run: want offer")
 	}
@@ -170,7 +170,7 @@ func TestShouldOfferPaneLink(t *testing.T) {
 		mut  func(*paneLinkOfferInputs)
 	}{
 		{"not a tty", func(g *paneLinkOfferInputs) { g.isTTY = false }},
-		{"not claude", func(g *paneLinkOfferInputs) { g.isClaude = false }},
+		{"unsupported agent", func(g *paneLinkOfferInputs) { g.isSupported = false }},
 		{"no linkable pair", func(g *paneLinkOfferInputs) { g.hasPair = false }},
 		{"choice recorded", func(g *paneLinkOfferInputs) { g.choiceRecorded = true }},
 		{"flag suppressed", func(g *paneLinkOfferInputs) { g.noPaneLink = true }},

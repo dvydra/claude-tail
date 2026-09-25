@@ -131,7 +131,7 @@ func TestPlanHunk(t *testing.T) {
 // Every outcome says something, and each says a DIFFERENT thing. The one that
 // matters is hunkUnclaimed: the review happened but the agent was never told,
 // and from the tail's side of the screen that is indistinguishable from
-// success. An earlier version reported "claude was told to load the skill"
+// success. An earlier version reported "agent was told to load the skill"
 // whether or not a byte had been sent, because the wording was decided before
 // hunk had even started.
 func TestHunkOutcomeMessages(t *testing.T) {
@@ -200,6 +200,22 @@ func TestHunkClaudePane(t *testing.T) {
 	// Off iTerm there is no tab, and no pane may be inferred.
 	if got := hunkClaudePane("", "/proj/aaa.jsonl", procs, sessionOf); got != "" {
 		t.Errorf("pane = %q, want empty off iTerm", got)
+	}
+}
+
+func TestHunkPaneMatcherAcceptsAmpThreadID(t *testing.T) {
+	procs := []claudeProc{
+		{pid: 1, itermID: "w0t1p0:UUID-A"},
+		{pid: 2, itermID: "w0t1p1:UUID-B"},
+	}
+	sessionOf := func(p claudeProc) string {
+		if p.pid == 2 {
+			return "T-target"
+		}
+		return "T-other"
+	}
+	if got := hunkClaudePane("w0t1", "T-target", procs, sessionOf); got != "UUID-B" {
+		t.Fatalf("pane=%q", got)
 	}
 }
 

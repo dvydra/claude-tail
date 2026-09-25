@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -224,6 +225,35 @@ func homeDir() string { return firstNonEmpty(os.Getenv("HOME"), mustHome()) }
 // one, `@` the personal one. Returns only on failure (see startWorkspace).
 func launchNewWorkspace(cwd, bin string, prof claudeProfile) error {
 	return startWorkspace(newWorkspaceScript(cwd, selfPath(), newSessionID(), paneBin(bin), accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir())), itermSinglePane()))
+}
+
+func launchAmpWorkspace(cwd, threadID string) error {
+	bin, err := exec.LookPath("amp")
+	if err != nil {
+		return errors.New("amp is not installed or not on PATH")
+	}
+	return startWorkspace(ampWorkspaceScript(cwd, threadID, selfPath(), bin, true))
+}
+
+func launchNewAmpWorkspace(cwd string) error {
+	bin, err := exec.LookPath("amp")
+	if err != nil {
+		return errors.New("amp is not installed or not on PATH")
+	}
+	return startWorkspace(ampWorkspaceScript(cwd, "", selfPath(), bin, itermSinglePane()))
+}
+
+func ampWorkspaceScript(cwd, threadID, self, bin string, inPlace bool) workspaceLaunch {
+	cd := "cd " + shQuote(cwd)
+	a := cd + " && " + shQuote(bin)
+	b := cd + " && " + shQuote(self) + " --agent amp"
+	if threadID != "" {
+		a += " threads continue " + shQuote(threadID)
+		b += " --follow-session " + shQuote(threadID)
+	} else {
+		b += " --wait-new"
+	}
+	return workspaceLaunch{Script: splitScript(a, b, cd, inPlace), Agent: a, Tail: b, Shell: cd, InPlace: inPlace}
 }
 
 // pinsSessionID reports whether bin forwards Claude's `--session-id` to the

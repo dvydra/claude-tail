@@ -292,6 +292,7 @@ func runSettings(tty *os.File, env settingsEnv, theme Theme) {
 // and a panel that reports a stale answer about a file it's about to rewrite is
 // worse than one that costs two stats per keystroke.
 func settingsRowsFor(info helpInfo, home string) []settingRow {
+	agent := firstNonEmptyAgent(info.Agent, AgentClaude)
 	collapse := "off"
 	if info.Collapse > 0 {
 		collapse = fmt.Sprintf("user pastes > %d lines", info.Collapse)
@@ -304,20 +305,23 @@ func settingsRowsFor(info helpInfo, home string) []settingRow {
 	if info.Wrap > 0 {
 		wrap = fmt.Sprintf("on, %d columns", info.Wrap)
 	}
-	return []settingRow{
+	rows := []settingRow{
 		{ID: setTheme, Label: "theme", Value: info.Theme, Swatch: info.ThemeSwatch},
 		{ID: setTools, Label: "tools", Value: info.Tools.label()},
 		{ID: setCollapse, Label: "collapse", Value: collapse},
 		{ID: setWrap, Label: "wrap", Value: wrap},
 		{ID: setBodies, Label: "bodies", Value: bodies, Note: "this session only"},
 		{ID: setStatusBar, Label: "status bar", Value: onOff(info.StatusBar)},
-		{ID: setHooks, Label: "prompt hooks", Value: installedOrNot(hookInstalledFor(home)),
-			Note: "writes ~/.claude/settings.json", Confirm: true},
-		{ID: setTap, Label: "api tap", Value: runningOrNot(tapBaseURL(home) != ""),
-			Note: "launchd agent", Confirm: true},
-		{ID: setPaneLink, Label: "pane link", Value: paneLinkRowValue(home),
-			Note: "iTerm tab follow", Confirm: true},
 	}
+	if agent == AgentClaude {
+		rows = append(rows,
+			settingRow{ID: setHooks, Label: "prompt hooks", Value: installedOrNot(hookInstalledFor(home)), Note: "writes ~/.claude/settings.json", Confirm: true},
+			settingRow{ID: setTap, Label: "api tap", Value: runningOrNot(tapBaseURL(home) != ""), Note: "launchd agent", Confirm: true})
+	}
+	if agent == AgentClaude || agent == AgentAmp {
+		rows = append(rows, settingRow{ID: setPaneLink, Label: "pane link", Value: paneLinkRowValue(home), Note: "iTerm tab follow", Confirm: true})
+	}
+	return rows
 }
 
 // onOff / installedOrNot / runningOrNot keep the value column reading as plain
@@ -428,11 +432,18 @@ func resumeCommand(cwd, id, bin, acctEnv string) string {
 	return "cd " + shQuote(cwd) + " && " + line
 }
 
-// sessionResume is resumeCommand for the transcript being tailed — Claude only,
-// since the other agents resume differently or not at all. The binary is the
-// same preference the workspace launches (resolveClaudeBin, warnings already
-// given at startup), named as typed rather than resolved: this line is read.
+// sessionResume returns the native resume command for the transcript being
+// tailed. Claude uses the same binary preference as workspace launches
+// (resolveClaudeBin, warnings already given at startup), named as typed rather
+// than resolved because this line is read. Amp continues by thread id.
 func sessionResume(cfg Config, agent Agent, home, cur string) string {
+	if agent == AgentAmp {
+		id := strings.TrimSuffix(filepath.Base(cur), ".jsonl")
+		if validAmpThreadID(id) {
+			return "amp threads continue " + shQuote(id)
+		}
+		return ""
+	}
 	if agent != AgentClaude {
 		return ""
 	}
