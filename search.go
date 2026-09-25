@@ -29,6 +29,7 @@ import (
 // parsed to confirm a real conversational match.
 
 type searchHit struct {
+	agent       Agent
 	id          string
 	path        string // local jsonl, "" if not on this machine
 	snippet     string // match context (why it hit)
@@ -40,6 +41,8 @@ type searchHit struct {
 	wordCount   int     // matches that stand alone as a whole word (not a substring)
 	entireScore float64 // entire's relevance score
 	entireHit   bool
+	ampHit      bool
+	ampRank     int
 }
 
 // score ranks a hit. A standalone-word local match is strongest (searching
@@ -50,6 +53,9 @@ func (h *searchHit) score() float64 {
 	s := 0.0
 	if h.entireHit {
 		s += h.entireScore // typically ~5–8
+	}
+	if h.ampHit {
+		s += math.Max(18-float64(h.ampRank), 9)
 	}
 	switch {
 	case h.wordCount > 0:
@@ -97,6 +103,18 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 	for _, h := range hits {
 		list = append(list, h)
 	}
+	var ampHits []ampThread
+	if localOnly {
+		ampHits = ampCachedSearch(home, query)
+	} else {
+		ampHits, _ = ampSearch(query)
+	}
+	for rank, hit := range ampHits {
+		list = append(list, &searchHit{
+			agent: AgentAmp, id: hit.ID, path: hit.ID, snippet: hit.Title,
+			mtime: hit.updatedUnix(), ampHit: true, ampRank: rank,
+		})
+	}
 	sort.SliceStable(list, func(i, j int) bool {
 		if si, sj := list[i].score(), list[j].score(); si != sj {
 			return si > sj
@@ -105,10 +123,10 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 	})
 
 	// No result cap — full history, every match, ranked best-first.
-	label := fmt.Sprintf("🔎 %q — %d result(s), best match first", query, len(list))
-	folder := treeFolder{Cwd: label, Slug: "search", Expanded: true}
+	folder := treeFolder{Slug: "search", Expanded: true}
 	for _, h := range list {
 		folder.Sessions = append(folder.Sessions, treeSession{
+			Agent:   firstNonEmptyAgent(h.agent, AgentClaude),
 			ID:      h.id,
 			Path:    h.path,
 			Snippet: collapsePreview(firstNonEmpty(h.snippet, h.displayName)),
@@ -125,11 +143,31 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 			folder.Mtime = h.mtime
 		}
 	}
+	folder.Cwd = fmt.Sprintf("🔎 %q — %d result(s), best match first", query, len(folder.Sessions))
 	tree := sessionTree{Now: now, Home: home, Pwd: pwd}
-	if len(list) > 0 {
+	if len(folder.Sessions) > 0 {
 		tree.Folders = []treeFolder{folder}
 	}
 	return tree
+}
+
+func ampCachedSearch(home, query string) []ampThread {
+	threads, err := ampList(home, true)
+	if err != nil {
+		return nil
+	}
+	needle := strings.ToLower(query)
+	var out []ampThread
+	for _, hit := range threads {
+		haystack := strings.ToLower(hit.Title)
+		if ex, err := ampExportThread(home, hit.ID, true); err == nil {
+			haystack += "\n" + ampExportContent(ex, contentBudget)
+		}
+		if strings.Contains(haystack, needle) {
+			out = append(out, hit)
+		}
+	}
+	return out
 }
 
 // localSearchClaude returns a hit per local session whose USER/ASSISTANT text

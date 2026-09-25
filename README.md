@@ -1,7 +1,7 @@
 # entire-tail
 
-Pretty live-view of your current AI coding agent session — Claude Code, Codex
-CLI, or Antigravity. Ships as an [`entire`](https://docs.entire.io) plugin,
+Pretty live-view of your current AI coding agent session: Claude Code, Amp,
+Codex CLI, or Antigravity. Ships as an [`entire`](https://docs.entire.io) plugin,
 also runs standalone.
 
 ## Why
@@ -14,11 +14,12 @@ history. Most agents also have no in-app scroll keybind, no `/history`, no
 `/transcript`. Once a message has left the visible viewport, there's no good
 way to read it back without exiting.
 
-But the source of truth is on disk: every event in your session is appended
-line-by-line to a JSONL file under the agent's data directory.
+File-backed agents append each event to a local JSONL file. Amp threads can run
+locally, on a runner, or in an orb, so entire-tail reads them through Amp's
+supported `threads` and `top` CLI commands and keeps a local last-good cache.
 
-`entire-tail` discovers that file for the agent you're using, follows it,
-formats each event nicely, and renders the markdown bodies **in-process**
+`entire-tail` discovers the session source, follows it, formats each event
+nicely, and renders the markdown bodies **in-process**
 with [glamour](https://github.com/charmbracelet/glamour) (the same renderer
 [glow](https://github.com/charmbracelet/glow) is built on) using a custom
 flush-left style. It's a single self-contained Go binary — no `jq`, `glow`,
@@ -33,11 +34,13 @@ the session.
 | Agent          | Discovery                                                        |
 |----------------|------------------------------------------------------------------|
 | Claude Code    | `~/.claude/projects/<encoded-cwd>/*.jsonl`                       |
+| Amp            | `amp threads list/export/search`, `amp top --stream-jsonl`, cache under `~/.cache/entire-tail/amp` |
 | Codex CLI      | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (cwd from `session_meta`) |
 | Antigravity    | `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl` (id looked up from `cache/last_conversations.json`) |
 
-`--agent auto` (the default) picks whichever has the most recently modified
-session for `$PWD`. Force a specific agent with `--agent claude|codex|agy`.
+The default tree combines Claude and Amp. `--agent auto --no-pick` chooses the
+newest matching Claude session or Amp thread for `$PWD`. Force one source with
+`--agent claude|amp|codex|agy`.
 
 ## Install
 
@@ -69,10 +72,12 @@ dependency. When `fm` is absent the card falls back to metadata only.
 ## Usage
 
 ```sh
-entire tail                                # adopt the claude in this iTerm tab, else the tree picker
+entire tail                                # adopt a nearby Claude/Amp agent, else open the combined tree
 entire-tail                                # same, when called standalone
 entire tail --no-pick                      # skip the picker: auto-detect + tail $PWD
 entire tail --agent codex                  # force a specific agent (tails directly)
+entire tail --agent amp --no-pick          # newest Amp thread for $PWD
+entire tail --follow-session T-...         # follow one Amp thread exactly
 entire tail /path/to/session.jsonl         # follow an explicit session
 entire tail --theme dracula                # pick a bundled theme (default: tokyo-night)
 entire tail -t nord -b 50                  # short flags also work
@@ -103,12 +108,12 @@ Run `entire-tail` bare and the pane layout decides what you get:
 | Where you ran it | What opens |
 |---|---|
 | a tab with no split | the tree; `⏎` lays out the 3-pane workspace here |
-| a pane beside a `claude` in the same tab | `--live`, cursor on that claude's session; `⏎` tails it |
+| a pane beside Claude or Amp in the same tab | `--live`, cursor on that agent's session; `⏎` tails it |
 | anywhere else | the tree; `⏎` tails in place |
 
 Any flag that already says what to show (`--live`, `-p`, `--no-pick`, `--follow-session`, a file, a search) skips the detection.
 
-How it finds "a claude in this tab": every terminal carries `ITERM_SESSION_ID` (`wNtNpM:…`, window, tab, pane) in its environment, so entire-tail keeps the `claude` processes whose tab matches its own (read via `ps eww`). A claude in another tab or window never counts. The cursor then lands on the right `--live` row exactly, because Claude Code's session registry is keyed by pid. With two claudes in the tab it lands on the first; both rows are there. Off iTerm (or non-macOS) there's nothing to match and you get the tree.
+Every terminal carries `ITERM_SESSION_ID` (`wNtNpM:…`, window, tab, pane) in its environment. entire-tail matches Claude and Amp processes in its own tab. Claude supplies an exact pid-to-session registry entry; Amp is matched to the `T-…` diagnostic log open by that process. Agents in another tab or window never count.
 
 ### …and the tree points at it too
 
@@ -175,7 +180,7 @@ events show as they stream:
 | `h`            | **review in hunk** — hand the whole pane to [hunk](https://hunk.dev) for a diff of this session's working tree (see below) |
 | `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
 | `r`            | re-render the whole transcript with current settings (`t`/`T`/`c`/`m`/`w` already do this themselves) |
-| Ctrl-X         | **back to the tree** — pop out of the live tail into the session tree picker (Claude only); pick another with `t` to tail it in this same pane, or `Enter`/`n` for a workspace |
+| Ctrl-X         | **back to the tree** — pop out of a Claude or Amp tail; pick another with `t`, or use `Enter`/`c`/`a` for a workspace |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 
 `t`/`c` declutter the view on the fly — handy when an agent goes on a long
@@ -414,7 +419,7 @@ single small bash script per event. Pass `--no-hook-install` to suppress the
 one-time first-run offer. The alert surfaces the same question/permission cards
 as the deferred JSONL — dedup prevents doubling once the real record arrives.
 
-This feature is **Claude-only** and has no effect on Codex or Antigravity.
+This feature is **Claude-only** and has no effect on Amp, Codex, or Antigravity.
 
 ### The API tap: see the question's *reasoning*, not just the question (opt-in)
 
@@ -514,8 +519,9 @@ Post this to #progress:
 
 It's read straight from the transcript — no hooks, nothing to install. A
 subagent's `end_turn` is ignored (that's the subagent finishing, not the agent),
-and transcripts predating `stop_reason` simply render as before. Also
-**Claude-only**: Codex and Antigravity don't report the signal.
+and transcripts predating `stop_reason` simply render as before. Amp derives the
+same marker from its idle state and final message id. Codex and Antigravity don't
+report the signal.
 
 ### Background-task notes (Claude)
 
@@ -548,12 +554,12 @@ Can't remember which session that was? Just run `entire tail` — with no sessio
 to tail, it opens an interactive tree of your sessions, grouped by **repo**:
 
 ```
-  CLAUDE SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · t tail · / filter · q quit
+  AGENT SESSIONS   ↑↓ move · → expand · ⏎ workspace↗ · i info · t tail · c Claude↗ · a Amp↗ · @ personal↗ · / filter · q
 
 ▾ entirehq/infra  (4)  20h ago
-    ○   8babea4d  20h ago  Monitor Kubernetes Node Disk Usage
-    ○   3f23dd13  4d ago   Investigate ENT-977 telemetry regression
-    ○ @ 9de20fff  4d ago   Rewire the greenhouse thermostat
+    ○ C   8babea4d  20h ago  Monitor Kubernetes Node Disk Usage
+    ○ A   T-19e0f1  1d ago   Investigate ENT-977 telemetry regression
+    ○ C @ 9de20fff  4d ago   Rewire the greenhouse thermostat
 ▸ entirehq/entiredb  (7)  27h ago
 ▸ @ dvydra/side-quest  (3)  2d ago
 
@@ -562,21 +568,26 @@ to tail, it opens an interactive tree of your sessions, grouped by **repo**:
 
 ### Where the sessions come from
 
-Three layers, tuned so the default is **instant and fully local**:
+The default combines Claude and Amp, with fixed-width `C` and `A` markers on
+every row. Claude metadata is local; Amp inventory includes local, runner, and
+orb threads. A warm Amp cache opens immediately and refreshes in the background.
 
-1. **Base — every local session** from a `~/.claude` crawl (nothing omitted),
+1. **Claude**: every local session from a `~/.claude` crawl (nothing omitted),
    **grouped by repo** via each session's `cwd` git `origin` remote (for
    [`entire`](https://docs.entire.io)-enabled repos that's `entire://…/owner/repo`,
    so it lands on the same `owner/repo` the cloud uses; non-git dirs fall back to
    the folder path). No network — a few hundred milliseconds.
-2. **Titles** — each row's label is the session's own summary / first prompt.
-3. **Cloud (opt-in) — `--cloud`** enriches with `entire`'s generated titles and
+2. **Amp**: `amp threads list --json --include-archived`, covering local, runner,
+   and orb threads. A warm cache opens immediately and refreshes in the
+   background. Successful exports are cached for filtering, previews, and
+   offline use.
+3. **Entire (opt-in) — `--cloud`** enriches Claude rows with generated titles and
    appends sessions tracked on **other machines** (listed, not tailable here).
    The fetch takes a few seconds and is **cached ~10 min**, so ordinary runs
    afterward stay instant *and* keep the nicer titles.
 
-`--local` is the pure `~/.claude` crawl grouped by **folder** (no git remote
-lookups, no cloud) — fastest / fully offline — with `● live` markers:
+`--local` is the pure `~/.claude` crawl plus cached Amp inventory and exports,
+grouped by **folder**. It performs no Amp or Entire network calls.
 
 ```
 ▾ ~/src/entirehq/entiredb  (3)  3m ago  ● live
@@ -603,7 +614,8 @@ called; `q`/`Esc` quits. The most recent group starts expanded. On a session:
     outcome), generated locally in ~1-2s via the `fm` Foundation Models CLI on
     macOS — no cloud, no keys, works offline (dropped when unavailable);
   - **entire's metadata** — repo, model, token spend, checkpoints, activity,
-    **last-updated**, and the transcript **path**;
+    **last-updated**, and the transcript **path**; Amp cards instead show the
+    thread URL, mode, executor, working tree, and current state;
   - a **trails & prs** section listing the entire trails
     (`entire.io/gh/owner/repo/trails/id`) and GitHub PRs
     (`github.com/owner/repo/pull/n`) referenced in the transcript, each a
@@ -613,20 +625,23 @@ called; `q`/`Esc` quits. The most recent group starts expanded. On a session:
   the card is clipped on a short terminal. `↑↓`/PgUp/PgDn scroll the preview,
   `q`/`Esc` returns.
 - **`t`** → just tail the session in the current pane.
-- **`n`** → open a workspace for a **new** Claude session in the **highlighted
+- **`c`** → open a workspace for a **new** Claude session in the **highlighted
   folder's** directory (or `$PWD` if it has none) — a fresh agent (`claude` by
   default, see [`--claude-bin`](#which-agent-pane-a-launches---claude-bin)) +
-  tail + shell. Pick a repo group, hit `n`, and it `cd`s there and starts fresh.
+  tail + shell. Pick a repo group, hit `c`, and it `cd`s there and starts fresh.
   Both panes **pin a shared session id**, so the tail latches onto exactly that
   session even with other Claude sessions live in the same repo. Under a wrapper
   that doesn't forward `--session-id` (happy included — see below) the pane
   instead uses `--wait-new` and waits for whatever session the agent creates.
-- **`@`** → the same workspace, but for a new session on your **second Claude
+- **`a`** → open a workspace for a **new Amp thread**. Pane A runs `amp`, pane B
+  waits for the new thread in that directory, and pane C is a shell. `n` remains
+  an undocumented alias for `c`.
+- **`@`** → the Claude workspace, but for a new session on your **second Claude
   account** — see [Two Claude accounts](#two-claude-accounts-the-pink-) below.
 
 The **current directory always appears** in the tree — even with no sessions yet
-(shown as `▸ path  (no sessions — n to start one)`), so you can always land on
-"here" and hit `n` to start one.
+(shown as an empty folder row), so you can always land on "here" and hit `c` or
+`a` to start one.
 
 ### Two Claude accounts (the pink `@`)
 
@@ -656,7 +671,8 @@ every personal session.)
 
 **Launching.** `⏎` on a personal session resumes it **as that account**:
 entire-tail sets `CLAUDE_CONFIG_DIR` and pins the account's OAuth token for the
-agent pane. `n` always starts a session on your main account; **`@`** starts one
+agent pane. `c` always starts a session on your main account (`n` remains an
+undocumented alias); **`@`** starts one
 on the personal account. The tail pane needs no account context — it watches both
 config dirs, so it latches on either way.
 
@@ -707,17 +723,11 @@ entire tail --list --days 1              # what did I work on today?
 
 ### `--live` — only what's running right now
 
-Everywhere else here, "is this session live?" is a guess. `pgrep`+`lsof` finds a
-`claude` process and the folder it's in, but not *which* transcript it's
-writing, so the tree marks the whole folder and hopes the newest file is the
-right one.
-
-`--live` stops guessing. Claude Code keeps a registry of its own running
-sessions at `~/.claude/sessions/<pid>.json` — pid, session id, cwd, version and
-a `busy`/`idle` status — and `--live` reads it. Session ids come out exactly, no
-mtime races and no subprocesses. Every session gets an expanded block, and the
-view refreshes every second, so status flips in place and an exited session
-disappears:
+`--live` combines Claude's exact running-session registry with Amp activity.
+Local Amp processes are matched to the `T-…` log they hold open; runner and orb
+activity comes from `amp top --stream-jsonl`. If that stream reconnects, the
+last remote set stays visible while local process matches continue working.
+Every session gets an expanded block, and the view refreshes every second:
 
 ```
 ▸ ◉ claude-tail-b3         busy · pid 86544 · v2.1.273
@@ -756,7 +766,7 @@ entire tail --live                       # the interactive view
 entire tail --live | grep busy           # what's actually generating right now
 ```
 
-Two things worth knowing. A session only registers once it has taken its **first
+For Claude, a session only registers once it has taken its **first
 turn** — that's when Claude mints the id, and also when the transcript first
 appears, so "absent" and "nothing to tail" mean the same thing. And the registry
 arrived in **claude 2.1.273**; on anything older `--live` says so rather than
@@ -795,10 +805,10 @@ your shell history; press `?` in any tail to see it under `session`.)
 
 ### Pane link: select one side, the other window follows (opt-in)
 
-The workspace above puts claude and its tail in one tab, so both are always on
+The workspace above puts an agent and its tail in one tab, so both are always on
 screen. A layout it does *not* produce is the one that appears once you have a
-few sessions going: claude sessions as tabs of one window, their tails as tabs
-of another. Click a claude tab there and the other window still shows whichever
+few sessions going: Claude and Amp sessions as tabs of one window, their tails
+as tabs of another. Click an agent tab there and the other window still shows whichever
 tail you looked at last, so the pair has to be re-aligned by hand every time.
 
 With the pane link on, selecting either side switches the **other window** to the
@@ -824,9 +834,9 @@ Pairs are discovered live, so this works for windows you laid out by hand:
   to `~/.claude/entire-tail/link/panes/<iterm-session-id>.json`, rewritten on a
   worktree fork, a `/clear` or a relocation (a tail's current target is not in
   its argv — after a fork its argv names an ancestor);
-- the watcher resolves running claudes to their transcripts itself, every few
+- the watcher resolves running Claude and Amp agents to their sessions itself, every few
   seconds, with the same `pgrep`/`lsof` join the tree uses. Nothing registers
-  claude, so restarting it in a different tab re-pairs on its own.
+  the agent, so restarting it in a different tab re-pairs on its own.
 
 Two panes of the same **window** are never linked — you cannot show both at
 once, and switching would drag you off the tab you just chose. That is what
@@ -837,7 +847,7 @@ windows, or run it directly:
 
 ```sh
 entire-tail link install      # build the watcher venv, start it
-entire-tail link status       # watching? how many tails and claudes are placed?
+entire-tail link status       # watching? how many tails and agents are placed?
 entire-tail link stop         # stop the watcher (a tail restarts it)
 entire-tail link uninstall    # remove the venv, turn it off
 ```
@@ -925,19 +935,21 @@ existing file still tails that file). So `entire tail fire socks` just works.
   edec5f4a  46d ago   [infra]               we have set up a new datadog account…
 ```
 
-It searches two sources and merges them by session:
+It searches three sources and merges them by agent and session id:
 
 - **Local transcripts** via [ripgrep](https://github.com/BurntSushi/ripgrep)
   (a literal, case-insensitive scan of `~/.claude`) — the exact phrase you typed.
 - **`entire` checkpoint search** — hybrid semantic + keyword across all your
   repos, so it also surfaces sessions that *mean* the same thing without the
   exact words (skipped with `--local`, or when offline).
+- **Amp thread search** via `amp threads search --json`. `--local` instead
+  searches cached Amp titles and exported message text without a network call.
 
 **Ranking**: an exact local phrase match weighs heaviest (you typed those words),
 `entire`'s semantic score adds on top, and matching both sources ranks highest;
 recency breaks ties. Each row shows the **matching snippet** so you can see why
 it hit. `Enter`/`t` resume or tail the result like any tree row. Results are
-capped at the top 50 (a ubiquitous term otherwise matches everything).
+uncapped; use a narrower query when a common term returns too much.
 
 ## Handover docs
 
@@ -949,8 +961,8 @@ re-reading the transcripts.
 entire-tail handover
 ```
 
-It enumerates every Claude session with activity **today** and opens a grouping
-picker:
+It enumerates every Claude session and Amp thread with activity **today** and
+opens a grouping picker:
 
 ```
 [x] 656c39a3  entirehq/entiredb        184k  COR-562 CRDB cutover dry-run
@@ -964,13 +976,14 @@ picker:
 - **`x`** (default) keeps a session on its own doc; **`-`** skips it; **⏎** writes;
   **`q`** aborts.
 
-On confirm it launches an interactive agent (`--claude-bin`, `claude` by default —
-a fresh iTerm window) that, for
-each group, reads the transcripts, **live-fetches current state** — Linear issues
+On confirm it launches Claude by default, or Amp with `--agent amp`, to process
+the same manifest. For each group, the agent reads the transcripts and
+**live-fetches current state** — Linear issues
 (MCP), GitHub PRs (`gh`), Entire Trails (`entire trail show`) — and writes one
 Markdown doc per group to `Entire/Handover/YYYY-MM-DD/` in the vault. Each doc carries a
-summary and where you left it, the session ids (with `claude --resume`), the
-associated Entire sessions / Trails / PRs / Linear issues with their **current**
+summary and where you left it, the session ids (with `claude --resume` or
+`amp threads continue`), and the associated Entire sessions / Trails / PRs /
+Linear issues with their **current**
 state, any ADRs or artifacts created, and — where states disagree (PR merged but
 issue still open, Trail open but PR closed, …) — **recommended reconciliations**.
 
@@ -1015,9 +1028,9 @@ or cycle it live with the `t` key (full → dots → hidden):
 - `hidden` — drop tool events entirely; just user + assistant text. Useful
   when re-reading a long session as prose. (alias: `none`.)
 
-The rich diff/output detail comes from Claude's `toolUseResult` records, so it's
-fullest for Claude sessions; Codex/Antigravity show the `⏺ Label(arg)` line
-without the diff. Tip: cycle to `full` with `t` and press `r` to re-render the
+The rich diff/output detail comes from Claude's `toolUseResult` and Amp's exported
+tool runs. Codex/Antigravity show the `⏺ Label(arg)` line without the diff. Tip:
+cycle to `full` with `t` and press `r` to re-render the
 whole transcript as diffs. (Tool calls batched into one assistant turn render as
 a group of `⏺` lines followed by their `⎿` results, rather than strictly
 interleaved.)
@@ -1131,7 +1144,7 @@ Original output inside the agent TUI.
 ## Architecture
 
 A single Go package with per-agent **adapters**. Each adapter is a `normalize`
-function (`adapter_claude.go`, `adapter_codex.go`, `adapter_agy.go`) that lowers
+function (`adapter_claude.go`, `adapter_amp.go`, `adapter_codex.go`, `adapter_agy.go`) that lowers
 each jsonl event to a canonical `Record`:
 
 ```go
@@ -1145,10 +1158,11 @@ type Record struct {
 }
 ```
 
-Everything downstream — turn headers, glamour rendering, tool-dot coloring — is
-agent-agnostic and consumes only the `Record`. Discovery (`discovery.go`) and
-the live picker (`picker.go`) are likewise per-agent. Adding a new agent means
-writing a `normalize` + a discovery function.
+Everything downstream, including turn headers, glamour rendering, and tool-dot
+coloring, consumes only `Record`. A complete agent source also owns inventory,
+stable identity, transcript snapshots or files, search, live activity, resume
+and fresh-launch commands, cache/offline behavior, and capability flags. Amp's
+CLI/cache boundary is in `amp.go`; the combined tree model is in `tree.go`.
 
 Which Claude *account* a session belongs to is a separate axis, owned by
 `profile.go`: an ordered list of config dirs (`~/.claude`, plus

@@ -111,6 +111,22 @@ func TestSummaryCardMetadataBeforeLinks(t *testing.T) {
 	}
 }
 
+func TestSummaryCardAmpMetadata(t *testing.T) {
+	s := treeSession{Agent: AgentAmp, ID: "T-amp", Mode: "high", Executor: "orb", State: "idle"}
+	out := strings.Join(summaryCardLines(s, aiSummary{}, false, nil, 0), "\n")
+	for _, want := range []string{
+		"agent      amp",
+		"thread     https://ampcode.com/threads/T-amp",
+		"mode       high",
+		"executor   orb",
+		"state      idle",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestSplitPaneHeights(t *testing.T) {
 	// Roomy terminal: whole card fits, preview gets the rest.
 	if c, b := splitPaneHeights(60, 30); c != 30 || b != 27 {

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -69,6 +70,7 @@ const (
 // liveSession is one entry of Claude Code's running-session registry. The json
 // tags mirror the file; everything below Raw is ours.
 type liveSession struct {
+	Agent           Agent  `json:"-"`
 	PID             int    `json:"pid"`
 	SessionID       string `json:"sessionId"`
 	Cwd             string `json:"cwd"`
@@ -93,6 +95,9 @@ func (s liveSession) Busy() bool { return s.Status == "busy" }
 
 // Label is what to call the session: Claude's derived name, else the short id.
 func (s liveSession) Label() string {
+	if s.Agent == AgentAmp {
+		return "A " + firstNonEmpty(s.Name, shortID(s.SessionID))
+	}
 	if s.Name != "" {
 		return s.Name
 	}
@@ -236,7 +241,12 @@ func liveBlockLines(s liveSession, tail []string, o liveBlockOpts) []string {
 	}
 	head := fmt.Sprintf("%s%s %s %s%s%s", mark, glyph, padVisible(s.Label(), 22),
 		statusCol, s.Status, reset)
-	head += fmt.Sprintf("%s · pid %d · v%s%s", dim, s.PID, s.Version, reset)
+	if s.PID > 0 {
+		head += fmt.Sprintf("%s · pid %d%s", dim, s.PID, reset)
+	}
+	if s.Version != "" {
+		head += fmt.Sprintf("%s · v%s%s", dim, s.Version, reset)
+	}
 
 	// Truncation can land before a line's trailing reset, which would leave the
 	// dim colour running to end-of-line and into the next row. A second reset
@@ -264,7 +274,12 @@ func liveBlockLines(s liveSession, tail []string, o liveBlockOpts) []string {
 	// Two ages, and they answer different questions: how long this agent has
 	// been up, and how long it has been in its current state. statusUpdatedAt
 	// is a real edge (the moment it flipped), unlike updatedAt.
-	meta := "up " + uptime(o.Now-s.StartedAt/1000)
+	meta := ""
+	if s.StartedAt > 0 {
+		meta = "up " + uptime(o.Now-s.StartedAt/1000)
+	} else if s.UpdatedAt > 0 {
+		meta = "updated " + relAge(s.UpdatedAt/1000, o.Now)
+	}
 	if s.StatusUpdatedAt > 0 {
 		meta += " · " + s.Status + " " + uptime(o.Now-s.StatusUpdatedAt/1000)
 	}
@@ -362,6 +377,7 @@ type liveUI struct {
 	Now        int64
 	Home       string
 	Theme      Theme
+	Filter     Agent
 	TailN      int
 	ShowJSON   bool
 	NoRegistry bool // no account has a sessions/ dir: claude predates the registry
@@ -382,11 +398,10 @@ func renderLive(ui liveUI) string {
 
 	switch {
 	case ui.NoRegistry:
-		b.WriteString("  no session registry under ~/.claude/sessions\r\n\r\n")
-		b.WriteString(dim + "  --live reads the registry Claude Code writes for each running\r\n")
-		b.WriteString("  session; it needs claude 2.1.273 or newer.\r\n" + reset)
+		b.WriteString("  " + liveUnavailableMessage(ui.Filter) + "\r\n\r\n")
+		b.WriteString(dim + "  " + liveRequirementMessage(ui.Filter) + "\r\n" + reset)
 	case len(ui.Sessions) == 0:
-		b.WriteString("  no live claude sessions\r\n\r\n")
+		b.WriteString("  " + noLiveSessionsMessage(ui.Filter) + "\r\n\r\n")
 		b.WriteString(dim + "  watching — a session appears here once it takes its first turn.\r\n" + reset)
 	default:
 		blocks := make([][]string, len(ui.Sessions))
@@ -412,6 +427,39 @@ func renderLive(ui liveUI) string {
 
 	b.WriteString("\r\n" + dim + "  ↑↓ move · ⏎/t tail · j json · +/- lines · r refresh · q quit" + reset)
 	return b.String()
+}
+
+func noLiveSessionsMessage(filter Agent) string {
+	switch filter {
+	case AgentClaude:
+		return "no live Claude sessions"
+	case AgentAmp:
+		return "no live Amp sessions"
+	default:
+		return "no live Claude or Amp sessions"
+	}
+}
+
+func liveUnavailableMessage(filter Agent) string {
+	switch filter {
+	case AgentClaude:
+		return "no Claude registry"
+	case AgentAmp:
+		return "no Amp activity source"
+	default:
+		return "no Claude registry and no Amp activity stream"
+	}
+}
+
+func liveRequirementMessage(filter Agent) string {
+	switch filter {
+	case AgentClaude:
+		return "Claude needs 2.1.273+."
+	case AgentAmp:
+		return "Amp needs a logged-in CLI on PATH."
+	default:
+		return "Claude needs 2.1.273+; Amp needs a logged-in CLI on PATH."
+	}
 }
 
 // updateLive is the reducer: a key in, the next state out. It never touches the
@@ -537,6 +585,7 @@ func liveChoice(ui liveUI) treeChoice {
 	s := ui.Sessions[max(0, min(ui.Cursor, len(ui.Sessions)-1))]
 	return treeChoice{
 		Result:  ui.Result,
+		Agent:   firstNonEmptyAgent(s.Agent, AgentClaude),
 		Path:    s.Path,
 		Cwd:     s.Cwd,
 		ID:      s.SessionID,
@@ -597,10 +646,131 @@ func buildLiveSessions(home string) ([]liveSession, bool) {
 	}
 	sessions := collectLiveSessions(roots, liveAlive)
 	for i := range sessions {
+		sessions[i].Agent = AgentClaude
 		sessions[i].Path = liveTranscriptPath(home, sessions[i])
 		sessions[i].Branch = gitBranchOf(sessions[i].Cwd)
 	}
 	return sessions, haveRegistry
+}
+
+func buildLiveSessionsWithAmp(home string, active []ampActiveThread, ampAvailable bool) ([]liveSession, bool) {
+	sessions, haveRegistry := buildLiveSessions(home)
+	ampSessions := collectLiveAmpSessions(home)
+	ampSessions = mergeLiveAmpSessions(home, ampSessions, active)
+	for i := range ampSessions {
+		ampSessions[i].Branch = gitBranchOf(ampSessions[i].Cwd)
+	}
+	sessions = append(sessions, ampSessions...)
+	haveRegistry = haveRegistry || ampAvailable || len(ampSessions) > 0
+	return sessions, haveRegistry
+}
+
+func mergeLiveAmpSessions(home string, local []liveSession, active []ampActiveThread) []liveSession {
+	byID := make(map[string]int, len(local))
+	for i := range local {
+		byID[local[i].SessionID] = i
+	}
+	inventory := map[string]ampThread{}
+	if threads, err := ampList(home, true); err == nil {
+		for _, thread := range threads {
+			inventory[thread.ID] = thread
+		}
+	}
+	for _, remote := range active {
+		id := remote.id()
+		if i, ok := byID[id]; ok {
+			local[i].Status = remote.status()
+			if remote.Title != "" {
+				local[i].Name = remote.Title
+			}
+			continue
+		}
+		meta := inventory[id]
+		cwd := firstNonEmpty(remote.cwd(), meta.cwd())
+		s := liveSession{
+			Agent: AgentAmp, SessionID: id, Cwd: cwd, Status: remote.status(),
+			Kind: "remote", Entrypoint: firstNonEmpty(remote.ExecutorType, remote.Executor, "amp"),
+			Name: firstNonEmpty(remote.Title, meta.Title, "Amp "+shortID(id)),
+		}
+		if updated := firstNonEmpty(remote.UpdatedAt, meta.Updated, meta.UpdatedAt); updated != "" {
+			if tm, err := time.Parse(time.RFC3339Nano, updated); err == nil {
+				s.UpdatedAt = tm.UnixMilli()
+			}
+		}
+		if ex, err := ampExportThread(home, id, true); err == nil {
+			path := ampSnapshotPath(home, id)
+			_ = writeAmpCache(path, ampExportLines(ex))
+			s.Path = path
+			if s.Cwd == "" {
+				s.Cwd = ex.cwd()
+			}
+		} else if path := ampSnapshotPath(home, id); isFile(path) {
+			s.Path = path
+		}
+		byID[id] = len(local)
+		local = append(local, s)
+	}
+	return local
+}
+
+func firstNonEmptyAgent(agent, fallback Agent) Agent {
+	if agent != "" {
+		return agent
+	}
+	return fallback
+}
+
+func collectLiveAmpSessions(home string) []liveSession {
+	out, err := exec.Command("pgrep", "-x", "amp").Output()
+	if err != nil {
+		return nil
+	}
+	var sessions []liveSession
+	for _, pid := range parsePIDs(out) {
+		tty, err := exec.Command("ps", "-o", "tty=", "-p", strconv.Itoa(pid)).Output()
+		if err != nil || strings.TrimSpace(string(tty)) == "" || strings.TrimSpace(string(tty)) == "??" {
+			continue
+		}
+		files, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-Fn").Output()
+		if err != nil {
+			continue
+		}
+		id := ampThreadIDFromLsof(files)
+		if id == "" {
+			continue
+		}
+		cwdOut, _ := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
+		cwd := parseLsofCwd(cwdOut)
+		s := liveSession{Agent: AgentAmp, PID: pid, SessionID: id, Cwd: cwd, Status: "live", Kind: "interactive", Entrypoint: "amp", Name: "Amp " + shortID(id)}
+		if ex, err := ampExportThread(home, id, true); err == nil {
+			s.Status = ex.Meta.LastKnownAgentState.State
+			if s.Status == "streaming" {
+				s.Status = "busy"
+			}
+			s.Name = firstNonEmpty(ex.Title, s.Name)
+			path := ampSnapshotPath(home, id)
+			_ = writeAmpCache(path, ampExportLines(ex))
+			s.Path = path
+		} else if path := ampSnapshotPath(home, id); isFile(path) {
+			s.Path = path
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions
+}
+
+func ampThreadIDFromLsof(out []byte) string {
+	const marker = "/.cache/amp/logs/threads/"
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(line, "n") || !strings.Contains(line, marker) || !strings.HasSuffix(line, ".log") {
+			continue
+		}
+		id := strings.TrimSuffix(filepath.Base(line[1:]), ".log")
+		if validAmpThreadID(id) {
+			return id
+		}
+	}
+	return ""
 }
 
 // liveTranscriptPath locates a session's jsonl. The id is known exactly, so this
@@ -648,7 +818,8 @@ func refreshTails(sessions []liveSession, n int, home string, theme Theme, cache
 		mt := fileMtimeNano(s.Path)
 		c, ok := cache[s.SessionID]
 		if !ok || c.mtime != mt {
-			c = liveTailCache{mtime: mt, lines: renderPreviewLines(s.Path, home, theme)}
+			agent := firstNonEmptyAgent(s.Agent, AgentClaude)
+			c = liveTailCache{mtime: mt, lines: renderPreviewAgent(s.Path, agent, theme)}
 			cache[s.SessionID] = c
 		}
 		out[s.SessionID] = tailGlance(c.lines, n)
@@ -662,39 +833,140 @@ func refreshTails(sessions []liveSession, n int, home string, theme Theme, cache
 	return out
 }
 
+func liveUsesAmp(filter Agent) bool { return filter != AgentClaude }
+
+type ampLiveSnapshotWorker struct {
+	cancel chan struct{}
+	once   sync.Once
+}
+
+func (w *ampLiveSnapshotWorker) stop() { w.once.Do(func() { close(w.cancel) }) }
+
+type ampLiveSnapshots struct {
+	home    string
+	mu      sync.Mutex
+	workers map[string]*ampLiveSnapshotWorker
+	retryAt map[string]time.Time
+	closed  bool
+}
+
+func newAmpLiveSnapshots(home string) *ampLiveSnapshots {
+	return &ampLiveSnapshots{
+		home: home, workers: map[string]*ampLiveSnapshotWorker{}, retryAt: map[string]time.Time{},
+	}
+}
+
+func (s *ampLiveSnapshots) update(sessions []liveSession) {
+	wanted := map[string]bool{}
+	for _, session := range sessions {
+		if session.Agent == AgentAmp && validAmpThreadID(session.SessionID) {
+			wanted[session.SessionID] = true
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	for id, worker := range s.workers {
+		if !wanted[id] {
+			worker.stop()
+			delete(s.workers, id)
+			delete(s.retryAt, id)
+		}
+	}
+	for id := range wanted {
+		if s.workers[id] != nil || time.Now().Before(s.retryAt[id]) {
+			continue
+		}
+		worker := &ampLiveSnapshotWorker{cancel: make(chan struct{})}
+		s.workers[id] = worker
+		go s.run(id, worker)
+	}
+}
+
+func (s *ampLiveSnapshots) run(id string, worker *ampLiveSnapshotWorker) {
+	_, stop, _, err := startAmpSnapshot(s.home, id, false)
+	if stop == nil {
+		s.mu.Lock()
+		if s.workers[id] == worker {
+			delete(s.workers, id)
+			s.retryAt[id] = time.Now().Add(ampLocalSnapshotFallback)
+		}
+		s.mu.Unlock()
+		return
+	}
+	if err == nil {
+		s.mu.Lock()
+		delete(s.retryAt, id)
+		s.mu.Unlock()
+	}
+	<-worker.cancel
+	close(stop)
+}
+
+func (s *ampLiveSnapshots) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	for _, worker := range s.workers {
+		worker.stop()
+	}
+}
+
 // runLive is the `--live` entry point. On a tty it runs the interactive view and
 // returns the picked session; piped, it prints a static dump and returns
 // ok=false so the caller exits without tailing anything.
 // prefer is the pids whose session the cursor starts on (nil: the first row).
-func runLive(home string, theme Theme, prefer []int) (treeChoice, bool) {
+// filter is empty for the combined view or an agent to show exclusively.
+func runLive(home string, theme Theme, prefer []int, filter Agent) (treeChoice, bool) {
 	if ttyUsable() {
 		// treeNone here means the alt-screen never opened (no /dev/tty, stty
 		// refused). Fall through to the dump rather than exiting silently — the
 		// user asked to see what's live, so print it.
-		if c := runLiveTUI(home, theme, prefer); c.Result != treeNone {
+		if c := runLiveTUI(home, theme, prefer, filter); c.Result != treeNone {
 			return c, true
 		}
 	}
-	sessions, haveRegistry := buildLiveSessions(home)
-	dumpLive(os.Stdout, sessions, haveRegistry, home, time.Now().Unix())
+	var sessions []liveSession
+	var haveRegistry bool
+	if liveUsesAmp(filter) {
+		top := startAmpTop()
+		active, ampAvailable := top.wait(1500 * time.Millisecond)
+		top.close()
+		sessions, haveRegistry = buildLiveSessionsWithAmp(home, active, ampAvailable)
+	} else {
+		sessions, haveRegistry = buildLiveSessions(home)
+	}
+	sessions = filterLiveSessions(sessions, filter)
+	dumpLive(os.Stdout, sessions, haveRegistry, home, time.Now().Unix(), filter)
 	return treeChoice{Result: treeNone}, false
 }
 
 // dumpLive is the non-tty rendering: one line per live session, in the shape
 // --list uses, so `entire-tail --live | grep` is useful.
-func dumpLive(w io.Writer, sessions []liveSession, haveRegistry bool, home string, now int64) {
+func dumpLive(w io.Writer, sessions []liveSession, haveRegistry bool, home string, now int64, filter Agent) {
 	if !haveRegistry {
-		fmt.Fprintln(w, "no session registry under ~/.claude/sessions (needs claude 2.1.273 or newer)")
+		fmt.Fprintln(w, liveUnavailableMessage(filter))
 		return
 	}
 	if len(sessions) == 0 {
-		fmt.Fprintln(w, "no live claude sessions")
+		fmt.Fprintln(w, noLiveSessionsMessage(filter))
 		return
 	}
 	for _, s := range sessions {
-		fmt.Fprintf(w, "%-6s %-22s pid %-7d up %-10s %s  %s\n",
-			s.Status, s.Label(), s.PID, uptime(now-s.StartedAt/1000),
-			shortID(s.SessionID), tildify(s.Cwd, home))
+		pid, age := "-", "-"
+		if s.PID > 0 {
+			pid = strconv.Itoa(s.PID)
+		}
+		if s.StartedAt > 0 {
+			age = uptime(now - s.StartedAt/1000)
+		} else if s.UpdatedAt > 0 {
+			age = relAge(s.UpdatedAt/1000, now)
+		}
+		fmt.Fprintf(w, "%-6s %-22s pid %-7s age %-10s %s  %s\n",
+			s.Status, s.Label(), pid, age, shortID(s.SessionID), tildify(s.Cwd, home))
 	}
 }
 
@@ -705,7 +977,7 @@ func dumpLive(w io.Writer, sessions []liveSession, haveRegistry bool, home strin
 //
 // Gotcha inherited from focus.go: a timed read reports a 0-byte timeout as
 // (0, io.EOF). Treating that as end-of-input exits the view instantly.
-func runLiveTUI(home string, theme Theme, prefer []int) treeChoice {
+func runLiveTUI(home string, theme Theme, prefer []int, filter Agent) treeChoice {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return treeChoice{Result: treeNone}
@@ -720,8 +992,15 @@ func runLiveTUI(home string, theme Theme, prefer []int) treeChoice {
 		return treeChoice{Result: treeNone}
 	}
 	defer io.WriteString(tty, "\x1b[?25h\x1b[?1049l")
+	var top *ampTopWatcher
+	if liveUsesAmp(filter) {
+		top = startAmpTop()
+		defer top.close()
+	}
+	snapshots := newAmpLiveSnapshots(home)
+	defer snapshots.close()
 
-	ui := liveUI{Home: home, Theme: theme, TailN: liveTailDefault}
+	ui := liveUI{Home: home, Theme: theme, Filter: filter, TailN: liveTailDefault}
 	cache := map[string]liveTailCache{}
 	buf := make([]byte, 16)
 	var last time.Time
@@ -729,7 +1008,16 @@ func runLiveTUI(home string, theme Theme, prefer []int) treeChoice {
 
 	for {
 		if time.Since(last) >= liveRefresh {
-			sessions, haveRegistry := buildLiveSessions(home)
+			var sessions []liveSession
+			var haveRegistry bool
+			if top != nil {
+				active, ampAvailable := top.snapshot()
+				sessions, haveRegistry = buildLiveSessionsWithAmp(home, active, ampAvailable)
+			} else {
+				sessions, haveRegistry = buildLiveSessions(home)
+			}
+			sessions = filterLiveSessions(sessions, filter)
+			snapshots.update(sessions)
 			ui.Sessions, ui.NoRegistry = sessions, !haveRegistry
 			ui.Tails = refreshTails(ui.Sessions, ui.TailN, home, theme, cache)
 			ui.Now = time.Now().Unix()
@@ -774,4 +1062,17 @@ func runLiveTUI(home string, theme Theme, prefer []int) treeChoice {
 			return liveChoice(ui)
 		}
 	}
+}
+
+func filterLiveSessions(sessions []liveSession, filter Agent) []liveSession {
+	if filter == "" {
+		return sessions
+	}
+	out := sessions[:0]
+	for _, session := range sessions {
+		if firstNonEmptyAgent(session.Agent, AgentClaude) == filter {
+			out = append(out, session)
+		}
+	}
+	return out
 }

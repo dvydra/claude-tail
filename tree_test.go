@@ -403,6 +403,52 @@ func TestUpdateTreeNewWorkspace(t *testing.T) {
 	}
 }
 
+func TestUpdateTreeAgentWorkspaceKeys(t *testing.T) {
+	ui := treeUI{Tree: sampleTree(), Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+	for _, tt := range []struct {
+		key  rune
+		want Agent
+	}{
+		{'c', AgentClaude},
+		{'n', AgentClaude},
+		{'a', AgentAmp},
+	} {
+		got := updateTree(ui, kRune, tt.key)
+		if !got.NewWorkspace || got.NewWorkspaceAgent != tt.want {
+			t.Errorf("%q: new=%v agent=%q, want %q", tt.key, got.NewWorkspace, got.NewWorkspaceAgent, tt.want)
+		}
+	}
+}
+
+func TestUpdateTreeSelectionKeepsAgent(t *testing.T) {
+	tr := sampleTree()
+	tr.Folders[0].Sessions[0].Agent = AgentAmp
+	tr.Folders[0].Sessions[0].Path = "T-amp"
+	ui := treeUI{Tree: tr, Height: 20}
+	ui.Rows = flattenRows(ui.Tree, "")
+	ui.Cursor = 1
+	got := updateTree(ui, kRune, 't')
+	if got.ChosenAgent != AgentAmp || got.Chosen != "T-amp" {
+		t.Fatalf("agent=%q chosen=%q", got.ChosenAgent, got.Chosen)
+	}
+}
+
+func TestFilterTreeAgentsKeepsOnlyRequestedAgent(t *testing.T) {
+	tree := sessionTree{Pwd: "/work", Folders: []treeFolder{
+		{Cwd: "repo", Sessions: []treeSession{{Agent: AgentClaude, ID: "c"}, {Agent: AgentAmp, ID: "a"}}},
+		{Cwd: "amp-only", Sessions: []treeSession{{Agent: AgentAmp, ID: "a2"}}},
+	}}
+	filterTreeAgents(&tree, []Agent{AgentAmp})
+	if len(tree.Folders) != 2 || len(tree.Folders[0].Sessions) != 1 || tree.Folders[0].Sessions[0].Agent != AgentAmp {
+		t.Fatalf("tree=%+v", tree)
+	}
+	filterTreeAgents(&tree, []Agent{AgentClaude})
+	if len(tree.Folders) != 0 {
+		t.Fatalf("second filter retained folders: %+v", tree)
+	}
+}
+
 func TestUpdateTreeTailInPlace(t *testing.T) {
 	tr := sampleTree()
 	tr.Folders[0].Sessions[0].Path = "/sessions/aaaa1111.jsonl"
@@ -516,10 +562,12 @@ func TestShortID(t *testing.T) {
 func TestRenderListFormat(t *testing.T) {
 	tr := sampleTree()
 	tr.Folders[0].Live = 1
+	tr.Folders[0].Sessions[0].Agent = AgentClaude
+	tr.Folders[0].Sessions[1].Agent = AgentAmp
 	var b strings.Builder
 	renderList(&b, tr, false)
 	out := b.String()
-	for _, want := range []string{"~/a", "● live", "aaaa1111", "add login form", "[hotfix]", "~/b", "refactor parser"} {
+	for _, want := range []string{"~/a", "● live", "C   aaaa1111", "add login form", "A   bbbb2222", "[hotfix]", "~/b", "refactor parser"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("list output missing %q:\n%s", want, out)
 		}
@@ -538,7 +586,7 @@ func TestRenderTreeFrame(t *testing.T) {
 	ui := treeUI{Tree: sampleTree(), Width: 100, Height: 20}
 	ui.Rows = flattenRows(ui.Tree, "")
 	frame := stripANSI(renderTree(ui))
-	for _, want := range []string{"CLAUDE SESSIONS", "~/a", "add login form", "2 folders", "3 sessions"} {
+	for _, want := range []string{"AGENT SESSIONS", "~/a", "add login form", "2 folders", "3 sessions"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("frame missing %q:\n%s", want, frame)
 		}

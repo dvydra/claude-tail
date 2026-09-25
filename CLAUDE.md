@@ -2,12 +2,12 @@
 
 ## What this is
 
-`entire-tail` is a **live pretty-viewer for AI coding-agent sessions** — Claude
-Code, Codex CLI, and Antigravity (agy). Agents render their TUIs straight into
+`entire-tail` is a **live pretty-viewer for AI coding-agent sessions**: Claude
+Code, Amp, Codex CLI, and Antigravity (agy). Agents render their TUIs straight into
 the terminal with cursor moves (no alt-screen), so scrollback is a mess of
-partial repaints and there's no `/transcript`. But every event is appended to a
-JSONL file on disk. entire-tail discovers that file for the agent you're using,
-follows it (`tail -F`-style), and renders each turn — markdown bodies through
+partial repaints and there's no `/transcript`. File-backed agents append JSONL;
+Amp exposes server-backed local, runner, and orb threads through its CLI.
+entire-tail follows either source and renders each turn: markdown bodies through
 in-process [glamour](https://github.com/charmbracelet/glamour), tool calls as
 colored dots or Claude-style `⏺/⎿` lines. Run it in a second pane next to the
 agent.
@@ -48,7 +48,7 @@ Per-agent **adapters** lower each JSONL event to a canonical `Record`
 (`Kind` = USER | ASSISTANT | TOOLUSE | TOOLRESULT | AGENTSPAWN | QUESTION).
 Everything downstream is agent-agnostic and consumes only `Record`s.
 
-- `adapter_claude.go` / `adapter_codex.go` / `adapter_agy.go` / `adapter_entire.go` — `normalize(line) []Record`
+- `adapter_claude.go` / `adapter_amp.go` / `adapter_codex.go` / `adapter_agy.go` / `adapter_entire.go` — `normalize(line) []Record`
   (`adapter_entire.go` handles entire's own transcript format — top-level
   `content`/`ts` — used for reconstructed cloud-only sessions)
 - `reconstruct.go` — recovers a cloud-only session's transcript (not under
@@ -56,6 +56,13 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   (`git grep` the session id → largest `transcript.jsonl` → temp file), so search
   hits from pruned/other-machine sessions stay tailable when the repo is local
 - `adapter.go` — the `Record`/`Kind` types and the adapter interface
+- `amp.go` / `amp_tree.go` — the supported Amp CLI boundary, last-good cache,
+  export snapshots, `amp top` activity stream, and combined tree inventory.
+  Amp transcript truth always comes from `amp threads export`; local diagnostic
+  logs correlate a process with its `T-…` id and trigger an export when a
+  `message_added` or `agent_state` event lands. They never supply transcript
+  content. Local tails retain a 10-second fallback refresh; remote tails, which
+  have no local log, poll exports every second.
 - `profile.go` — **which Claude ACCOUNT a session belongs to.** A second Claude
   subscription can't just `/login` on macOS (subscription logins live in the
   shared Keychain, so the last login flips every session, running ones
@@ -93,14 +100,17 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   as work), and the token alone authenticates the right account into the wrong
   projects tree. The token is a **shell** command substitution on purpose — it
   never enters our memory, argv (`ps`-visible), or a log; the double quotes are
-  required. Pane B needs no account context — it watches every root, which is
-  also why `n`/`@` need no extra flag. Keys: `n` = default account (unchanged),
-  `@` = personal (a separate key, not inference from the cursor: "which account
+  required. Pane B needs no account context — it watches every root. Keys: `c`
+  = default-account Claude, `n` = its hidden compatibility alias, `a` = Amp,
+  and `@` = personal Claude (a separate key, not inference from the cursor: "which account
   am I starting as" is not a thing to guess). `/@` filters by account, matching
   the visible marker rather than the word "personal" — substring-matching that
   word would make a filter of `n` or `e` drag in every personal session
-- `live.go` — **`--live`: the sessions running RIGHT NOW, read rather than
-  guessed.** Everywhere else "is this live?" is inference — `liveCwds`
+- `live.go` — **`--live`: the Claude and Amp sessions running RIGHT NOW, read rather than
+  guessed.** Amp local processes are joined exactly to their open
+  `~/.cache/amp/logs/threads/T-….log`; `amp top --stream-jsonl` adds runner and
+  orb activity and retains the last set across reconnects. Everywhere else "is
+  this live?" is inference — `liveCwds`
   (pgrep+lsof) sees a claude process and its cwd but not *which* transcript it
   writes, so `buildClaudeTree` marks the folder and takes the newest file. Claude
   Code answers the question itself: every running session registers at
@@ -139,8 +149,9 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   every line of text. Transcript tails are cached on the transcript's mtime, so
   the tick is a stat per session rather than a re-render
 - `discovery.go` — find the session file for `$PWD` per agent
-- `tree.go` — the interactive session **tree** picker (the DEFAULT): sessions
-  grouped by repo/folder, arrow-key navigable, recency-colored, type-to-filter
+- `tree.go` — the interactive session **tree** picker (the DEFAULT): Claude and
+  Amp sessions grouped by repo/folder, marked `C`/`A`, arrow-key navigable,
+  recency-colored, type-to-filter
   (`/` matches name/title/id/branch AND recent transcript content — each
   session's newest ~8KB of message text, extracted by `extractTailContent` from
   the tail window `loadClaudeMeta` already reads, so the filter costs no extra
@@ -276,12 +287,15 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   pin, while wrongly assuming support strands the tail. Do NOT "restore" the pin
   for wrappers without verifying the spawned claude's argv (`pgrep -x claude` +
   `ps -o args=`), not the wrapper's own argv — the wrapper accepting a flag says
-  nothing about whether it passes it on
-- `search.go` — `--search`: content search across local transcripts (ripgrep,
-  literal) + `entire checkpoint search` (semantic session results), merged by
-  session id and ranked (`searchHit.score`: exact local match dominates, entire
-  score adds, recency tiebreak). Builds a single-group ranked `sessionTree`
-  (reuses the same TUI/`renderList`); rows show the match snippet, capped at 50
+  nothing about whether it passes it on. Amp resume runs `amp threads continue
+  T-…`; `a` starts `amp` beside an `--agent amp --wait-new` tail. `c` starts
+  Claude; `n` remains its hidden alias
+- `search.go` — `--search`: content search across local and cached Claude/Amp
+  transcripts (literal) + `entire checkpoint search` (semantic session results)
+  + `amp threads search`, merged by agent and session id and ranked
+  (`searchHit.score`: exact local match dominates, entire score adds, recency
+  tiebreak). Builds a single-group ranked `sessionTree` (reuses the same
+  TUI/`renderList`); rows show the match snippet and results are uncapped
 - `preview.go` — the tree's `i` **combined info view** (`showInfo`): a fixed info
   card on top, a divider, and the session's recent transcript in a scrollable
   pane below (`pagerSplit`; `splitPaneHeights` divides the rows, reserving
@@ -401,8 +415,9 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   spawn time, with best-effort running/done + duration from each file's timespan.
   Subagent files are standard Claude JSONL, so the normal renderer handles them
 - `focus.go` — the `→` focus overlay: an alt-screen live view over the selected
-  subagent, `←/→` to cycle channels, `↑↓`/PgUp/PgDn scroll, `r` reload, `q`/Esc
-  back. Reuses the renderer (dots) to format the subagent; follows via a timed
+  Claude subagent or exported Amp child thread, `←/→` to cycle channels,
+  `↑↓`/PgUp/PgDn scroll, `r` reload, `q`/Esc back. Reuses the renderer (dots) to
+  format each channel; follows via a timed
   raw read (`setRawTimed`, MIN 0 TIME 5) so it re-reads the file between
   keystrokes. Runs on the render goroutine while the keyboard goroutine is parked
   on `resumeCh`, sharing the SAME tty fd (two fds on one tty race for input).
@@ -582,20 +597,20 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   wrong state. The two alt-screen overlays (`→` focus, `?` help) go to
   `overlayCh` and the goroutine parks on `resumeCh` (single tty reader), and
   `Ctrl-X` (0x18) signals `treeCh` and STOPS reading so `tailSession` returns and
-  `run`'s picker↔tail loop re-enters the tree (Claude-only, gated by
+  `run`'s picker↔tail loop re-enters the tree (Claude/Amp only, gated by
   `treeEnabled`; a no-op on codex/agy). `openControlTTY` is split from
   `startKeyboardOn` for the status bar's DSR query — see `status.go`
 - `jqutil.go` — tiny JSON-value-to-string helpers (replaces shelling out to `jq`)
 - `handover.go` — the `entire-tail handover` subcommand: `todaysSessions`
-  enumerates this machine's Claude sessions active since local midnight
-  (`flattenToday` over a 2-day `buildClaudeTree` crawl), the user groups them,
+  enumerates Claude sessions and Amp threads active since local midnight
+  (`flattenToday` over merged 2-day inventories), the user groups them,
   then it writes a JSON manifest (`buildManifest`, group-oriented so the skill
   does zero grouping judgement — link seeds come from `extractLinks`) and launches
-  an interactive `claude` (`handoverScript`, a fresh iTerm window) preloaded to
-  invoke the **`handover-sessions` skill** at the manifest path. The skill (installed
+  Claude by default, or Amp under `--agent amp`, preloaded to invoke the
+  **`handover-sessions` skill** at the manifest path. The skill (installed
   at `~/.claude/skills/handover-sessions/`, vendored copy in `docs/`) reads the
-  transcripts, live-fetches Linear (MCP) / GitHub (`gh`) / Entire (`entire trail
-  show`) state, reconciles mismatches, and writes one Obsidian doc per group to
+  Claude files or exports Amp threads, live-fetches Linear (MCP) / GitHub (`gh`)
+  / Entire (`entire trail show`) state, reconciles mismatches, and writes one Obsidian doc per group to
   `$ENTIRE_TAIL_HANDOVER_VAULT/Entire/Handover/YYYY-MM-DD/` (default: the iCloud vault).
   Pure parts (`localMidnight`, `flattenToday`, `manifestSessionFrom`,
   `buildManifest`, `handoverVaultDir`) are unit-tested.
@@ -655,8 +670,9 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   starts from the first tail and exits 60s after the last, so unlike the tap
   there's no LaunchAgent — a focus watcher is worthless without a tail
 
-Adding a new agent = write a `normalize` + a discovery function. Nothing else
-needs to change.
+A complete agent source owns normalization, inventory and stable identity,
+transcript files or snapshots, search, live activity, resume/fresh launch,
+cache/offline behavior, and capability flags. Rendering remains shared.
 
 ## Things that are load-bearing (don't "clean up" without care)
 
@@ -686,7 +702,7 @@ needs to change.
   before the next header/marker/block. The `*_dots` goldens were regenerated for
   this. Buffered renderers that `TrimRight` their output (`preview.go`, `focus.go`)
   must call `endLine()` after their emit loop or the trailing `]` is lost.
-- **Subagent spawns + questions render Claude-only, and intentionally diverge
+- **Subagent spawns + questions render for Claude and Amp, and intentionally diverge
   from the bash oracle.** `AskUserQuestion` renders as a bold bordered card (+ a
   one-shot bell, live only, deduped per question id via `seenQuestions`) and
   `Agent`/`Task` as a `⏺ ▸ agent:` marker — replacing the old markdown question

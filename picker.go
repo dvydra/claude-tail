@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // relAge renders a relative age like "just now" / "3m ago" / "2h ago" /
@@ -109,18 +110,50 @@ func cwShort(cwd string) string {
 }
 
 // runPicker opens the interactive session tree (the default entry point) and
-// acts on the selection. It returns (path, claude, true) when the caller should
+// acts on the selection. It returns (path, agent, true) when the caller should
 // tail that session in the current pane; it returns ok=false when there's no tty
-// or no Claude agent in scope, so the caller falls back to auto-discovery. A
+// or no Claude/Amp agent in scope, so the caller falls back to auto-discovery. A
 // workspace selection launches the iTerm layout and exits; quitting exits.
 func runPicker(agents []Agent, home, pwd string, days int, local, cloud bool, theme Theme, claudeBin string) (string, Agent, bool) {
-	if !ttyUsable() || !slices.Contains(agents, AgentClaude) {
+	if !ttyUsable() || (!slices.Contains(agents, AgentClaude) && !slices.Contains(agents, AgentAmp)) {
 		return "", "", false
 	}
-	if p, ok := resolveTreeChoice(home, claudeBin, runClaudeTree(home, pwd, days, local, cloud, theme)); ok {
-		return p, AgentClaude, true
+	tree := buildSessionTree(home, pwd, days, time.Now().Unix(), local, cloud)
+	filterTreeAgents(&tree, agents)
+	c := runTreeTUI(home, tree, theme)
+	if p, ok := resolveTreeChoice(home, claudeBin, c); ok {
+		agent := c.Agent
+		if agent == "" {
+			agent = AgentClaude
+		}
+		return p, agent, true
 	}
 	return "", "", false
+}
+
+func filterTreeAgents(tree *sessionTree, agents []Agent) {
+	wanted := map[Agent]bool{}
+	for _, agent := range agents {
+		wanted[agent] = true
+	}
+	var folders []treeFolder
+	for _, folder := range tree.Folders {
+		kept := folder.Sessions[:0]
+		for _, session := range folder.Sessions {
+			agent := session.Agent
+			if agent == "" {
+				agent = AgentClaude
+			}
+			if wanted[agent] {
+				kept = append(kept, session)
+			}
+		}
+		folder.Sessions = kept
+		if len(kept) > 0 || folder.Dir == tree.Pwd {
+			folders = append(folders, folder)
+		}
+	}
+	tree.Folders = folders
 }
 
 // resolveTreeChoice acts on a tree selection. treeChosen → tail that session
@@ -136,6 +169,12 @@ func resolveTreeChoice(home, claudeBin string, c treeChoice) (string, bool) {
 	switch c.Result {
 	case treeNewWorkspace:
 		if itermAvailable() {
+			if c.Agent == AgentAmp {
+				if err := launchNewAmpWorkspace(c.Cwd); err != nil {
+					fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+				}
+				os.Exit(0)
+			}
 			prof := profileByName(home, c.Account)
 			warnMissingToken(prof)
 			if err := launchNewWorkspace(c.Cwd, claudeBin, prof); err != nil {
@@ -146,6 +185,15 @@ func resolveTreeChoice(home, claudeBin string, c treeChoice) (string, bool) {
 		fmt.Fprintln(os.Stderr, "entire-tail: a new-session workspace needs iTerm2 on macOS.")
 		os.Exit(0)
 	case treeChosen, treeWorkspace:
+		if c.Agent == AgentAmp {
+			if c.Result == treeWorkspace && c.Cwd != "" && isDir(c.Cwd) && itermAvailable() && itermSinglePane() {
+				if err := launchAmpWorkspace(c.Cwd, c.ID); err != nil {
+					fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+				}
+				os.Exit(0)
+			}
+			return c.ID, true
+		}
 		if c.Path == "" {
 			if tmp, ok := reconstructTranscript(home, c.ID, c.Repo); ok {
 				return tmp, true // reconstructed from git; tail it in place

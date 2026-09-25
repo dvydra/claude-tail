@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -37,6 +39,8 @@ func TestSearchScoreRanking(t *testing.T) {
 	substr := &searchHit{localCount: 9}             // ectl inside kubectl ×9
 	entireOnly := &searchHit{entireHit: true, entireScore: 6}
 	both := &searchHit{wordCount: 1, localCount: 1, entireHit: true, entireScore: 6}
+	ampFirst := &searchHit{ampHit: true, ampRank: 0}
+	ampSecond := &searchHit{ampHit: true, ampRank: 1}
 
 	// A standalone-word match beats any amount of substring-only matches.
 	if word.score() <= substr.score() {
@@ -49,6 +53,10 @@ func TestSearchScoreRanking(t *testing.T) {
 	}
 	if (&searchHit{}).score() != 0 {
 		t.Error("a hit with no signal should score 0")
+	}
+	if !(word.score() > ampFirst.score() && ampFirst.score() > substr.score() && ampFirst.score() > ampSecond.score()) {
+		t.Errorf("cross-agent ranking off: word=%v amp-first=%v amp-second=%v substring=%v",
+			word.score(), ampFirst.score(), ampSecond.score(), substr.score())
 	}
 }
 
@@ -87,5 +95,27 @@ func TestWindow(t *testing.T) {
 func TestCleanMatch(t *testing.T) {
 	if got := cleanMatch(`a\nb\"c\\d`); got != `a b"c\d` {
 		t.Errorf("cleanMatch = %q", got)
+	}
+}
+
+func TestAmpCachedSearchUsesTitleAndTranscript(t *testing.T) {
+	home := t.TempDir()
+	listPath := filepath.Join(ampCacheDir(home), "threads.json")
+	if err := writeAmpCache(listPath, []byte(`[{"id":"T-title","title":"Database migration","updated":"2026-09-25T10:00:00Z"},{"id":"T-body","title":"Other","updated":"2026-09-25T09:00:00Z"},{"id":"T-miss","title":"Nope","updated":"2026-09-25T08:00:00Z"}]`)); err != nil {
+		t.Fatal(err)
+	}
+	for id, text := range map[string]string{"T-title": "nothing", "T-body": "database rollback", "T-miss": "unrelated"} {
+		path := filepath.Join(ampCacheDir(home), "exports", id+".json")
+		body := `{"id":"` + id + `","messages":[{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]}]}`
+		if err := writeAmpCache(path, []byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := ampCachedSearch(home, "DATABASE")
+	if len(got) != 2 || got[0].ID != "T-title" || got[1].ID != "T-body" {
+		t.Fatalf("hits=%+v", got)
+	}
+	if _, err := os.Stat(listPath); err != nil {
+		t.Fatal(err)
 	}
 }

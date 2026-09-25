@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,8 +30,8 @@ import (
 // registers with a local loopback daemon when it starts, and the agent finds it
 // itself with `hunk session get --repo <path>`. What the docs DO prescribe is a
 // prompt (hunkPrompt). So once the daemon confirms the session is up, we type
-// that prompt into the claude sitting in this iTerm tab, and the agent takes it
-// from there. Off iTerm — or when the tab holds more than one claude and we
+// that prompt into the matching agent sitting in this iTerm tab, and it takes it
+// from there. Off iTerm, or when the tab holds more than one matching agent and we
 // cannot tell which is yours — the prompt goes to the clipboard instead, which
 // is a paste rather than a failure.
 
@@ -84,13 +85,13 @@ func planHunk(bin, dir string, dirOK bool, pane string) hunkPlan {
 // The plan can't supply it. Whether the agent was told anything depends on the
 // daemon registering a session that hasn't been started yet when the plan is
 // made, and on an osascript that runs while hunk is up. An earlier version
-// decided the wording up front and reported "claude was told to load the skill"
+// decided the wording up front and reported "agent was told to load the skill"
 // whether or not a single byte had been sent.
 type hunkOutcome int
 
 const (
 	hunkNotRun    hunkOutcome = iota // never started (or failed to)
-	hunkPrompted                     // the prompt was typed into the claude pane
+	hunkPrompted                     // the prompt was typed into the agent pane
 	hunkCopied                       // no pane to type into → the clipboard
 	hunkUnclaimed                    // the daemon never reported a session; nothing sent
 )
@@ -98,14 +99,14 @@ const (
 func (o hunkOutcome) msg() string {
 	switch o {
 	case hunkPrompted:
-		return "hunk ended — claude was told to load the skill"
+		return "hunk ended — agent was told to load the skill"
 	case hunkCopied:
-		return "hunk ended — prompt for claude copied to the clipboard"
+		return "hunk ended — prompt for agent copied to the clipboard"
 	case hunkUnclaimed:
 		// Worth saying rather than staying quiet: the review happened, but the
 		// agent knows nothing about it, and the difference is invisible from
 		// the tail's side of the screen.
-		return "hunk ended — no session registered, so claude wasn't told"
+		return "hunk ended — no session registered, so agent wasn't told"
 	}
 	return "hunk didn't start"
 }
@@ -167,13 +168,29 @@ func hunkClaudePane(ownTab, cur string, procs []claudeProc, sessionOf func(claud
 // hunkOverlay is the live loop's entire `h` case: work out what can happen,
 // hand the screen over if anything can, and give back the line for the status
 // bar. Split out so main.go's overlay switch stays a switch over intent.
-func hunkOverlay(tty *os.File, home, cur, pwd string) string {
+func hunkOverlay(tty *os.File, home string, agent Agent, threadID, cur, pwd string) string {
 	dir := hunkReviewDir(cur, pwd)
-	p := planHunk(hunkBin(home, exec.LookPath), dir, isDir(dir), hunkPaneFor(home, cur))
+	p := planHunk(hunkBin(home, exec.LookPath), dir, isDir(dir), hunkPaneForAgent(home, agent, threadID, cur))
 	if p.Bin == "" {
 		return p.Msg // a refusal; the screen was never handed over
 	}
 	return runHunk(tty, p).msg()
+}
+
+func hunkPaneForAgent(home string, agent Agent, threadID, cur string) string {
+	if agent != AgentAmp {
+		return hunkPaneFor(home, cur)
+	}
+	if !pickerToolsAvailable() {
+		return ""
+	}
+	return hunkClaudePane(itermTab(os.Getenv("ITERM_SESSION_ID")), threadID, ampProcs(), func(p claudeProc) string {
+		files, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(p.pid), "-Fn").Output()
+		if err != nil {
+			return ""
+		}
+		return ampThreadIDFromLsof(files)
+	})
 }
 
 // hunkReviewDir is the directory `h` hands to hunk — and getting it from the

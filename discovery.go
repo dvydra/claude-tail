@@ -278,6 +278,9 @@ func sniffAgent(first []byte) Agent {
 	if json.Unmarshal(first, &top) != nil {
 		return AgentClaude
 	}
+	if jqToStringRaw(top["agent"]) == string(AgentAmp) {
+		return AgentAmp
+	}
 	if pl, ok := top["payload"]; ok {
 		var plm map[string]json.RawMessage
 		if json.Unmarshal(pl, &plm) == nil {
@@ -291,6 +294,11 @@ func sniffAgent(first []byte) Agent {
 	}
 	if upperEnumRe.MatchString(jqToStringRaw(top["type"])) {
 		return AgentAgy
+	}
+	if id := jqToStringRaw(top["id"]); validAmpThreadID(id) {
+		if _, hasMessages := top["messages"]; hasMessages {
+			return AgentAmp
+		}
 	}
 	// entire's own transcript format: top-level content + ts, no nested message.
 	if _, hasMsg := top["message"]; !hasMsg {

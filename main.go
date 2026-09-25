@@ -94,34 +94,52 @@ func run(cfg Config) {
 	// this tab has no split (itermSinglePane) and tails in place when it does.
 	var paneClaudes []int
 	if bareStart(cfg, agentStr) && ttyUsable() {
-		paneClaudes = paneClaudePIDs(os.Getenv)
+		paneClaudes = paneAgentPIDs(os.Getenv)
 	}
 	autoLive := len(paneClaudes) > 0
+	explicitFile := len(cfg.Positional) == 1 && isFile(cfg.Positional[0])
+	if ampInventoryRequired(agentStr, cfg, explicitFile) {
+		if err := checkAmpInventory(home, cfg.Local); err != nil {
+			die(err.Error())
+		}
+	}
 
 	if cfg.FollowSession != "" {
 		// The workspace pins a session id (claude --session-id) and hands it to us,
 		// so we follow exactly that file — waiting for it to appear, immune to any
 		// other Claude running in the same repo. Forks are then followed by lineage.
-		if !validSessionID(cfg.FollowSession) {
-			die("invalid --follow-session id (want a UUID): " + cfg.FollowSession)
-		}
-		session = waitForSessionFile(home, pwd, cfg.FollowSession)
-		if agentStr == "auto" {
-			agentStr = string(AgentClaude)
+		if validAmpThreadID(cfg.FollowSession) {
+			session = cfg.FollowSession
+			agentStr = string(AgentAmp)
+		} else if !validSessionID(cfg.FollowSession) {
+			die("invalid --follow-session id (want a Claude UUID or Amp T- id): " + cfg.FollowSession)
+		} else {
+			session = waitForSessionFile(home, pwd, cfg.FollowSession)
+			if agentStr == "auto" {
+				agentStr = string(AgentClaude)
+			}
 		}
 	} else if cfg.WaitNew {
 		// The `n` workspace launches this alongside a fresh `claude`: block until a
 		// session that didn't exist at launch appears in $PWD, then tail exactly it
 		// (no racing the newest-file heuristic).
-		session = waitForNewSession(home, pwd)
-		if agentStr == "auto" {
-			agentStr = string(AgentClaude)
+		if agentStr == "amp" {
+			session = waitForNewAmpThread(home, pwd)
+		} else {
+			session = waitForNewSession(home, pwd)
+			if agentStr == "auto" {
+				agentStr = string(AgentClaude)
+			}
 		}
 	} else if cfg.Live || autoLive {
 		// --live: pick from the sessions that are actually running, read out of
-		// Claude Code's own registry. Piped (ok=false) it has already dumped the
-		// list, so there is nothing left to tail.
-		c, ok := runLive(home, theme, paneClaudes)
+		// Claude Code's registry and Amp's activity sources. Piped (ok=false) it
+		// has already dumped the list, so there is nothing left to tail.
+		filter := Agent("")
+		if agentStr != "auto" {
+			filter = Agent(agentStr)
+		}
+		c, ok := runLive(home, theme, paneClaudes, filter)
 		if !ok {
 			return
 		}
@@ -130,9 +148,7 @@ func run(cfg Config) {
 			return
 		}
 		session = p
-		if agentStr == "auto" {
-			agentStr = string(AgentClaude)
-		}
+		agentStr = string(firstNonEmptyAgent(c.Agent, AgentClaude))
 	} else {
 		// Positional args are sugar: a single existing file is a session to tail;
 		// anything else is a search query (so `entire-tail fire socks` just
@@ -147,6 +163,9 @@ func run(cfg Config) {
 		// pick one to tail/resume (or dump the ranking when non-interactive).
 		if query != "" {
 			tree := buildSearchTree(home, pwd, query, cfg.Local, time.Now().Unix())
+			if agentStr != "auto" {
+				filterTreeAgents(&tree, []Agent{Agent(agentStr)})
+			}
 			if len(tree.Folders) == 0 {
 				die(fmt.Sprintf("no sessions matched %q", query))
 			}
@@ -179,17 +198,21 @@ func run(cfg Config) {
 
 	switch {
 	case session != "":
-		if !isFile(session) {
+		if !isFile(session) && !validAmpThreadID(session) {
 			die("session file not found: " + session)
 		}
 		if agentStr == "auto" {
-			agentStr = string(detectAgentForFile(home, session))
+			if validAmpThreadID(session) {
+				agentStr = string(AgentAmp)
+			} else {
+				agentStr = string(detectAgentForFile(home, session))
+			}
 		}
 		resolved = true
 	case cfg.Pick != "never":
 		var agents []Agent
 		if agentStr == "auto" {
-			agents = []Agent{AgentClaude, AgentCodex, AgentAgy}
+			agents = []Agent{AgentClaude, AgentAmp, AgentCodex, AgentAgy}
 		} else {
 			agents = []Agent{Agent(agentStr)}
 		}
@@ -206,8 +229,8 @@ func run(cfg Config) {
 		session, agentStr = discoverSession(agentStr, home, pwd, scanner)
 	}
 
-	if session == "" || !isFile(session) {
-		die("no session jsonl found for agent=" + agentStr + " (tried $PWD and agent default dirs).")
+	if session == "" || (!isFile(session) && !validAmpThreadID(session)) {
+		die("no session found for agent=" + agentStr + " (tried $PWD and agent defaults).")
 	}
 	agent := Agent(agentStr)
 
@@ -216,11 +239,11 @@ func run(cfg Config) {
 	// something to link — a claude writing THIS session, in another window. The
 	// cheap disqualifiers are checked first so the osascript pair probe is never
 	// paid by a run that could not ask anyway.
-	if agent == AgentClaude && !cfg.NoPaneLink && ttyUsable() && !paneLinkChoiceRecorded(home) {
+	if (agent == AgentClaude || agent == AgentAmp) && !cfg.NoPaneLink && ttyUsable() && !paneLinkChoiceRecorded(home) {
 		if shouldOfferPaneLink(paneLinkOfferInputs{
-			isTTY:    true,
-			isClaude: true,
-			hasPair:  paneLinkPairExists(home, sessionIDFromPath(session), ownPaneUUID(os.Getenv)),
+			isTTY:       true,
+			isSupported: true,
+			hasPair:     paneLinkPairExists(home, agent, sessionIDFromPath(session), ownPaneUUID(os.Getenv)),
 		}) {
 			offerPaneLink(home, bufio.NewReader(os.Stdin), os.Stderr)
 		}
@@ -230,19 +253,53 @@ func run(cfg Config) {
 	// One signal handler + code channel are shared across the whole picker↔tail
 	// loop. tailSession follows one session and, on Ctrl-X, RETURNS so we re-enter
 	// the tree picker to choose another (tailed in this same pane). Quit
-	// (q/Ctrl-D/Ctrl-C) exits from inside tailSession. The tree is Claude-only, so
-	// Ctrl-X is a no-op on codex/agy sessions and runPicker below just exits if no
-	// Claude tree is in scope.
+	// (q/Ctrl-D/Ctrl-C) exits from inside tailSession. The tree supports Claude
+	// and Amp, so Ctrl-X is a no-op on codex/agy sessions and runPicker below just
+	// exits if neither tree source is in scope.
 	codeCh := make(chan int, 3) // signal + keyboard quit; never block a sender
 	installSignals(codeCh)      // SIGINT → 130, SIGTERM → 0
 	for {
-		tailSession(cfg, agent, session, home, pwd, scanner, theme, loc, codeCh)
+		tailPath := session
+		tailPwd := pwd
+		var stop chan struct{}
+		var sourceErrors <-chan error
+		cleanup := ""
+		if agent == AgentAmp {
+			if validAmpThreadID(session) {
+				var prepErr error
+				tailPath, stop, sourceErrors, prepErr = startAmpSnapshot(home, session, cfg.Local)
+				if prepErr != nil && tailPath == "" {
+					die("cannot read Amp thread: " + prepErr.Error())
+				}
+				if ex, err := ampExportThread(home, session, true); err == nil && isDir(ex.cwd()) {
+					tailPwd = ex.cwd()
+				}
+			} else {
+				var ex ampExport
+				var prepErr error
+				tailPath, ex, prepErr = materializeAmpExportFile(home, session)
+				if prepErr != nil {
+					die("cannot read Amp export: " + prepErr.Error())
+				}
+				cleanup = tailPath
+				if isDir(ex.cwd()) {
+					tailPwd = ex.cwd()
+				}
+			}
+		}
+		tailSession(cfg, agent, tailPath, home, tailPwd, scanner, theme, loc, codeCh, sourceErrors)
+		if stop != nil {
+			close(stop)
+		}
+		if cleanup != "" {
+			_ = os.Remove(cleanup)
+		}
 		// tailSession only returns on Ctrl-X — pop back to the tree picker.
 		days, derr := resolveDays(cfg.Days, 7)
 		if derr != nil {
 			die(derr.Error())
 		}
-		path, ag, ok := runPicker([]Agent{AgentClaude}, home, pwd, days, cfg.Local, cfg.Cloud, theme, claudeBin)
+		path, ag, ok := runPicker([]Agent{AgentClaude, AgentAmp}, home, pwd, days, cfg.Local, cfg.Cloud, theme, claudeBin)
 		if !ok {
 			os.Exit(0) // no tty / no Claude tree in scope — nothing to go back to
 		}
@@ -255,6 +312,11 @@ func run(cfg Config) {
 	}
 }
 
+func ampInventoryRequired(agent string, cfg Config, explicitFile bool) bool {
+	return agent == string(AgentAmp) && cfg.FollowSession == "" && !explicitFile &&
+		!cfg.Live && !cfg.WaitNew && cfg.Search == "" && len(cfg.Positional) == 0
+}
+
 // tailSession renders one session: a backfill of trailing history, then a live
 // follow loop. One select loop on this goroutine owns ALL stdout writes — polling
 // for new lines, reloading, and the final flush. The signal/keyboard goroutines
@@ -263,7 +325,7 @@ func run(cfg Config) {
 //
 // It os.Exit()s on quit (q/Ctrl-D/Ctrl-C, via the shared codeCh) and RETURNS on
 // Ctrl-X ("back to tree"), leaving run() to re-enter the picker.
-func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *codexScanner, theme Theme, loc *time.Location, codeCh chan int) {
+func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *codexScanner, theme Theme, loc *time.Location, codeCh chan int, sourceErrors <-chan error) {
 	if note := cwdMismatchNote(agent, session, home, pwd, scanner); note != "" {
 		fmt.Fprintln(os.Stderr, "entire-tail: "+note)
 	}
@@ -324,7 +386,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	treeCh := make(chan struct{}, 1)     // keyboard Ctrl-X; back to the tree picker
 	resumeCh := make(chan struct{})      // handed back to unpark the keyboard after the overlay
 	winchCh := installWinch()            // terminal resized → the status bar re-claims its row
-	treeEnabled := agent == AgentClaude
+	treeEnabled := agent == AgentClaude || agent == AgentAmp
 
 	// The status bar has to run its DSR query on the tty after cbreak is on but
 	// before the reader goroutine could swallow the reply, so the tty is opened
@@ -370,9 +432,25 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	hostPID := 0
 	offset := liveOffset(data)
 	agyKeep := newAgyDedup(maxStepIndex(lines))
+	ampPrior := append([]byte(nil), data...)
 	var agyLastSize, agyLastMtime int64 = -1, -1
+	var rerender func(string)
 	poll := func() {
-		if agent == AgentAgy {
+		if agent == AgentAmp {
+			d, err := os.ReadFile(cur)
+			if err != nil {
+				return
+			}
+			switch classifyAmpSnapshot(ampPrior, d) {
+			case ampSnapshotUnchanged:
+				return
+			case ampSnapshotAppend:
+				offset = appendStep(cur, offset, emit)
+				ampPrior = d
+				return
+			}
+			rerender("⟳ Amp snapshot updated")
+		} else if agent == AgentAgy {
 			// agy rewrites the whole file each step; only re-read (and re-scan
 			// for new step_index) when it actually changes.
 			fi, err := os.Stat(cur)
@@ -414,7 +492,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// through every stale variant. Wiping is safe precisely BECAUSE the copy is
 	// complete — the only thing a clear can destroy is output this very call is
 	// about to reprint.
-	rerender := func(banner string) {
+	rerender = func(banner string) {
 		d, err := os.ReadFile(cur)
 		if err != nil {
 			return
@@ -436,6 +514,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		io.WriteString(out, "\n"+r.theme.DimANSI+banner+reset+"\n\n")
 		io.WriteString(out, buf.String())
 		offset = liveOffset(d)
+		if agent == AgentAmp {
+			ampPrior = append(ampPrior[:0], d...)
+		}
 		agyKeep = newAgyDedup(maxStepIndex(all))
 		agyLastSize, agyLastMtime = -1, -1 // force a re-stat next tick
 	}
@@ -696,16 +777,20 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// ancestor — so it is republished whenever it changes. Enabled only when the
 	// user said yes; otherwise nothing is written and no daemon is spawned.
 	linkUUID, linkFollow := "", ""
-	if agent == AgentClaude && !cfg.NoPaneLink && paneLinkEnabled(home) {
+	if (agent == AgentClaude || agent == AgentAmp) && !cfg.NoPaneLink && paneLinkEnabled(home) {
 		if linkUUID = ownPaneUUID(os.Getenv); linkUUID != "" {
 			linkFollow = sessionIDFromPath(cur)
-			_ = writePaneEntry(home, linkUUID, paneEntry{Follow: linkFollow, Pid: os.Getpid()})
+			_ = writePaneEntry(home, linkUUID, paneEntry{Follow: linkFollow, Agent: agent, Pid: os.Getpid()})
 			ensurePaneLinkDaemon(home)
 			defer removePaneEntry(home, linkUUID) // Ctrl-X back to the tree
 		}
 	}
 	for {
 		select {
+		case sourceErr := <-sourceErrors:
+			if sourceErr != nil {
+				note("Amp refresh failed: " + sourceErr.Error())
+			}
 		case code := <-codeCh:
 			// Quit: restore the terminal and do the final flush here, on the
 			// sole writer goroutine (130 for Ctrl-C/SIGINT, 0 for q/Ctrl-D/SIGTERM).
@@ -780,16 +865,16 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			overlayMsg := ""
 			switch act {
 			case keyFocus:
-				// Only Claude sessions have subagents; runFocus no-ops (with a
-				// hint) otherwise.
-				runFocus(kbTTY, cur, home, theme)
+				// Claude sidecar subagents and Amp child threads share the focus
+				// overlay. Other agents get its no-channels hint.
+				runFocus(kbTTY, agent, cur, home, theme)
 			case keyDrift:
 				runDrift(kbTTY, cur, home, theme)
 			case keyHunk:
 				// hunk takes the pane outright (it's a child process, not an
 				// overlay we draw), reviews the session's working tree, and
 				// hands the screen back when you quit it.
-				overlayMsg = hunkOverlay(kbTTY, home, cur, pwd)
+				overlayMsg = hunkOverlay(kbTTY, home, agent, sessionIDFromPath(cur), cur, pwd)
 			case keyHelp:
 				// The state shown is sampled HERE, not at startup: t/T/c/m/w may
 				// all have moved since the banner was printed.
@@ -877,7 +962,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				// steady state costs a string compare rather than a file write.
 				if id := sessionIDFromPath(cur); id != linkFollow {
 					linkFollow = id
-					_ = writePaneEntry(home, linkUUID, paneEntry{Follow: id, Pid: os.Getpid()})
+					_ = writePaneEntry(home, linkUUID, paneEntry{Follow: id, Agent: agent, Pid: os.Getpid()})
 				}
 			}
 			if tap != nil {
@@ -995,6 +1080,26 @@ func waitForNewSession(home, pwd string) string {
 	}
 }
 
+func waitForNewAmpThread(home, pwd string) string {
+	before := map[string]bool{}
+	if threads, err := ampList(home, false); err == nil {
+		for _, thread := range threads {
+			before[thread.ID] = true
+		}
+	}
+	fmt.Fprintf(os.Stderr, "entire-tail: waiting for a new Amp thread in %s … (Ctrl-C to cancel)\n", pwd)
+	for {
+		if threads, err := ampList(home, false); err == nil {
+			for _, thread := range threads {
+				if !before[thread.ID] && filepath.Clean(thread.cwd()) == filepath.Clean(pwd) {
+					return thread.ID
+				}
+			}
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 // waitForSessionFile blocks until pwd's project dir holds <id>.jsonl with
 // content, then returns its path. Used by the pinned workspace: `claude
 // --session-id <id>` and `entire-tail --follow-session <id>` share the id, so
@@ -1039,6 +1144,14 @@ func discoverSession(agentStr, home, pwd string, scanner *codexScanner) (string,
 	switch agentStr {
 	case "claude":
 		return findSessionClaude(home, pwd), "claude"
+	case "amp":
+		if th, ok := findAmpThread(home, pwd, false); ok {
+			if filepath.Clean(th.cwd()) != filepath.Clean(pwd) {
+				fmt.Fprintf(os.Stderr, "entire-tail: no Amp thread matches %s; using newest thread %s\n", pwd, th.ID)
+			}
+			return th.ID, "amp"
+		}
+		return "", "amp"
 	case "codex":
 		return scanner.findForCwd(pwd), "codex"
 	case "agy":
@@ -1058,9 +1171,18 @@ func discoverSession(agentStr, home, pwd string, scanner *codexScanner) (string,
 		if g := findSessionAgy(home, pwd); g != "" {
 			cands = append(cands, cand{g, "agy"})
 		}
+		if a, ok := findAmpThreadExact(home, pwd, false); ok {
+			cands = append(cands, cand{a.ID, "amp"})
+		}
 		best, bestAgent, bestMtime := "", "", int64(-1)
 		for _, c := range cands {
-			if m := fileMtimeNano(c.path); best == "" || m > bestMtime {
+			m := fileMtimeNano(c.path)
+			if c.agent == "amp" {
+				if a, ok := findAmpThreadExact(home, pwd, true); ok && a.ID == c.path {
+					m = a.updatedUnix() * int64(time.Second)
+				}
+			}
+			if best == "" || m > bestMtime {
 				best, bestAgent, bestMtime = c.path, c.agent, m
 			}
 		}
@@ -1112,7 +1234,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 	}
 	if isCharDevice(os.Stdin) {
 		back := ""
-		if agent == AgentClaude {
+		if agent == AgentClaude || agent == AgentAmp {
 			back = "Ctrl-X=back to tree  "
 		}
 		fmt.Fprintln(w, "  keys:     ?=settings  y=copy as slack mrkdwn  m=mrkdwn view  w=wrap  t=tools  T=theme  c=collapse  h=hunk  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
@@ -1169,7 +1291,7 @@ func mustLoadTheme(cfg Config) Theme {
 	return theme
 }
 
-// runList prints the static ls-style dump of Claude sessions (--list). It's
+// runList prints the static ls-style dump of Claude and Amp sessions (--list). It's
 // uncapped by default (the full inventory); --days narrows the window. Color is
 // used only when stdout is a terminal.
 func runList(cfg Config) {
@@ -1180,6 +1302,11 @@ func runList(cfg Config) {
 	if query == "" && len(cfg.Positional) > 0 {
 		query = strings.Join(cfg.Positional, " ")
 	}
+	if cfg.Agent == string(AgentAmp) {
+		if err := checkAmpInventory(home, cfg.Local); err != nil {
+			die(err.Error())
+		}
+	}
 	var tree sessionTree
 	if query != "" {
 		tree = buildSearchTree(home, pwd, query, cfg.Local, now)
@@ -1189,6 +1316,9 @@ func runList(cfg Config) {
 			die(err.Error())
 		}
 		tree = buildSessionTree(home, pwd, days, now, cfg.Local, cfg.Cloud)
+	}
+	if cfg.Agent != "auto" {
+		filterTreeAgents(&tree, []Agent{Agent(cfg.Agent)})
 	}
 	if len(tree.Folders) == 0 {
 		fmt.Fprintln(os.Stderr, "entire-tail: no sessions found.")
@@ -1217,9 +1347,9 @@ func listThemesText(defaultTheme string) string {
 func helpText() string {
 	return fmt.Sprintf(`entire-tail %s — live-view of your current AI coding agent session.
 
-Tails the agent's session jsonl (Claude Code, Codex CLI, or Antigravity CLI)
-for the current working directory and renders each turn in-process. Quit with
-Ctrl-D or Ctrl-C.
+Renders Claude Code, Amp, Codex CLI, and Antigravity sessions. Claude, Codex,
+and Antigravity are file-backed; Amp threads are exported through the supported
+Amp CLI and cached locally. Quit with Ctrl-D or Ctrl-C.
 
 USAGE:
   entire-tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]
@@ -1227,9 +1357,9 @@ USAGE:
   entire-tail handover                                     # write today's handover docs
 
 SUBCOMMANDS:
-  handover                  Enumerate today's Claude sessions, group them in a
+  handover                  Enumerate today's Claude and Amp sessions, group them in a
                             picker (1-9 group · x separate · - skip · ⏎ write),
-                            then launch an interactive claude that enriches each
+                            then launch an interactive agent that enriches each
                             group with live Linear/GitHub/Entire state and writes
                             one Obsidian handover doc per group (via the
                             handover-sessions skill). Docs go to
@@ -1257,12 +1387,12 @@ SUBCOMMANDS:
                             untouched, and headers are never logged or stored.
 
 ARGUMENTS:
-  [ARGS...]                 With no args, if exactly one 'claude' is running in
+  [ARGS...]                 With no args, if a Claude or Amp agent is running in
                             this iTerm tab (i.e. you're in a pane beside it),
                             entire-tail adopts and tails THAT session — no flags,
                             no picking. It's matched by iTerm tab, so a claude in
                             another tab/window is never grabbed; off iTerm, or
-                            with zero/many claudes in the tab, it self-disables.
+                            with no nearby agent, it self-disables.
                             Failing that, an interactive terminal opens the
                             session tree picker (see --pick); non-interactively
                             or with --no-pick it auto-discovers + tails $PWD's
@@ -1278,6 +1408,8 @@ OPTIONS:
                                       recently modified session for $PWD,
                                       falling back to the global newest.
                               claude  Claude Code (~/.claude/projects/...).
+                              amp     Amp threads (local, runner, and orb), via
+                                      'amp threads' and a local cache.
                               codex   Codex CLI (~/.codex/sessions/...).
                               agy     Antigravity CLI
                                       (~/.gemini/antigravity-cli/brain/...).
@@ -1310,7 +1442,7 @@ OPTIONS:
       --no-collapse         Never collapse — show every user message in full.
   -p, --pick                Force the session tree (it's the DEFAULT already;
                             use this to override ENTIRE_TAIL_PICK=never). The
-                            tree lists every local session grouped by repo (from
+                            tree combines Claude and Amp sessions grouped by repo (from
                             each session's git remote), so you can find "which
                             one was that?" without remembering. Fast + offline by
                             default; --cloud adds 'entire' titles + sessions from
@@ -1325,18 +1457,19 @@ OPTIONS:
                                       live tail, and a shell, all in the
                                       session's folder (macOS + iTerm2; falls
                                       back to tailing in place otherwise). The
-                                      agent is --claude-bin (default 'claude').
-                              p       preview the session's recent transcript.
+                                      Claude uses --claude-bin; Amp uses 'amp'.
                               i       summary card: an on-device Apple
                                       Intelligence summary (headline, summary,
                                       key points, outcome — macOS 26+ with
                                       Apple Intelligence) plus entire's metadata
                                       (repo, model, tokens, checkpoints, prompt).
                               t       just tail the session in the current pane.
-                              n       open a workspace for a NEW Claude session
+                              c       open a workspace for a NEW Claude session
                                       in the highlighted folder's directory
                                       (or $PWD) — fresh agent + tail + shell.
-                            Claude only (codex/agy tail directly via --agent).
+                              a       open a workspace for a NEW Amp thread.
+                              @       open a personal-account Claude workspace.
+                            Codex/agy tail directly via --agent.
       --no-pick             Skip the picker — auto-discover and tail $PWD's most
                             recent session in place (the pre-tree behavior).
       --days N              Window for the session tree, in days (default 7).
@@ -1345,9 +1478,9 @@ OPTIONS:
                             ls-style dump instead of the TUI, then exit.
                             Uncapped by default; narrow with --days.
   -S, --search QUERY        Find sessions by what was *said* in them, not just
-                            titles. Searches local transcripts (ripgrep) and
-                            'entire' checkpoint search (semantic + keyword,
-                            all repos), merges by session, and shows the tree
+                            titles. Searches local and cached transcripts,
+                            'entire' checkpoint search, and 'amp threads search',
+                            merges by agent + session, and shows the tree
                             ranked by relevance — an exact local phrase match
                             first, then entire's semantic hits — with the
                             matching snippet on each row. Enter/t resume or tail
@@ -1360,24 +1493,20 @@ OPTIONS:
                             instant and still show the cached titles.
       --live                Show ONLY the sessions running right now, one
                             expanded block each: pid, status (busy/idle), cwd,
-                            worktree, uptime and a transcript tail. Read from the
-                            registry Claude Code keeps for every running session
-                            (needs claude 2.1.273+), so it's fact rather than the
+                            worktree, uptime and a transcript tail. Read from
+                            Claude's registry, local Amp process logs, and
+                            'amp top' for runner/orb activity, so it's fact rather than the
                             tree's process-and-folder guess. Refreshes every
                             second; 'j' shows the raw registry json, '+/-' resize
                             the tail, Enter/t open or tail the session. Piped, it
                             prints one line per live session and exits.
-      --local               Build the tree by crawling ~/.claude directly,
-                            grouped by folder — no git remote lookups, no cloud.
+      --local               Build the tree from ~/.claude and cached Amp data,
+                            grouped by folder — no git remote lookups or network.
                             The fastest / fully-offline view.
-      --wait-new            Block until a NEW Claude session appears in $PWD,
-                            then tail exactly it. The picker's 'n' workspace uses
-                            this so the tail latches onto the session the fresh
-                            'claude' creates, instead of racing an older one.
-      --follow-session ID   Follow exactly $PWD's <ID>.jsonl (waiting for it to
-                            appear), then follow worktree forks by lineage. The
-                            workspace pairs it with '<agent> --session-id ID' so
-                            the tail can't latch onto the wrong concurrent session.
+      --wait-new            Block until a NEW Claude session or Amp thread for
+                            $PWD appears, then follow exactly it.
+      --follow-session ID   Follow exactly a Claude UUID (including lineage) or
+                            Amp T- thread id (through refreshed export snapshots).
       --mark-continuation   At a Claude lineage flip (worktree fork or /clear),
                             also write a forward-pointer note into the now-stopped
                             session file, so the continuation is findable when
@@ -1434,21 +1563,20 @@ LIVE KEYS (while following, on an interactive terminal):
   h                         Review in hunk: hand the whole pane to hunk
                             (hunk.dev) for a diff of the session's working tree,
                             and take it back when you quit hunk. Once the review
-                            is up, the claude in this iTerm tab is prompted to
+                            is up, the matching agent in this iTerm tab is prompted to
                             load hunk's review skill so it can narrate and leave
                             inline comments; off iTerm (or when the tab holds
-                            more than one claude) that prompt goes to the
+                            more than one matching agent) that prompt goes to the
                             clipboard instead. No-op with hunk not installed.
-  →                         Focus subagents: open an alt-screen view of the
-                            session's subagent transcripts. ←/→ cycles between
-                            them, ↑↓ scrolls, r reloads, q/Esc returns to the
-                            tail. (Claude sessions only; no-op when none.)
+  →                         Focus Claude subagents or Amp child threads in an
+                            alt-screen view. ←/→ cycles between them, ↑↓ scrolls,
+                            r reloads, q/Esc returns. No-op when none exist.
   r                         Reload: re-render the whole current transcript with
                             the current settings.
   Ctrl-X                    Back to the tree: pop out of the live tail and
-                            re-open the session tree picker (Claude sessions
+                            re-open the session tree picker (Claude and Amp
                             only). Pick another session with t to tail it in
-                            this same pane, or Enter/n for a workspace. q in the
+                            this same pane, or Enter/c/a for a workspace. q in the
                             tree quits entire-tail.
   q, Ctrl-D, Ctrl-C         Quit.
 
@@ -1470,7 +1598,7 @@ ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_COLLAPSE      Same as --collapse (or 'off' to disable).
   ENTIRE_TAIL_PICK          'always'/'never'/'auto' — same as --pick/--no-pick.
   ENTIRE_TAIL_DAYS          Same as --days (session-tree window).
-  ENTIRE_TAIL_CLAUDE_BIN    Same as --claude-bin (default 'happy').
+  ENTIRE_TAIL_CLAUDE_BIN    Same as --claude-bin (default 'claude').
   ENTIRE_TAIL_MARK_CONTINUATION  Truthy (1/true/yes/on) = --mark-continuation.
   ENTIRE_TAIL_HANDOVER_VAULT  Obsidian vault root for handover docs (default:
                             the iCloud Obsidian Documents folder).

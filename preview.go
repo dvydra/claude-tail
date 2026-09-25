@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -19,6 +20,10 @@ import (
 // renderPreviewLines renders the last chunk of a transcript to ANSI lines via the
 // normal renderer (dots + collapse, so a preview stays compact).
 func renderPreviewLines(path, home string, theme Theme) []string {
+	return renderPreviewAgent(path, detectAgentForFile(home, path), theme)
+}
+
+func renderPreviewAgent(path string, agent Agent, theme Theme) []string {
 	var buf bytes.Buffer
 	// wrap 0: as in focus.go, the pane clips at draw time and re-measures every
 	// frame, so the rendered lines stay width-agnostic.
@@ -26,7 +31,6 @@ func renderPreviewLines(path, home string, theme Theme) []string {
 	if err != nil {
 		return []string{"  (cannot render this session)"}
 	}
-	agent := detectAgentForFile(home, path)
 	loc := time.Local
 	for _, l := range tailLines(path, 400) { // recent turns; bounded for big sessions
 		for _, rec := range normalize(agent, l, loc) {
@@ -99,6 +103,18 @@ func showInfo(tty *os.File, s treeSession, home string, theme Theme) {
 	// Resolve a transcript (local, else reconstructed) once — used for the
 	// on-device summary, the trail/PR scan, and the preview pane.
 	path := s.Path
+	if s.Agent == AgentAmp {
+		if ex, err := ampExportThread(home, s.ID, false); err == nil || ex.ID != "" {
+			path = filepath.Join(ampCacheDir(home), "render", s.ID+".jsonl")
+			_ = writeAmpCache(path, ampExportLines(ex))
+			s.Mode = ex.Meta.AgentMode
+			s.Executor = ex.Meta.ExecutorType
+			s.State = ex.Meta.LastKnownAgentState.State
+			if s.cwd == "" {
+				s.cwd = ex.cwd()
+			}
+		}
+	}
 	if path == "" {
 		if tmp, ok := reconstructTranscript(home, s.ID, s.Repo); ok {
 			path = tmp
@@ -123,7 +139,11 @@ func showInfo(tty *os.File, s treeSession, home string, theme Theme) {
 	if path == "" {
 		preview = []string{"  No local transcript for this session, and its repo isn't checked out here."}
 	} else {
-		preview = renderPreviewLines(path, home, theme)
+		agent := s.Agent
+		if agent == "" {
+			agent = detectAgentForFile(home, path)
+		}
+		preview = renderPreviewAgent(path, agent, theme)
 	}
 
 	pagerSplit(tty, card, preview, "INFO "+shortID(s.ID)+"  "+s.Snippet, theme)
@@ -245,6 +265,21 @@ func summaryCardLines(s treeSession, ai aiSummary, haveAI bool, links []sessionL
 	}
 	add("")
 	add("  session    %s", s.ID)
+	if s.Agent != "" {
+		add("  agent      %s", s.Agent)
+	}
+	if s.Agent == AgentAmp {
+		add("  thread     https://ampcode.com/threads/%s", s.ID)
+		if s.Mode != "" {
+			add("  mode       %s", s.Mode)
+		}
+		if s.Executor != "" {
+			add("  executor   %s", s.Executor)
+		}
+		if s.State != "" {
+			add("  state      %s", s.State)
+		}
+	}
 	// Only the non-default account is named. "account: work" on every other card
 	// would be noise for the many people who never set a second one up.
 	if s.Profile != "" {

@@ -174,7 +174,8 @@ func buildSessionTree(home, pwd string, days int, now int64, forceLocal, cloud b
 	applyNearby(&local, near)
 	if forceLocal {
 		ensureCurrentDirFolder(&local, pwd, now)
-		return local
+		amp, _ := buildAmpTree(home, pwd, days, now, true)
+		return mergeAgentTrees(local, amp)
 	}
 	var sessions []entireSession
 	if cloud {
@@ -184,7 +185,9 @@ func buildSessionTree(home, pwd string, days int, now int64, forceLocal, cloud b
 	}
 	// mergeEntire with no cloud data still regroups the complete local set by repo
 	// (via each cwd's git remote), so the default is repo-grouped and fast.
-	return mergeEntire(local, sessions, home, days, now)
+	tree := mergeEntire(local, sessions, home, days, now)
+	amp, _ := buildAmpTree(home, pwd, days, now, false)
+	return mergeAgentTrees(tree, amp)
 }
 
 // ensureCurrentDirFolder guarantees the folder-grouped local tree contains the
@@ -275,6 +278,7 @@ func mergeEntire(local sessionTree, sessions []entireSession, home string, days 
 			repo = "(unknown repo)"
 		}
 		add(repo, treeSession{
+			Agent:   AgentClaude,
 			ID:      es.SessionID,
 			Snippet: collapsePreview(firstNonEmpty(es.CustomName, es.DisplayName, es.Prompt)),
 			Mtime:   mt,

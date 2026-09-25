@@ -166,6 +166,18 @@ func claudeProcs() []claudeProc {
 	return procs
 }
 
+func ampProcs() []claudeProc {
+	out, err := exec.Command("pgrep", "-x", "amp").Output()
+	if err != nil {
+		return nil
+	}
+	var procs []claudeProc
+	for _, pid := range parsePIDs(out) {
+		procs = append(procs, claudeProc{pid: pid, itermID: psItermID(pid)})
+	}
+	return procs
+}
+
 // psItermID reads pid's ITERM_SESSION_ID from its environment via `ps eww`
 // (works for the caller's own processes on macOS). "" if unreadable/absent.
 func psItermID(pid int) string {
@@ -205,13 +217,21 @@ func paneClaudePIDs(getenv func(string) string) []int {
 	return siblingPIDs(ownTab, claudeProcs())
 }
 
+func paneAgentPIDs(getenv func(string) string) []int {
+	ownTab := itermTab(getenv("ITERM_SESSION_ID"))
+	if ownTab == "" || !pickerToolsAvailable() {
+		return nil
+	}
+	return append(siblingPIDs(ownTab, claudeProcs()), siblingPIDs(ownTab, ampProcs())...)
+}
+
 // bareStart reports whether nothing on the command line or in the env already
 // chose what to show, so the mode is ours to pick from the pane layout.
 // --no-pick (tail $PWD directly) and -p (always the tree) are both choices.
 func bareStart(cfg Config, agent string) bool {
 	return cfg.FollowSession == "" && !cfg.WaitNew && !cfg.Live &&
 		cfg.Search == "" && len(cfg.Positional) == 0 && cfg.Pick == "auto" &&
-		(agent == "auto" || agent == "claude")
+		(agent == "auto" || agent == "claude" || agent == "amp")
 }
 
 // resolveClaudeSession maps a pane's claude (its cwd + argv) to a transcript

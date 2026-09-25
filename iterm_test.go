@@ -69,6 +69,21 @@ func TestWorkspaceScript(t *testing.T) {
 	}
 }
 
+func TestAmpWorkspaceScripts(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
+	resume := ampWorkspaceScript("/work/proj", "T-123", "/usr/local/bin/entire-tail", "/usr/local/bin/amp", true)
+	if resume.Agent != "cd '/work/proj' && '/usr/local/bin/amp' threads continue 'T-123'" {
+		t.Fatalf("resume agent = %q", resume.Agent)
+	}
+	if resume.Tail != "cd '/work/proj' && '/usr/local/bin/entire-tail' --agent amp --follow-session 'T-123'" {
+		t.Fatalf("resume tail = %q", resume.Tail)
+	}
+	fresh := ampWorkspaceScript("/work/proj", "", "/usr/local/bin/entire-tail", "/usr/local/bin/amp", false)
+	if fresh.Agent != "cd '/work/proj' && '/usr/local/bin/amp'" || !strings.Contains(fresh.Tail, "--agent amp --wait-new") {
+		t.Fatalf("fresh = %+v", fresh)
+	}
+}
+
 // No pane is typed into: `write text` put every command on screen and queued
 // A's in the tty's input buffer, behind which anything typed before the agent
 // took over would land. A's command must not be in the script when A is this

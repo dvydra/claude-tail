@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,14 +15,15 @@ import (
 	"time"
 )
 
-// handover.go implements `entire-tail handover`: enumerate today's Claude
+// handover.go implements `entire-tail handover`: enumerate today's Claude and Amp
 // sessions, let the user group them (handover_picker.go), write a JSON manifest,
-// and launch an interactive claude that enriches each group and writes one
+// and launch an interactive agent that enriches each group and writes one
 // Obsidian handover doc per group (the handover-sessions skill). The pure parts
 // (today-filter, manifest builder) are unit-tested; runHandover is the driver.
 
 // handoverItem is one of today's sessions, distilled from the session tree.
 type handoverItem struct {
+	Agent        Agent
 	SessionID    string
 	Repo         string // owner/repo, else ~path
 	Cwd          string
@@ -40,9 +42,9 @@ func localMidnight(now int64, loc *time.Location) int64 {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).Unix()
 }
 
-// flattenToday collapses a session tree to a flat list of local Claude sessions
-// with activity at/after midnight and an on-disk transcript (needed to enrich),
-// sorted live-first then most-recent-first so the priority sessions lead.
+// flattenToday collapses a session tree to sessions with activity at/after
+// midnight and a transcript locator, sorted live-first then most-recent-first so
+// the priority sessions lead.
 func flattenToday(t sessionTree, midnight int64, home string) []handoverItem {
 	cache := map[string]string{}
 	var out []handoverItem
@@ -53,6 +55,7 @@ func flattenToday(t sessionTree, midnight int64, home string) []handoverItem {
 			}
 			cwd := firstNonEmpty(s.cwd, f.Dir, f.Cwd)
 			out = append(out, handoverItem{
+				Agent:        firstNonEmptyAgent(s.Agent, AgentClaude),
 				SessionID:    s.ID,
 				Repo:         repoForCwd(cwd, home, cache),
 				Cwd:          cwd,
@@ -190,18 +193,25 @@ func manifestSessionFrom(it handoverItem, links []sessionLink) manifestSession {
 	}
 	return manifestSession{
 		SessionID:        it.SessionID,
-		Agent:            "claude",
+		Agent:            string(firstNonEmptyAgent(it.Agent, AgentClaude)),
 		Cwd:              it.Cwd,
 		Repo:             it.Repo,
 		Title:            it.Title,
 		State:            state,
 		LastActivity:     time.Unix(it.LastActivity, 0).Format(time.RFC3339),
 		Tokens:           it.Tokens,
-		TranscriptPath:   it.Path,
+		TranscriptPath:   handoverTranscript(it),
 		TrailUrls:        trails,
 		PrUrls:           prs,
 		EntireSessionIds: []string{},
 	}
+}
+
+func handoverTranscript(it handoverItem) string {
+	if it.Agent == AgentAmp {
+		return "https://ampcode.com/threads/" + it.SessionID
+	}
+	return it.Path
 }
 
 // buildManifest assembles the manifest; linksOf is injected so it's pure/testable
@@ -238,10 +248,12 @@ func writeManifestTemp(m handoverManifest) (string, error) {
 
 // ── orchestration (driver) ────────────────────────────────────────────────────
 
-// todaysSessions enumerates this machine's Claude sessions with activity since
-// local midnight (a 2-day crawl window is cheap and safely spans midnight).
+// todaysSessions enumerates Claude and Amp sessions with activity since local
+// midnight (a 2-day crawl window is cheap and safely spans midnight).
 func todaysSessions(home string, now int64, loc *time.Location) []handoverItem {
 	tree := buildClaudeTree(home, "", 2, now, claudeLiveCwds())
+	amp, _ := buildAmpTree(home, "", 2, now, false)
+	tree = mergeAgentTrees(tree, amp)
 	return flattenToday(tree, localMidnight(now, loc), home)
 }
 
@@ -252,7 +264,7 @@ func runHandover(cfg Config) {
 
 	items := todaysSessions(home, now, loc)
 	if len(items) == 0 {
-		fmt.Fprintln(os.Stderr, "entire-tail: no Claude sessions with activity today.")
+		fmt.Fprintln(os.Stderr, "entire-tail: no Claude or Amp sessions with activity today.")
 		return
 	}
 
@@ -293,11 +305,26 @@ func runHandover(cfg Config) {
 
 	// Hand off to the agent in-place (works in any terminal — zellij/tmux/iTerm).
 	// Exec only returns on failure, in which case fall back to printing the command.
+	if cfg.Agent == "amp" {
+		if err := launchAmpHandover(path); err != nil {
+			fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
+		}
+		return
+	}
 	agentBin := resolveClaudeBin(cfg, exec.LookPath, os.Stderr)
 	if err := launchClaude(path, agentBin); err != nil {
 		fmt.Fprintln(os.Stderr, "entire-tail: "+err.Error())
 		printHandoverCmd(path, agentBin)
 	}
+}
+
+func launchAmpHandover(manifestPath string) error {
+	path, err := exec.LookPath("amp")
+	if err != nil {
+		return errors.New("amp not found on PATH")
+	}
+	fmt.Fprintln(os.Stderr, "entire-tail: launching amp to write the handover docs…")
+	return syscall.Exec(path, []string{"amp", handoverPrompt(manifestPath)}, os.Environ())
 }
 
 func handoverPrompt(manifestPath string) string {
@@ -323,7 +350,7 @@ func printHandoverCmd(manifestPath, agentBin string) {
 }
 
 func printHandoverList(items []handoverItem) {
-	fmt.Fprintf(os.Stderr, "Found %d Claude sessions from today:\n", len(items))
+	fmt.Fprintf(os.Stderr, "Found %d Claude/Amp sessions from today:\n", len(items))
 	for _, it := range items {
 		state := "ended"
 		if it.Live {

@@ -30,10 +30,10 @@ import (
 var paneLinkPy string
 
 const (
-	paneLinkIdleExit      = 60 * time.Second // no live panes for this long → exit
-	paneLinkClaudeRefresh = 5 * time.Second  // re-resolve running claudes
-	paneLinkTick          = 2 * time.Second
-	paneLinkMaxRestarts   = 3
+	paneLinkIdleExit     = 60 * time.Second // no live panes for this long → exit
+	paneLinkAgentRefresh = 5 * time.Second  // re-resolve running agents
+	paneLinkTick         = 2 * time.Second
+	paneLinkMaxRestarts  = 3
 )
 
 // paneLinkState is the daemon's advertised presence. There is no port to probe,
@@ -126,15 +126,14 @@ func acquirePaneLinkLock(home string) bool {
 
 func releasePaneLinkLock(home string) { _ = os.Remove(paneLinkLockPath(home)) }
 
-// runningClaudePanes maps a running claude's iTerm session id → the transcript
-// it is writing. This is the half nobody registers: claude knows nothing about
-// entire-tail, so the daemon works it out with the same join nearby.go performs,
-// minus the "same tab" filter (a claude in any window is a candidate here).
+// runningAgentPanes maps a running Claude or Amp agent's iTerm session id to the
+// session it is writing. This is the half nobody registers: the agent knows
+// nothing about entire-tail, so the daemon resolves it from process state.
 //
 // Re-run every few seconds rather than cached forever, which is what makes the
-// pairing self-healing: restart claude in a different tab and the link re-forms
+// pairing self-healing: restart an agent in a different tab and the link re-forms
 // with no action from the tail, whose own registration never changed.
-func runningClaudePanes(home string) map[string]string {
+func runningAgentPanes(home string) map[string]string {
 	out := map[string]string{}
 	if !pickerToolsAvailable() {
 		return out
@@ -149,7 +148,20 @@ func runningClaudePanes(home string) map[string]string {
 			continue
 		}
 		if id := sessionIDFromPath(path); id != "" {
-			out[uuid] = id
+			out[uuid] = paneSessionKey(AgentClaude, id)
+		}
+	}
+	for _, p := range ampProcs() {
+		uuid := paneUUIDFromSessionID(p.itermID)
+		if uuid == "" {
+			continue
+		}
+		files, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(p.pid), "-Fn").Output()
+		if err != nil {
+			continue
+		}
+		if id := ampThreadIDFromLsof(files); id != "" {
+			out[uuid] = paneSessionKey(AgentAmp, id)
 		}
 	}
 	return out
@@ -204,13 +216,14 @@ var paneWindows = func(uuids []string) map[string]string {
 // both sides are already on screen and the feature would do nothing. It costs
 // one osascript call, paid only on a run that is otherwise eligible to ask —
 // interactive, Claude, unanswered — so at most once per machine.
-func paneLinkPairExists(home, sessionID, ownUUID string) bool {
+func paneLinkPairExists(home string, agent Agent, sessionID, ownUUID string) bool {
 	if ownUUID == "" || sessionID == "" {
 		return false
 	}
 	var mates []string
-	for uuid, sess := range runningClaudePanes(home) {
-		if sess == sessionID {
+	want := paneSessionKey(agent, sessionID)
+	for uuid, sess := range runningAgentPanes(home) {
+		if sess == want || (agent == "" && sess == sessionID) {
 			mates = append(mates, uuid)
 		}
 	}
@@ -299,7 +312,7 @@ func runPaneLinkDaemon(home string, out io.Writer) error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	claudes := runningClaudePanes(home)
+	claudes := runningAgentPanes(home)
 	claudesAt := time.Now()
 	idleSince := time.Now()
 	ticker := time.NewTicker(paneLinkTick)
@@ -345,8 +358,8 @@ func runPaneLinkDaemon(home string, out io.Writer) error {
 					logf("connected to iTerm")
 					continue
 				}
-				if time.Since(claudesAt) > paneLinkClaudeRefresh {
-					claudes, claudesAt = runningClaudePanes(home), time.Now()
+				if time.Since(claudesAt) > paneLinkAgentRefresh {
+					claudes, claudesAt = runningAgentPanes(home), time.Now()
 				}
 				panes := prunePanes(readPaneRegistry(home), pidAlive)
 				partners := linkPartners(ev.uuid, panes, claudes)
@@ -355,7 +368,7 @@ func runPaneLinkDaemon(home string, out io.Writer) error {
 					// yet (started since the last refresh); re-resolve once and
 					// retry before concluding there is nothing to do.
 					if _, known := panes[ev.uuid]; !known && time.Since(claudesAt) > time.Second {
-						claudes, claudesAt = runningClaudePanes(home), time.Now()
+						claudes, claudesAt = runningAgentPanes(home), time.Now()
 						partners = linkPartners(ev.uuid, panes, claudes)
 					}
 				}
@@ -517,7 +530,7 @@ func uninstallPaneLink(home string, out io.Writer) error {
 // asked again; a failed setup is NOT recorded, so a network blip doesn't cost
 // the user the feature permanently.
 func offerPaneLink(home string, in *bufio.Reader, out io.Writer) {
-	fmt.Fprint(out, "entire-tail: link this tail to its claude, so selecting one switches "+
+	fmt.Fprint(out, "entire-tail: link this tail to its agent, so selecting one switches "+
 		"the other window to its tab? (one-time setup, ~10s) [y/N] ")
 	line, _ := in.ReadString('\n')
 	switch strings.ToLower(strings.TrimSpace(line)) {
@@ -614,6 +627,6 @@ func paneLinkStatus(home string) string {
 		return fmt.Sprintf("entire-tail link: %s (%d live tails)",
 			paneLinkLabel(true, running, st.Connected), len(panes))
 	}
-	return fmt.Sprintf("entire-tail link: watching (pid %d, %d live tails, %d claudes placed)",
-		st.Pid, len(panes), len(runningClaudePanes(home)))
+	return fmt.Sprintf("entire-tail link: watching (pid %d, %d live tails, %d agents placed)",
+		st.Pid, len(panes), len(runningAgentPanes(home)))
 }

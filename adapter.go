@@ -7,6 +7,7 @@ type Agent string
 
 const (
 	AgentClaude Agent = "claude"
+	AgentAmp    Agent = "amp"
 	AgentCodex  Agent = "codex"
 	AgentAgy    Agent = "agy"
 	// AgentEntire is entire's own transcript format (top-level content/ts), used
@@ -20,6 +21,8 @@ func normalize(agent Agent, line []byte, loc *time.Location) []Record {
 	switch agent {
 	case AgentClaude:
 		return normalizeClaude(line, loc)
+	case AgentAmp:
+		return normalizeAmp(line, loc)
 	case AgentCodex:
 		return normalizeCodex(line, loc)
 	case AgentAgy:
