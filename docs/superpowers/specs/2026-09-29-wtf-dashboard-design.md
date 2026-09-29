@@ -22,7 +22,7 @@ The missing state cannot be reconstructed from active processes alone. A session
 
 ## Non-goals
 
-- A global list of all Entire trails. Trails enter the registry only through observed sessions, worktrees, branches, commits, or explicit local reassignment.
+- A global list of all Entire trails. New trails enter the registry only through active sessions. Worktree, branch, commit, and diff evidence may associate local work with a trail already in the registry.
 - Automatic worktree cleanup, branch deletion, trail mutation, merging, or reassignment.
 - A web app or menu-bar app. The first UI is a terminal dashboard.
 - Using a model to infer that two differently identified trails are the same work.
@@ -141,7 +141,7 @@ Remote Amp sessions remain visible. Worktree checks require a local path; a remo
 
 ## Trail extraction
 
-Trail references are extracted deterministically from user and assistant text, tool inputs and results, branch names, and unmerged commit messages. Supported text forms are:
+New trail references are extracted deterministically from active-session user and assistant text plus tool inputs and results. Branch names, unmerged commit messages, and diffs are scanned only to associate worktrees with trails already in the registry. Supported text forms are:
 
 - `https://entire.io/gh/<owner>/<repo>/trails/<id>`
 - `<owner>/<repo>#<id>`
