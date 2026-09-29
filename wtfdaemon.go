@@ -46,24 +46,31 @@ func wtfLockPath(home string) string        { return filepath.Join(wtfDir(home),
 func wtfHealthPath(home string) string      { return filepath.Join(wtfDir(home), "health.json") }
 func wtfScanRequestPath(home string) string { return filepath.Join(wtfDir(home), "scan-request") }
 
+func lockWTFBreaker(path string, operation int) (func(), bool) {
+	breaker, err := os.OpenFile(path+".breaker", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return func() {}, false
+	}
+	if err := syscall.Flock(int(breaker.Fd()), operation); err != nil {
+		_ = breaker.Close()
+		return func() {}, false
+	}
+	return func() {
+		_ = syscall.Flock(int(breaker.Fd()), syscall.LOCK_UN)
+		_ = breaker.Close()
+	}, true
+}
+
 func acquireWTFLock(home string) (func(), bool) {
 	path := wtfLockPath(home)
 	if os.MkdirAll(filepath.Dir(path), 0o700) != nil {
 		return func() {}, false
 	}
-	breakerPath := path + ".breaker"
-	breaker, err := os.OpenFile(breakerPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
+	unlockBreaker, ok := lockWTFBreaker(path, syscall.LOCK_EX|syscall.LOCK_NB)
+	if !ok {
 		return func() {}, false
 	}
-	if err := syscall.Flock(int(breaker.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = breaker.Close()
-		return func() {}, false
-	}
-	defer func() {
-		_ = syscall.Flock(int(breaker.Fd()), syscall.LOCK_UN)
-		_ = breaker.Close()
-	}()
+	defer unlockBreaker()
 
 	pid := wtfCurrentPID()
 	identity := fmt.Sprintf("%d %d\n", pid, wtfLockSequence.Add(1))
@@ -80,6 +87,11 @@ func acquireWTFLock(home string) (func(), bool) {
 				return func() {}, false
 			}
 			release := func() {
+				unlockBreaker, ok := lockWTFBreaker(path, syscall.LOCK_EX)
+				if !ok {
+					return
+				}
+				defer unlockBreaker()
 				data, err := os.ReadFile(path)
 				if err == nil && string(data) == identity {
 					_ = os.Remove(path)

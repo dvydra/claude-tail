@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -45,6 +46,96 @@ func TestWTFLockCoordinatesReplacesStaleAndReleasesOnlyOwner(t *testing.T) {
 	release()
 	if _, err := os.Stat(wtfLockPath(home)); !os.IsNotExist(err) {
 		t.Fatalf("owned lock remains: %v", err)
+	}
+}
+
+func TestWTFLockReleaseSerializesWithReplacement(t *testing.T) {
+	home := t.TempDir()
+	withWTFProcessFakes(t, 101, func(int) bool { return false }, func(int) string { return "" })
+	release, ok := acquireWTFLock(home)
+	if !ok {
+		t.Fatal("lock acquisition failed")
+	}
+
+	breaker, err := os.OpenFile(wtfLockPath(home)+".breaker", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(breaker.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		release()
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("release did not wait for the breaker lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := os.Stat(wtfLockPath(home)); err != nil {
+		t.Fatalf("release removed lock while replacement held breaker: %v", err)
+	}
+	if err := syscall.Flock(int(breaker.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := breaker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("release remained blocked after breaker unlock")
+	}
+	if _, err := os.Stat(wtfLockPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("owned lock remains: %v", err)
+	}
+}
+
+func TestWTFLockReleaseRefusesReplacedIdentityAfterWaiting(t *testing.T) {
+	home := t.TempDir()
+	withWTFProcessFakes(t, 101, func(int) bool { return false }, func(int) string { return "" })
+	release, ok := acquireWTFLock(home)
+	if !ok {
+		t.Fatal("lock acquisition failed")
+	}
+
+	breaker, err := os.OpenFile(wtfLockPath(home)+".breaker", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(breaker.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		release()
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("release did not wait for replacement")
+	case <-time.After(50 * time.Millisecond):
+	}
+	const replacement = "202 replacement-token\n"
+	if err := os.WriteFile(wtfLockPath(home), []byte(replacement), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(breaker.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := breaker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("release remained blocked after replacement")
+	}
+	got, err := os.ReadFile(wtfLockPath(home))
+	if err != nil || string(got) != replacement {
+		t.Fatalf("release removed replacement identity: %q, %v", got, err)
 	}
 }
 
