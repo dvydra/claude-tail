@@ -1362,24 +1362,30 @@ USAGE:
   entire-tail handover                                     # write today's handover docs
   entire-tail wtf                                          # active and today’s sessions
   entire-tail wtf install|status|uninstall                 # monitoring lifecycle
+  entire wtf install|status|uninstall                      # plugin equivalent
 
 SUBCOMMANDS:
   wtf                       Show active and today’s sessions in a dashboard.
                             Ended sessions are retained since local midnight.
                             Summaries use Apple Foundation Models when available
                             and fall back to deterministic session labels.
-                            ↑/↓ select, Enter opens a session, r requests a
-                            manual scan, and q/Escape quits. Monitoring scans
-                            every 2s when installed:
-                              wtf install    install/load the LaunchAgent
-                              wtf status     report monitoring health
-                              wtf uninstall  unload it; preserve state.json
-                            A new finding occurrence sends one Mac notification
-                            and tells the active challenger to stop and check with Daniel.
-                            Claude may report held/refused; Amp is
-                            unknown after a started command times out. Monitoring
-                            never cleans, reassigns, switches branches, or mutates
-                            trails automatically.
+                            ↑/↓ select, Enter opens a session, r refreshes, and
+                            q/Escape quits. Monitoring scans every 2s; r requests
+                            its next scan. With monitoring off, r runs one read-only
+                            fallback scan and writes no state or request marker.
+                              entire wtf install            entire-tail wtf install
+                              entire wtf status             entire-tail wtf status
+                              entire wtf uninstall          entire-tail wtf uninstall
+                            LaunchAgent: io.entire.entire-tail.wtf
+                            plist: ~/Library/LaunchAgents/io.entire.entire-tail.wtf.plist
+                            state: ~/Library/Application Support/entire-tail/wtf/state.json
+                            health: ~/Library/Application Support/entire-tail/wtf/health.json
+                            log: ~/Library/Application Support/entire-tail/wtf/daemon.log
+                            Per occurrence and channel, delivery stops after one
+                            success or unknown; failures retry with backoff. Restart
+                            changes sending to unknown. Warnings say "stop and check with Daniel."
+                            Monitoring never cleans worktrees, reassigns
+                            trails, switches branches, mutates trails, or repairs state.
   handover                  Enumerate today's Claude and Amp sessions, group them in a
                             picker (1-9 group · x separate · - skip · ⏎ write),
                             then launch an interactive agent that enriches each

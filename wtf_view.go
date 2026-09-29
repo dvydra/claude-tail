@@ -710,7 +710,7 @@ func (c *wtfDashboardCollector) Collect(_ map[string]wtfSummaryCache) (wtfSnapsh
 				}
 			}
 		}
-	} else if c.monitoring || !c.fallbackCurrent {
+	} else if refreshRequested || c.monitoring || !c.fallbackCurrent {
 		next, scanErr := c.deps.Scan(context.Background(), c.home, c.state, c.deps.ScanDeps)
 		c.state = next
 		if scanErr != nil {

@@ -988,6 +988,12 @@ func TestWTFDaemonDeliveryChannelsAreIsolated(t *testing.T) {
 	if delivery["mac"].State != "failed" || delivery["mac"].LastError != "mac unavailable" || delivery["session:"+finding.Challenger].State != "sent" {
 		t.Fatalf("terminal delivery states = %#v", delivery)
 	}
+	if current := saved.Findings[finding.ID]; !current.Active || current.Kind != finding.Kind || current.TrailKey != finding.TrailKey {
+		t.Fatalf("channel failure hid finding: %#v", current)
+	}
+	if warning := warningText(saved, saved.Findings[finding.ID]); !strings.Contains(warning, "Stop") || !strings.Contains(warning, "check with Daniel") {
+		t.Fatalf("unsafe warning after channel failure: %q", warning)
+	}
 }
 
 func waitForDeliveries(t *testing.T, deliveries *atomic.Int32, want int32) {

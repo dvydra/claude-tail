@@ -483,19 +483,36 @@ func TestWTFDashboardCollectorMalformedHealthRetainsLastValid(t *testing.T) {
 func TestWTFDashboardCollectorRefreshUsesLiveHealthAndRealMarker(t *testing.T) {
 	home := t.TempDir()
 	running := false
+	scans := 0
+	requests := 0
 	state := newWTFState(10)
 	collector := newWTFDashboardCollector(home, wtfDashboardDeps{
 		ReadState:  func(string, int64) (wtfState, error) { return state, nil },
 		ReadHealth: func(string) (wtfHealth, error) { return wtfHealth{PID: 1}, nil },
 		Running:    func(wtfHealth) bool { return running },
-		Scan:       func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) { return state, nil },
-		Request:    requestWTFScan,
-		Now:        time.Now,
+		Scan: func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) {
+			scans++
+			state.UpdatedAt++
+			return state, nil
+		},
+		Request: func(home string) error {
+			requests++
+			return requestWTFScan(home)
+		},
+		Now: time.Now,
 	})
+	collector.Collect(nil)
+	if scans != 1 {
+		t.Fatalf("initial fallback scans = %d, want 1", scans)
+	}
 	if err := collector.RequestRefresh(); err != nil {
 		t.Fatal(err)
 	}
+	snapshot, _ := collector.Collect(nil)
 	collector.Collect(nil)
+	if scans != 2 || requests != 0 || snapshot.GeneratedAt != 12 {
+		t.Fatalf("off refresh scans=%d requests=%d generated=%d, want 2/0/12", scans, requests, snapshot.GeneratedAt)
+	}
 	if _, err := os.Stat(wtfScanRequestPath(home)); !os.IsNotExist(err) {
 		t.Fatalf("off refresh marker: %v", err)
 	}
@@ -506,7 +523,7 @@ func TestWTFDashboardCollectorRefreshUsesLiveHealthAndRealMarker(t *testing.T) {
 	if _, err := os.Stat(wtfScanRequestPath(home)); !os.IsNotExist(err) {
 		t.Fatalf("refresh wrote marker before collection: %v", err)
 	}
-	snapshot, _ := collector.Collect(nil)
+	snapshot, _ = collector.Collect(nil)
 	if _, err := os.Stat(wtfScanRequestPath(home)); err != nil {
 		t.Fatalf("running refresh marker: %v", err)
 	}

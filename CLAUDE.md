@@ -622,8 +622,9 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
 - `wtf.go` / `wtf_scan.go` / `wtf_summary.go` / `wtf_view.go` — the foreground
   `entire wtf` / `entire-tail wtf` dashboard. It loads the durable registry,
   reconciles exact Claude/Amp sessions, trail claims, worktrees and findings,
-  then saves only a complete successful scan. Degraded sources stay visible in
-  the footer without blanking the in-memory result. Sections are Badness, Now,
+  and never writes state. Without monitoring, opening it and each consumed `r`
+  run one read-only fallback scan; repeated ticks do not. Degraded sources stay
+  visible in the footer without blanking the in-memory result. Sections are Badness, Now,
   WIP trails, and Recently stopped. Only session rows are selectable. WIP means
   any active associated session, dirty files, or commits absent from the local
   remote-default ref; clean merged history is hidden. Findings are sorted by
@@ -637,10 +638,13 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   files live under `~/Library/Application Support/entire-tail/wtf/`:
   `state.json`, `health.json`, and `daemon.log`. The plist lives at
   `~/Library/LaunchAgents/io.entire.entire-tail.wtf.plist`. One daemon owns
-  registry writes and each finding occurrence gets one attempt per delivery
-  channel at a time. Claude records `held`, `sent`, or `refused`; a complete
-  socket write without a receipt is sent. Amp timeout after process start is
-  `unknown` and is never retried. Failed channels retry independently. Restart
+  registry writes, including conservative partial state from degraded scans;
+  health records the scan error. Unavailable or errored worktree facts remain
+  unknown and cannot trigger unsafe claims or findings. Each finding occurrence
+  gets at most one successful or unknown delivery per channel. Failed attempts
+  retry independently per channel with backoff. Claude records `held`, `sent`,
+  or `refused`; a complete socket write without a receipt is sent. Amp timeout
+  after process start is `unknown` and is never retried. Restart
   converts an interrupted `sending` state to `unknown`, preventing duplicate
   delivery. `uninstall` removes the agent and health file but preserves registry
   history in `state.json`. Monitoring only warns the challenger to stop and

@@ -108,11 +108,20 @@ func TestHelpKeyIsWired(t *testing.T) {
 func TestHelpDocumentsWTFDashboard(t *testing.T) {
 	help := helpText()
 	for _, want := range []string{
-		"entire-tail wtf",
-		"active and today’s sessions",
-		"wtf install",
-		"wtf status",
-		"wtf uninstall",
+		"entire wtf install            entire-tail wtf install",
+		"entire wtf status             entire-tail wtf status",
+		"entire wtf uninstall          entire-tail wtf uninstall",
+		"io.entire.entire-tail.wtf",
+		"~/Library/LaunchAgents/io.entire.entire-tail.wtf.plist",
+		"~/Library/Application Support/entire-tail/wtf/state.json",
+		"~/Library/Application Support/entire-tail/wtf/health.json",
+		"~/Library/Application Support/entire-tail/wtf/daemon.log",
+		"Monitoring scans every 2s",
+		"monitoring off, r runs one read-only",
+		"writes no state or request marker",
+		"delivery stops after one\n                            success or unknown; failures retry with backoff",
+		"Restart\n                            changes sending to unknown",
+		"never cleans worktrees",
 		"stop and check with Daniel",
 	} {
 		if !strings.Contains(help, want) {

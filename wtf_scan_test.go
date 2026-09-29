@@ -925,6 +925,12 @@ func TestScanWTFReportsNewRepoWorktreeListFailureAndKeepsSession(t *testing.T) {
 	if session, ok := got.Sessions["amp:T-new"]; !ok || !session.Active || session.Cwd != cwd {
 		t.Fatalf("partial session state: %#v", got.Sessions)
 	}
+	if worktree, ok := got.Worktrees[cwd]; ok {
+		t.Fatalf("unavailable worktree was presented as known: %#v", worktree)
+	}
+	if len(got.Findings) != 0 {
+		t.Fatalf("unknown worktree facts produced findings: %#v", got.Findings)
+	}
 }
 
 func TestDetectWTFFindingsDuplicateActiveClaim(t *testing.T) {
