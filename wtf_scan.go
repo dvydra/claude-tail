@@ -146,8 +146,12 @@ func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prio
 		}
 	}
 	worktrees := make([]wtfWorktree, 0, len(entries)+len(priorByPath))
+	var inspectionErrors []error
 	for _, entry := range entries {
 		worktree := inspectWorktree(ctx, repo, entry, now, run)
+		if worktree.Exists && worktree.GitError != "" {
+			inspectionErrors = append(inspectionErrors, fmt.Errorf("%s: %s", entry.Path, worktree.GitError))
+		}
 		if old, ok := priorByPath[entry.Path]; ok {
 			worktree.FirstSeen = old.FirstSeen
 			worktree.SessionKeys = old.SessionKeys
@@ -178,7 +182,7 @@ func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prio
 		worktrees = append(worktrees, worktree)
 		delete(priorByPath, old.Path)
 	}
-	return worktrees, nil
+	return worktrees, errors.Join(inspectionErrors...)
 }
 
 func resolveRemoteDefault(ctx context.Context, cwd string, run wtfCommandRunner) string {
@@ -230,9 +234,7 @@ func inspectWorktree(ctx context.Context, repo string, entry gitWorktreeEntry, n
 	}
 	w.DefaultBranch = resolveRemoteDefault(ctx, entry.Path, run)
 	if w.DefaultBranch == "" {
-		if w.GitError == "" {
-			w.GitError = "remote default unknown"
-		}
+		w.GitError = firstNonEmpty(w.GitError, "remote default unknown")
 		return w
 	}
 	rangeArg := w.DefaultBranch + "..HEAD"
@@ -251,12 +253,16 @@ func inspectWorktree(ctx context.Context, repo string, entry gitWorktreeEntry, n
 		if lines := boundedLines(nonemptyLines(subjects), wtfSubjectLimit); len(lines) > 0 {
 			w.GitEvidence = append(w.GitEvidence, wtfGitEvidence{Source: "unmerged subjects", Text: strings.Join(lines, "\n")})
 		}
+	} else {
+		w.GitError = firstNonEmpty(w.GitError, "git log failed")
 	}
 	if diff, err := run(ctx, entry.Path, "git", "-C", entry.Path, "diff", "--no-ext-diff", "--unified=0", "HEAD", "--"); err == nil && len(diff) > 0 {
 		if len(diff) > wtfDiffLimit {
 			diff = diff[:wtfDiffLimit]
 		}
 		w.GitEvidence = append(w.GitEvidence, wtfGitEvidence{Source: "diff", Text: string(diff)})
+	} else if err != nil {
+		w.GitError = firstNonEmpty(w.GitError, "git diff failed")
 	}
 	return w
 }
@@ -420,7 +426,7 @@ func activeTrailAssociations(state wtfState, trail wtfTrail) []wtfAssociation {
 			path = association.Worktree
 		}
 		worktree, local := state.Worktrees[path]
-		if !local || worktree.GitError == "worktree path missing" {
+		if !local || !worktree.Exists || worktree.GitError != "" {
 			continue
 		}
 		bySession[association.SessionKey] = wtfAssociation{SessionKey: association.SessionKey, Worktree: path}
@@ -738,7 +744,7 @@ func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map
 		trail.LastSeen = now
 		association := wtfAssociation{SessionKey: observation.SessionKey, Worktree: observation.Worktree, At: found.At, Evidence: found.Matched, Source: found.Source}
 		trail.Associations = addAssociation(trail.Associations, association)
-		if worktree, ok := worktrees[observation.Worktree]; ok && worktree.GitError != "worktree path missing" && worktree.Repo == observation.Repo {
+		if worktree, ok := worktrees[observation.Worktree]; ok && worktree.Exists && worktree.GitError == "" && worktree.Repo == observation.Repo {
 			claim := wtfClaim{SessionKey: observation.SessionKey, Worktree: observation.Worktree, At: found.At, Evidence: found.Matched}
 			claims[trail.Key] = append(claims[trail.Key], claim)
 			if trail.FirstClaim == nil {
@@ -762,7 +768,7 @@ func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map
 		trail := state.Trails[key]
 		for _, path := range sortedMapKeys(worktrees) {
 			worktree := worktrees[path]
-			if worktree.Repo != trail.Owner+"/"+trail.Repo {
+			if !worktree.Exists || worktree.GitError != "" || worktree.Repo != trail.Owner+"/"+trail.Repo {
 				continue
 			}
 			if trail.SourceBranch != "" && worktree.Branch == trail.SourceBranch {

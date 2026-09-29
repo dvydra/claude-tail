@@ -527,8 +527,8 @@ func TestReconcileTrailsChoosesEarliestClaimAndPreservesIt(t *testing.T) {
 		"claude:earlier": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, URL: "url", Matched: "api#7", Source: "user", At: 100, Resolved: true}},
 	}
 	worktrees := map[string]wtfWorktree{
-		"/wt/later":   {Repo: "acme/api", Path: "/wt/later"},
-		"/wt/earlier": {Repo: "acme/api", Path: "/wt/earlier"},
+		"/wt/later":   {Repo: "acme/api", Path: "/wt/later", Exists: true},
+		"/wt/earlier": {Repo: "acme/api", Path: "/wt/earlier", Exists: true},
 	}
 
 	got := reconcileTrails(wtfState{}, sessions, evidence, worktrees, 300)
@@ -552,7 +552,7 @@ func TestReconcileTrailsClaimsRequireActiveLocalWorktree(t *testing.T) {
 		{Agent: AgentAmp, ID: "two", Repo: "acme/api", Cwd: "/wt/shared", Active: true},
 	}
 	evidence := map[string][]trailEvidence{"claude:remote": {e}, "claude:one": {e}, "amp:two": {{Key: e.Key, Owner: e.Owner, Repo: e.Repo, Number: e.Number, Matched: e.Matched, Source: e.Source, At: 200, Resolved: true}}}
-	got := reconcileTrails(wtfState{}, sessions, evidence, map[string]wtfWorktree{"/wt/shared": {Repo: "acme/api", Path: "/wt/shared"}}, 300)
+	got := reconcileTrails(wtfState{}, sessions, evidence, map[string]wtfWorktree{"/wt/shared": {Repo: "acme/api", Path: "/wt/shared", Exists: true}}, 300)
 	trail := got.Trails[e.Key]
 	if trail.OwnerSession != "claude:one" || trail.FirstClaim.Worktree != "/wt/shared" || len(trail.Associations) != 3 {
 		t.Fatalf("claims and associations: %#v", trail)
@@ -569,11 +569,77 @@ func TestRemoteAndMissingAssociationsAreRelatedButNeverClaims(t *testing.T) {
 	}
 }
 
+func TestErroredExistingWorktreeNeitherClaimsNorTriggersFindings(t *testing.T) {
+	e := trailEvidence{Key: "acme/api#9", Owner: "acme", Repo: "api", Number: 9, Matched: "api#9", Source: "user", At: 1, Resolved: true}
+	sessions := []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/bad", Active: true}}
+	worktrees := map[string]wtfWorktree{"/wt/bad": {Repo: "acme/api", Path: "/wt/bad", Exists: true, GitError: "git diff failed", Branch: "main", DefaultBranch: "origin/main"}}
+	state := reconcileTrails(wtfState{}, sessions, map[string][]trailEvidence{"claude:one": {e}}, worktrees, 2)
+	trail := state.Trails[e.Key]
+	if trail.FirstClaim != nil || trail.OwnerSession != "" {
+		t.Fatalf("errored worktree became a claim: %#v", trail)
+	}
+	if findings := detectWTFFindings(state, 2); len(findings) != 0 {
+		t.Fatalf("errored worktree triggered findings: %#v", findings)
+	}
+}
+
+func TestPerWorktreeGitFailureMakesScanLocallyIncomplete(t *testing.T) {
+	for _, failure := range []string{"status", "default", "rev-list", "log", "diff"} {
+		t.Run(failure, func(t *testing.T) {
+			dir := t.TempDir()
+			deps := emptyWTFDeps(time.Unix(100, 0))
+			deps.Inventory.Today = func(string, int64, *time.Location) []handoverItem {
+				return []handoverItem{{Agent: AgentClaude, SessionID: "one", Repo: "acme/api", Cwd: dir}}
+			}
+			deps.Run = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+				joined := strings.Join(args, " ")
+				switch {
+				case strings.Contains(joined, "worktree list"):
+					return []byte("worktree " + dir + "\nHEAD abc\nbranch refs/heads/feat\n\n"), nil
+				case strings.Contains(joined, "status --porcelain"):
+					if failure == "status" {
+						return nil, errors.New("status failed")
+					}
+					return nil, nil
+				case strings.Contains(joined, "symbolic-ref"):
+					if failure == "default" {
+						return nil, errors.New("default failed")
+					}
+					return []byte("refs/remotes/origin/main\n"), nil
+				case strings.Contains(joined, "show-ref"):
+					return nil, errors.New("ref absent")
+				case strings.Contains(joined, "rev-list --count"):
+					if failure == "rev-list" {
+						return nil, errors.New("rev-list failed")
+					}
+					return []byte("0\n"), nil
+				case strings.Contains(joined, " log "):
+					if failure == "log" {
+						return nil, errors.New("log failed")
+					}
+					return nil, nil
+				case strings.Contains(joined, " diff "):
+					if failure == "diff" {
+						return nil, errors.New("diff failed")
+					}
+					return nil, nil
+				}
+				return nil, nil
+			}
+			saves := 0
+			_, next, err := reconcileWTFDashboard(context.Background(), t.TempDir(), newWTFState(1), deps, func(wtfState) error { saves++; return nil })
+			if err == nil || saves != 0 || next.Worktrees[dir].GitError == "" {
+				t.Fatalf("err=%v saves=%d worktree=%#v", err, saves, next.Worktrees[dir])
+			}
+		})
+	}
+}
+
 func TestReconcileTrailsProducesStableAssociationJSON(t *testing.T) {
 	trail := wtfTrail{Key: "acme/api#9", Owner: "acme", Repo: "api", Number: 9, SourceBranch: "feat/9"}
 	makeState := func(reverse bool) []byte {
 		worktrees := map[string]wtfWorktree{}
-		items := []wtfWorktree{{Repo: "acme/api", Path: "/b", Branch: "feat/9", FirstSeen: 2}, {Repo: "acme/api", Path: "/a", GitEvidence: []wtfGitEvidence{{Source: "branch", Text: "acme/api#9"}}, FirstSeen: 1}}
+		items := []wtfWorktree{{Repo: "acme/api", Path: "/b", Branch: "feat/9", FirstSeen: 2, Exists: true}, {Repo: "acme/api", Path: "/a", GitEvidence: []wtfGitEvidence{{Source: "branch", Text: "acme/api#9"}}, FirstSeen: 1, Exists: true}}
 		if reverse {
 			items[0], items[1] = items[1], items[0]
 		}
@@ -611,8 +677,8 @@ func TestScanWTFMetadataSelectsInitialCanonicalInSameScan(t *testing.T) {
 
 func TestReconcileTrailsMovingSessionKeepsOwnerAndAddsAssociation(t *testing.T) {
 	e := trailEvidence{Key: "acme/api#9", Owner: "acme", Repo: "api", Number: 9, Matched: "api#9", Source: "user", At: 100, Resolved: true}
-	first := reconcileTrails(wtfState{}, []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/one", Active: true}}, map[string][]trailEvidence{"claude:one": {e}}, map[string]wtfWorktree{"/wt/one": {Repo: "acme/api", Path: "/wt/one"}}, 200)
-	second := reconcileTrails(first, []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/two", Active: true}}, map[string][]trailEvidence{"claude:one": {e}}, map[string]wtfWorktree{"/wt/two": {Repo: "acme/api", Path: "/wt/two"}}, 300)
+	first := reconcileTrails(wtfState{}, []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/one", Active: true}}, map[string][]trailEvidence{"claude:one": {e}}, map[string]wtfWorktree{"/wt/one": {Repo: "acme/api", Path: "/wt/one", Exists: true}}, 200)
+	second := reconcileTrails(first, []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/two", Active: true}}, map[string][]trailEvidence{"claude:one": {e}}, map[string]wtfWorktree{"/wt/two": {Repo: "acme/api", Path: "/wt/two", Exists: true}}, 300)
 	trail := second.Trails[e.Key]
 	if trail.OwnerSession != "claude:one" || trail.CanonicalWorktree != "/wt/one" || len(trail.Associations) != 2 {
 		t.Fatalf("moved session: %#v", trail)
@@ -636,7 +702,7 @@ func TestReconcileTrailsInactiveCannotIntroduceOrClaim(t *testing.T) {
 func TestReconcileTrailsAssociationsAreIdempotentAndRejectBareGitNumbers(t *testing.T) {
 	trail := wtfTrail{Key: "acme/api#11", Owner: "acme", Repo: "api", Number: 11}
 	prior := wtfState{Trails: map[string]wtfTrail{trail.Key: trail}}
-	worktrees := map[string]wtfWorktree{"/wt/git": {Repo: "acme/api", Path: "/wt/git", GitEvidence: []wtfGitEvidence{{Source: "branch", Text: "fix trail 11 and acme/api#11"}}}}
+	worktrees := map[string]wtfWorktree{"/wt/git": {Repo: "acme/api", Path: "/wt/git", Exists: true, GitEvidence: []wtfGitEvidence{{Source: "branch", Text: "fix trail 11 and acme/api#11"}}}}
 	first := reconcileTrails(prior, nil, nil, worktrees, 200)
 	second := reconcileTrails(first, nil, nil, worktrees, 300)
 	if got := second.Trails[trail.Key].Associations; len(got) != 1 || got[0].Evidence != "acme/api#11" {
@@ -676,8 +742,8 @@ func TestReconcileTrailsCanonicalFallbackUsesClaimsOnly(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			prior := wtfState{Trails: map[string]wtfTrail{key: {Key: key, Owner: "acme", Repo: "api", Number: 13, SourceBranch: test.sourceBranch}}}
 			worktrees := map[string]wtfWorktree{
-				"/wt/git":   {Repo: "acme/api", Path: "/wt/git", Branch: "feat/git", FirstSeen: 50, GitEvidence: []wtfGitEvidence{{Source: "unmerged subjects", Text: key}}},
-				"/wt/claim": {Repo: "acme/api", Path: "/wt/claim", Branch: "feat/claim", FirstSeen: 90},
+				"/wt/git":   {Repo: "acme/api", Path: "/wt/git", Branch: "feat/git", FirstSeen: 50, Exists: true, GitEvidence: []wtfGitEvidence{{Source: "unmerged subjects", Text: key}}},
+				"/wt/claim": {Repo: "acme/api", Path: "/wt/claim", Branch: "feat/claim", FirstSeen: 90, Exists: true},
 			}
 
 			got := reconcileTrails(prior, []wtfSession{session}, map[string][]trailEvidence{"claude:claim": {claimEvidence}}, worktrees, 200)
@@ -801,9 +867,18 @@ func TestScanWTFChoosesExistingPriorRepoSeedDeterministically(t *testing.T) {
 			deps := wtfScanDeps{
 				Inventory: wtfInventoryDeps{Today: func(string, int64, *time.Location) []handoverItem { return nil }, Live: func(string) []liveSession { return nil }},
 				Run: func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
-					if name == "git" && strings.Contains(strings.Join(args, " "), "worktree list --porcelain") {
+					joined := strings.Join(args, " ")
+					if name == "git" && strings.Contains(joined, "worktree list --porcelain") {
 						dirs = append(dirs, dir)
 						return []byte("worktree " + existing + "\nHEAD abc\nbranch refs/heads/main\n"), nil
+					}
+					switch {
+					case strings.Contains(joined, "status --porcelain"), strings.Contains(joined, " log "), strings.Contains(joined, " diff "):
+						return nil, nil
+					case strings.Contains(joined, "symbolic-ref"):
+						return []byte("refs/remotes/origin/main\n"), nil
+					case strings.Contains(joined, "rev-list --count"):
+						return []byte("0\n"), nil
 					}
 					return nil, exec.ErrNotFound
 				},
