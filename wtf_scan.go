@@ -28,6 +28,69 @@ const (
 	wtfDiffLimit         = 128 * 1024
 )
 
+type entireTrailJSON struct {
+	Number         int    `json:"number"`
+	URL            string `json:"url"`
+	Branch         string `json:"branch"`
+	OriginalBranch string `json:"original_branch"`
+	Base           string `json:"base"`
+	Title          string `json:"title"`
+	Status         string `json:"status"`
+}
+
+func fetchTrailMetadata(ctx context.Context, trail wtfTrail, now int64, run wtfCommandRunner) (wtfTrail, error) {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	data, err := run(ctx, "", "entire", "trail", "show", strconv.Itoa(trail.Number), "--repo", "gh/"+trail.Owner+"/"+trail.Repo, "--json")
+	if err == nil {
+		var metadata entireTrailJSON
+		err = json.Unmarshal(data, &metadata)
+		if err == nil {
+			trail.URL = metadata.URL
+			trail.Title = metadata.Title
+			trail.Status = metadata.Status
+			trail.SourceBranch = metadata.Branch
+			if trail.SourceBranch == "" {
+				trail.SourceBranch = metadata.OriginalBranch
+			}
+			trail.TargetBranch = metadata.Base
+			trail.MetadataUpdatedAt = now
+			trail.MetadataError = ""
+			trail.MetadataAttempts = 0
+			trail.MetadataNextRetry = 0
+			return trail, nil
+		}
+	}
+	trail.MetadataAttempts++
+	delay := int64(60)
+	for attempt := 1; attempt < trail.MetadataAttempts && delay < 3600; attempt++ {
+		delay *= 2
+		if delay > 3600 {
+			delay = 3600
+		}
+	}
+	trail.MetadataError = err.Error()
+	trail.MetadataNextRetry = now + delay
+	return trail, err
+}
+
+func trailMetadataDue(trail wtfTrail, activeWIP bool, now int64) bool {
+	if trail.MetadataNextRetry > now {
+		return false
+	}
+	if trail.MetadataAttempts > 0 {
+		return true
+	}
+	if trail.MetadataUpdatedAt == 0 {
+		return true
+	}
+	interval := int64((24 * time.Hour) / time.Second)
+	if activeWIP {
+		interval = int64((10 * time.Minute) / time.Second)
+	}
+	return now-trail.MetadataUpdatedAt >= interval
+}
+
 func parseGitWorktreePorcelain(data []byte) []gitWorktreeEntry {
 	var entries []gitWorktreeEntry
 	var current *gitWorktreeEntry

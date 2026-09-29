@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseGitWorktreePorcelain(t *testing.T) {
@@ -254,6 +256,82 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
+
+func TestFetchTrailMetadataCommandAndBranchPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		response   string
+		wantSource string
+	}{
+		{"original branch fallback", `{"number":1223,"url":"https://entire.io/gh/entirehq/entiredb/trails/1223","branch":"","original_branch":"shallow","base":"main","title":"A trail","status":"open"}`, "shallow"},
+		{"branch wins", `{"number":1223,"branch":"current","original_branch":"shallow","base":"main"}`, "current"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			trail := wtfTrail{Key: "entirehq/entiredb#1223", Owner: "entirehq", Repo: "entiredb", Number: 1223, FirstSeen: 1, LastSeen: 2, MetadataError: "old", MetadataAttempts: 3, MetadataNextRetry: 500}
+			run := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+				if dir != "" || name != "entire" || strings.Join(args, " ") != "trail show 1223 --repo gh/entirehq/entiredb --json" {
+					t.Fatalf("command: dir=%q name=%q args=%q", dir, name, args)
+				}
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) > 12*time.Second || time.Until(deadline) < 11*time.Second {
+					t.Fatalf("deadline does not apply 12-second timeout: %v, %v", deadline, ok)
+				}
+				return []byte(tt.response), nil
+			}
+			got, err := fetchTrailMetadata(context.Background(), trail, 600, run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.SourceBranch != tt.wantSource || got.TargetBranch != "main" || got.MetadataUpdatedAt != 600 || got.MetadataError != "" || got.MetadataAttempts != 0 || got.MetadataNextRetry != 0 {
+				t.Fatalf("decoded metadata: %#v", got)
+			}
+			if got.FirstSeen != 1 || got.LastSeen != 2 {
+				t.Fatalf("local evidence changed: %#v", got)
+			}
+		})
+	}
+}
+
+func TestFetchTrailMetadataFailureRetainsSuccessfulMetadataAndBacksOff(t *testing.T) {
+	for _, attempt := range []struct {
+		prior int
+		delay int64
+	}{{0, 60}, {1, 120}, {2, 240}, {3, 480}, {8, 3600}} {
+		trail := wtfTrail{Owner: "acme", Repo: "api", Number: 7, Title: "kept", Status: "open", SourceBranch: "feat", TargetBranch: "main", MetadataUpdatedAt: 50, MetadataAttempts: attempt.prior, FirstClaim: &wtfClaim{Evidence: "local"}, Associations: []wtfAssociation{{Evidence: "local"}}}
+		got, err := fetchTrailMetadata(context.Background(), trail, 1000, func(context.Context, string, string, ...string) ([]byte, error) {
+			return nil, errors.New("offline")
+		})
+		if err == nil || got.Title != "kept" || got.Status != "open" || got.SourceBranch != "feat" || got.TargetBranch != "main" || got.MetadataUpdatedAt != 50 || got.MetadataAttempts != attempt.prior+1 || got.MetadataNextRetry != 1000+attempt.delay || got.MetadataError == "" || got.FirstClaim == nil || len(got.Associations) != 1 {
+			t.Fatalf("prior attempts %d: %#v, err=%v", attempt.prior, got, err)
+		}
+	}
+}
+
+func TestTrailMetadataDue(t *testing.T) {
+	const now = int64(100000)
+	tests := []struct {
+		name   string
+		trail  wtfTrail
+		active bool
+		want   bool
+	}{
+		{"new", wtfTrail{}, false, true},
+		{"active before ten minutes", wtfTrail{MetadataUpdatedAt: now - 599}, true, false},
+		{"active after ten minutes", wtfTrail{MetadataUpdatedAt: now - 600}, true, true},
+		{"merged before 24 hours", wtfTrail{Status: "merged", MetadataUpdatedAt: now - 86399}, false, false},
+		{"merged after 24 hours", wtfTrail{Status: "merged", MetadataUpdatedAt: now - 86400}, false, true},
+		{"failed before retry", wtfTrail{MetadataNextRetry: now + 1}, true, false},
+		{"failed at retry", wtfTrail{MetadataNextRetry: now}, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := trailMetadataDue(tt.trail, tt.active, now); got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
