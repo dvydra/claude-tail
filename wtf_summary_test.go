@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -151,5 +153,38 @@ func TestSummarizeWTFSnapshotSkipsRemoteRowsAndKeysCacheByAgent(t *testing.T) {
 	}
 	if got.Sessions[2].Summary != "Remote title" || seen["amp:remote"] != 0 {
 		t.Fatalf("remote row = %+v, seen = %+v", got.Sessions[2], seen)
+	}
+}
+
+func TestWTFDashboardRestartUsesPersistedSummaryCache(t *testing.T) {
+	home := t.TempDir()
+	path := writeWTFTranscript(t, home, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"matching transcript\"}}\n")
+	session := wtfSession{Agent: AgentClaude, ID: "restart", Transcript: path}
+	input := wtfSummaryInput(path, home)
+	digest := sha256.Sum256([]byte(input))
+	state := newWTFState(100)
+	state.SummaryCache[wtfSessionKey(session.Agent, session.ID)] = wtfSummaryCache{
+		InputHash: hex.EncodeToString(digest[:]),
+		Value:     wtfSummary{Summary: "persisted summary"},
+	}
+	if err := saveWTFState(home, state); err != nil {
+		t.Fatal(err)
+	}
+
+	cache, err := loadWTFDashboardCache(home, 101)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmCalls := 0
+	stubWTFRunner(t, func(string, string, string) ([]byte, error) {
+		fmCalls++
+		return nil, errors.New("fm should not run")
+	})
+	snapshot, _ := summarizeWTFSnapshot(wtfSnapshot{Home: home, Sessions: []wtfSession{session}}, home, cache, summarizeWTFSession)
+	if fmCalls != 0 {
+		t.Fatalf("fm calls = %d, want 0", fmCalls)
+	}
+	if got := snapshot.Sessions[0].Summary; got != "persisted summary" {
+		t.Fatalf("summary = %q", got)
 	}
 }

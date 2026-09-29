@@ -357,7 +357,7 @@ type wtfCollectResult struct {
 	cache    map[string]wtfSummaryCache
 }
 
-func runWTFDashboardLoop(ui wtfUI, collect func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache), keys <-chan wtfKeyEvent, render func(wtfUI) error) (*wtfSession, error) {
+func runWTFDashboardLoop(ui wtfUI, initialCache map[string]wtfSummaryCache, collect func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache), keys <-chan wtfKeyEvent, render func(wtfUI) error) (*wtfSession, error) {
 	requests := make(chan map[string]wtfSummaryCache, 1)
 	results := make(chan wtfCollectResult)
 	done := make(chan struct{})
@@ -373,7 +373,10 @@ func runWTFDashboardLoop(ui wtfUI, collect func(map[string]wtfSummaryCache) (wtf
 		}
 	}()
 
-	cache := map[string]wtfSummaryCache{}
+	cache := initialCache
+	if cache == nil {
+		cache = map[string]wtfSummaryCache{}
+	}
 	refreshing := false
 	refreshPending := false
 	requestRefresh := func() {
@@ -434,7 +437,10 @@ func runWTFDashboardLoop(ui wtfUI, collect func(map[string]wtfSummaryCache) (wtf
 }
 
 func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
-	cache := map[string]wtfSummaryCache{}
+	cache, err := loadWTFDashboardCache(home, time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
 	if !isCharDevice(os.Stdout) {
 		snapshot, _ := collectWTFSnapshot(home, cache)
 		_, err := io.WriteString(os.Stdout, renderWTFSnapshot(snapshot, 120, false))
@@ -495,7 +501,15 @@ func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
 		_, err := io.WriteString(tty, renderWTF(ui, theme))
 		return err
 	}
-	return runWTFDashboardLoop(wtfUI{Width: width, Height: height}, collect, keys, render)
+	return runWTFDashboardLoop(wtfUI{Width: width, Height: height}, cache, collect, keys, render)
+}
+
+func loadWTFDashboardCache(home string, now int64) (map[string]wtfSummaryCache, error) {
+	state, err := loadWTFState(home, now)
+	if err != nil {
+		return nil, err
+	}
+	return state.SummaryCache, nil
 }
 
 func wtfTreeChoice(session wtfSession) treeChoice {

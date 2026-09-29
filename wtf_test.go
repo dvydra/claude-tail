@@ -83,6 +83,71 @@ func TestWTFStateCorruptFileIsPreserved(t *testing.T) {
 	}
 }
 
+func TestWTFStateCorruptRecoveryDoesNotOverwriteExistingCopy(t *testing.T) {
+	home := t.TempDir()
+	now := int64(1_700_000_123)
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := []byte("first corrupt state")
+	existing := filepath.Join(wtfDir(home), "state.corrupt-1700000123.json")
+	if err := os.WriteFile(existing, first, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second := []byte(`{"version":`)
+	if err := os.WriteFile(wtfStatePath(home), second, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadWTFState(home, now)
+	if err == nil || !strings.Contains(err.Error(), "recovered corrupt wtf state") {
+		t.Fatalf("load error = %v", err)
+	}
+	if got, readErr := os.ReadFile(existing); readErr != nil || string(got) != string(first) {
+		t.Fatalf("first corrupt copy = %q, err = %v", got, readErr)
+	}
+	next := filepath.Join(wtfDir(home), "state.corrupt-1700000123-1.json")
+	if got, readErr := os.ReadFile(next); readErr != nil || string(got) != string(second) {
+		t.Fatalf("second corrupt copy = %q, err = %v", got, readErr)
+	}
+}
+
+func TestWTFStateRejectsUnsupportedVersionsWithoutMovingFile(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		json string
+		want string
+	}{
+		{name: "missing", json: `{}`, want: "missing version"},
+		{name: "older", json: "{\"version\":0}", want: "unsupported version 0"},
+		{name: "newer", json: "{\"version\":2}", want: "unsupported version 2"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(wtfStatePath(home), []byte(test.json), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			state, err := loadWTFState(home, 123)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("load error = %v, want %q", err, test.want)
+			}
+			if state.Version != wtfStateVersion || state.Sessions == nil {
+				t.Fatalf("replacement state = %+v", state)
+			}
+			if got, readErr := os.ReadFile(wtfStatePath(home)); readErr != nil || string(got) != test.json {
+				t.Fatalf("state file = %q, err = %v", got, readErr)
+			}
+			if copies, globErr := filepath.Glob(filepath.Join(wtfDir(home), "state.corrupt-*.json")); globErr != nil || len(copies) != 0 {
+				t.Fatalf("corrupt copies = %v, err = %v", copies, globErr)
+			}
+		})
+	}
+}
+
 func TestExpireWTFSessionsKeepsAssociations(t *testing.T) {
 	state := newWTFState(200)
 	state.Sessions["claude:old"] = wtfSession{Agent: AgentClaude, ID: "old", State: "ended", LastActivity: 99}

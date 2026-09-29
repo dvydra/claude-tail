@@ -260,7 +260,7 @@ func TestWTFDashboardLoopHandlesKeysWhileCollectionBlocked(t *testing.T) {
 			{Agent: AgentClaude, ID: "one", Active: true},
 			{Agent: AgentAmp, ID: "two", Active: true},
 		}}}
-		_, _ = runWTFDashboardLoop(ui, collect, keys, func(ui wtfUI) error {
+		_, _ = runWTFDashboardLoop(ui, nil, collect, keys, func(ui wtfUI) error {
 			renders <- ui
 			return nil
 		})
@@ -290,7 +290,7 @@ func TestWTFDashboardLoopHandlesEscapeWhileCollectionBlocked(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = runWTFDashboardLoop(wtfUI{Width: 80, Height: 20}, func(cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
+		_, _ = runWTFDashboardLoop(wtfUI{Width: 80, Height: 20}, nil, func(cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
 			<-release
 			return wtfSnapshot{}, cache
 		}, keys, func(wtfUI) error { return nil })
@@ -302,6 +302,29 @@ func TestWTFDashboardLoopHandlesEscapeWhileCollectionBlocked(t *testing.T) {
 		t.Fatal("Escape was blocked by collection")
 	}
 	close(release)
+}
+
+func TestWTFDashboardLoopStartsWithLoadedCache(t *testing.T) {
+	want := map[string]wtfSummaryCache{"claude:one": {InputHash: "persisted"}}
+	seen := make(chan map[string]wtfSummaryCache, 1)
+	keys := make(chan wtfKeyEvent, 1)
+	keys <- wtfKeyEvent{key: kEsc}
+
+	_, err := runWTFDashboardLoop(wtfUI{Width: 80, Height: 20}, want, func(cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
+		seen <- cache
+		return wtfSnapshot{}, cache
+	}, keys, func(wtfUI) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-seen:
+		if got["claude:one"].InputHash != "persisted" {
+			t.Fatalf("initial cache = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("collector did not receive initial cache")
+	}
 }
 
 func TestRenderWTFViewportKeepsHeadersOrderedAndNonSelectable(t *testing.T) {

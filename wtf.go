@@ -144,23 +144,50 @@ func initializeWTFStateMaps(state *wtfState) {
 }
 
 func loadWTFState(home string, now int64) (wtfState, error) {
-	state := newWTFState(now)
+	fresh := newWTFState(now)
 	data, err := os.ReadFile(wtfStatePath(home))
 	if errors.Is(err, os.ErrNotExist) {
-		return state, nil
+		return fresh, nil
 	}
 	if err != nil {
-		return state, err
+		return fresh, err
 	}
+	var state wtfState
 	if err := json.Unmarshal(data, &state); err != nil {
-		corrupt := filepath.Join(wtfDir(home), fmt.Sprintf("state.corrupt-%d.json", now))
+		corrupt := nextWTFCorruptPath(home, now)
 		if renameErr := os.Rename(wtfStatePath(home), corrupt); renameErr != nil {
 			return newWTFState(now), fmt.Errorf("recover corrupt wtf state: decode: %v; preserve: %w", err, renameErr)
 		}
 		return newWTFState(now), fmt.Errorf("recovered corrupt wtf state as %s: %w", corrupt, err)
 	}
+	var header struct {
+		Version *int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return fresh, err
+	}
+	if header.Version == nil {
+		return fresh, fmt.Errorf("wtf state: missing version, expected %d", wtfStateVersion)
+	}
+	if state.Version != wtfStateVersion {
+		return fresh, fmt.Errorf("wtf state: unsupported version %d, expected %d", state.Version, wtfStateVersion)
+	}
 	initializeWTFStateMaps(&state)
 	return state, nil
+}
+
+func nextWTFCorruptPath(home string, now int64) string {
+	dir := wtfDir(home)
+	base := filepath.Join(dir, fmt.Sprintf("state.corrupt-%d", now))
+	for suffix := 0; ; suffix++ {
+		path := base + ".json"
+		if suffix > 0 {
+			path = fmt.Sprintf("%s-%d.json", base, suffix)
+		}
+		if _, err := os.Stat(path); err != nil {
+			return path
+		}
+	}
 }
 
 func saveWTFState(home string, state wtfState) (err error) {
