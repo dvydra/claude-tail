@@ -308,6 +308,182 @@ type trailEvidence struct {
 	Resolution string
 }
 
+type wtfObservation struct {
+	SessionKey string
+	Active     bool
+	Repo       string
+	Worktree   string
+	Branch     string
+	Evidence   trailEvidence
+}
+
+func reconcileTrails(prior wtfState, sessions []wtfSession, evidence map[string][]trailEvidence, worktrees map[string]wtfWorktree, now int64) wtfState {
+	state := prior
+	if state.Trails == nil {
+		state.Trails = make(map[string]wtfTrail)
+	} else {
+		trails := make(map[string]wtfTrail, len(state.Trails))
+		for key, trail := range state.Trails {
+			trails[key] = trail
+		}
+		state.Trails = trails
+	}
+	state.Worktrees = make(map[string]wtfWorktree, len(worktrees))
+	for path, worktree := range worktrees {
+		state.Worktrees[path] = worktree
+	}
+
+	var observations []wtfObservation
+	for _, session := range sessions {
+		key := wtfSessionKey(session.Agent, session.ID)
+		for _, found := range evidence[key] {
+			if found.Resolved {
+				observations = append(observations, wtfObservation{SessionKey: key, Active: session.Active, Repo: session.Repo, Worktree: session.Cwd, Branch: session.Branch, Evidence: found})
+			}
+		}
+	}
+	sort.SliceStable(observations, func(i, j int) bool {
+		if observations[i].Evidence.At != observations[j].Evidence.At {
+			return observations[i].Evidence.At < observations[j].Evidence.At
+		}
+		if observations[i].SessionKey != observations[j].SessionKey {
+			return observations[i].SessionKey < observations[j].SessionKey
+		}
+		return observations[i].Worktree < observations[j].Worktree
+	})
+
+	claims := make(map[string][]wtfClaim)
+	for _, observation := range observations {
+		if !observation.Active {
+			continue
+		}
+		found := observation.Evidence
+		trail, exists := state.Trails[found.Key]
+		if !exists {
+			trail = wtfTrail{Key: found.Key, Owner: found.Owner, Repo: found.Repo, Number: found.Number, URL: found.URL, FirstSeen: found.At}
+		}
+		trail.LastSeen = now
+		association := wtfAssociation{SessionKey: observation.SessionKey, Worktree: observation.Worktree, At: found.At, Evidence: found.Matched, Source: found.Source}
+		trail.Associations = addAssociation(trail.Associations, association)
+		if worktree, ok := worktrees[observation.Worktree]; ok && worktree.Repo == observation.Repo {
+			claim := wtfClaim{SessionKey: observation.SessionKey, Worktree: observation.Worktree, At: found.At, Evidence: found.Matched}
+			claims[trail.Key] = append(claims[trail.Key], claim)
+			if trail.FirstClaim == nil {
+				copy := claim
+				trail.FirstClaim = &copy
+			}
+			if trail.OwnerSession == "" {
+				trail.OwnerSession = claim.SessionKey
+			}
+			associateWorktree(&state, observation.Worktree, observation.SessionKey, trail.Key)
+		}
+		state.Trails[trail.Key] = trail
+	}
+
+	trailKeys := make([]string, 0, len(state.Trails))
+	for key := range state.Trails {
+		trailKeys = append(trailKeys, key)
+	}
+	sort.Strings(trailKeys)
+	for _, key := range trailKeys {
+		trail := state.Trails[key]
+		for path, worktree := range worktrees {
+			if worktree.Repo != trail.Owner+"/"+trail.Repo {
+				continue
+			}
+			if trail.SourceBranch != "" && worktree.Branch == trail.SourceBranch {
+				trail.Associations = addAssociation(trail.Associations, wtfAssociation{Worktree: path, At: worktree.FirstSeen, Evidence: worktree.Branch, Source: "source branch"})
+				associateWorktree(&state, path, "", trail.Key)
+			}
+			for _, gitEvidence := range worktree.GitEvidence {
+				event := trailTextEvent{At: worktree.FirstSeen, Source: gitEvidence.Source, Text: gitEvidence.Text}
+				context := trailContext{CurrentRepo: worktree.Repo, KnownRepos: []string{worktree.Repo}}
+				for _, candidate := range trailMatches(gitEvidence.Text) {
+					if candidate.kind == "bare" {
+						continue
+					}
+					match := resolveTrailMatch(candidate, event, context)
+					if match.Resolved && match.Key == key {
+						trail.Associations = addAssociation(trail.Associations, wtfAssociation{Worktree: path, At: match.At, Evidence: match.Matched, Source: gitEvidence.Source})
+						associateWorktree(&state, path, "", trail.Key)
+					}
+				}
+			}
+		}
+		if trail.CanonicalWorktree == "" {
+			canonicalClaims := append([]wtfClaim(nil), claims[key]...)
+			if trail.FirstClaim != nil {
+				canonicalClaims = append(canonicalClaims, *trail.FirstClaim)
+			}
+			for _, association := range trail.Associations {
+				if association.Worktree != "" {
+					canonicalClaims = append(canonicalClaims, wtfClaim{SessionKey: association.SessionKey, Worktree: association.Worktree, At: association.At, Evidence: association.Evidence})
+				}
+			}
+			trail.CanonicalWorktree = chooseInitialCanonical(trail, canonicalClaims, worktrees)
+		}
+		state.Trails[key] = trail
+	}
+	state.Version = wtfStateVersion
+	state.UpdatedAt = now
+	return state
+}
+
+func chooseInitialCanonical(trail wtfTrail, claims []wtfClaim, worktrees map[string]wtfWorktree) string {
+	sorted := append([]wtfClaim(nil), claims...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].At != sorted[j].At {
+			return sorted[i].At < sorted[j].At
+		}
+		if sorted[i].SessionKey != sorted[j].SessionKey {
+			return sorted[i].SessionKey < sorted[j].SessionKey
+		}
+		return sorted[i].Worktree < sorted[j].Worktree
+	})
+	if trail.SourceBranch != "" {
+		for _, claim := range sorted {
+			if worktrees[claim.Worktree].Branch == trail.SourceBranch {
+				return claim.Worktree
+			}
+		}
+	}
+	if len(sorted) > 0 {
+		return sorted[0].Worktree
+	}
+	return ""
+}
+
+func addAssociation(existing []wtfAssociation, next wtfAssociation) []wtfAssociation {
+	for _, association := range existing {
+		if association.SessionKey == next.SessionKey && association.Worktree == next.Worktree && association.Evidence == next.Evidence && association.Source == next.Source {
+			return existing
+		}
+	}
+	return append(existing, next)
+}
+
+func associateWorktree(state *wtfState, path, sessionKey, trailKey string) {
+	worktree, ok := state.Worktrees[path]
+	if !ok {
+		return
+	}
+	worktree.SessionKeys = addString(worktree.SessionKeys, sessionKey)
+	worktree.TrailKeys = addString(worktree.TrailKeys, trailKey)
+	state.Worktrees[path] = worktree
+}
+
+func addString(existing []string, next string) []string {
+	if next == "" {
+		return existing
+	}
+	for _, value := range existing {
+		if value == next {
+			return existing
+		}
+	}
+	return append(existing, next)
+}
+
 type trailPattern struct {
 	kind string
 	re   *regexp.Regexp

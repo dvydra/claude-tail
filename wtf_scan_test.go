@@ -458,3 +458,96 @@ func TestAmpTrailEvents(t *testing.T) {
 		t.Fatalf("events:\n got: %#v\nwant: %#v", got, want)
 	}
 }
+
+func TestReconcileTrailsChoosesEarliestClaimAndPreservesIt(t *testing.T) {
+	sessions := []wtfSession{
+		{Agent: AgentClaude, ID: "later", Repo: "acme/api", Cwd: "/wt/later", Active: true},
+		{Agent: AgentClaude, ID: "earlier", Repo: "acme/api", Cwd: "/wt/earlier", Active: true},
+	}
+	evidence := map[string][]trailEvidence{
+		"claude:later":   {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, URL: "url", Matched: "api#7", Source: "user", At: 200, Resolved: true}},
+		"claude:earlier": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, URL: "url", Matched: "api#7", Source: "user", At: 100, Resolved: true}},
+	}
+	worktrees := map[string]wtfWorktree{
+		"/wt/later":   {Repo: "acme/api", Path: "/wt/later"},
+		"/wt/earlier": {Repo: "acme/api", Path: "/wt/earlier"},
+	}
+
+	got := reconcileTrails(wtfState{}, sessions, evidence, worktrees, 300)
+	trail := got.Trails["acme/api#7"]
+	if trail.OwnerSession != "claude:earlier" || trail.FirstClaim == nil || trail.FirstClaim.At != 100 || trail.CanonicalWorktree != "/wt/earlier" {
+		t.Fatalf("first claim: %#v", trail)
+	}
+
+	restarted := reconcileTrails(got, []wtfSession{sessions[1], sessions[0]}, evidence, worktrees, 400)
+	trail = restarted.Trails["acme/api#7"]
+	if trail.OwnerSession != "claude:earlier" || trail.CanonicalWorktree != "/wt/earlier" || trail.FirstClaim.At != 100 {
+		t.Fatalf("persisted claim changed: %#v", trail)
+	}
+}
+
+func TestReconcileTrailsClaimsRequireActiveLocalWorktree(t *testing.T) {
+	e := trailEvidence{Key: "acme/api#8", Owner: "acme", Repo: "api", Number: 8, Matched: "acme/api#8", Source: "user", At: 100, Resolved: true}
+	sessions := []wtfSession{
+		{Agent: AgentClaude, ID: "remote", Repo: "acme/api", Active: true},
+		{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/shared", Active: true},
+		{Agent: AgentAmp, ID: "two", Repo: "acme/api", Cwd: "/wt/shared", Active: true},
+	}
+	evidence := map[string][]trailEvidence{"claude:remote": {e}, "claude:one": {e}, "amp:two": {{Key: e.Key, Owner: e.Owner, Repo: e.Repo, Number: e.Number, Matched: e.Matched, Source: e.Source, At: 200, Resolved: true}}}
+	got := reconcileTrails(wtfState{}, sessions, evidence, map[string]wtfWorktree{"/wt/shared": {Repo: "acme/api", Path: "/wt/shared"}}, 300)
+	trail := got.Trails[e.Key]
+	if trail.OwnerSession != "claude:one" || trail.FirstClaim.Worktree != "/wt/shared" || len(trail.Associations) != 3 {
+		t.Fatalf("claims and associations: %#v", trail)
+	}
+}
+
+func TestReconcileTrailsMovingSessionKeepsOwnerAndAddsAssociation(t *testing.T) {
+	e := trailEvidence{Key: "acme/api#9", Owner: "acme", Repo: "api", Number: 9, Matched: "api#9", Source: "user", At: 100, Resolved: true}
+	first := reconcileTrails(wtfState{}, []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/one", Active: true}}, map[string][]trailEvidence{"claude:one": {e}}, map[string]wtfWorktree{"/wt/one": {Repo: "acme/api", Path: "/wt/one"}}, 200)
+	second := reconcileTrails(first, []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/two", Active: true}}, map[string][]trailEvidence{"claude:one": {e}}, map[string]wtfWorktree{"/wt/two": {Repo: "acme/api", Path: "/wt/two"}}, 300)
+	trail := second.Trails[e.Key]
+	if trail.OwnerSession != "claude:one" || trail.CanonicalWorktree != "/wt/one" || len(trail.Associations) != 2 {
+		t.Fatalf("moved session: %#v", trail)
+	}
+}
+
+func TestReconcileTrailsInactiveCannotIntroduceOrClaim(t *testing.T) {
+	e := trailEvidence{Key: "acme/api#10", Owner: "acme", Repo: "api", Number: 10, Matched: "api#10", Source: "user", At: 100, Resolved: true}
+	ended := []wtfSession{{Agent: AgentClaude, ID: "ended", Repo: "acme/api", Cwd: "/wt/ended", State: "ended"}}
+	worktrees := map[string]wtfWorktree{"/wt/ended": {Repo: "acme/api", Path: "/wt/ended"}}
+	if got := reconcileTrails(wtfState{}, ended, map[string][]trailEvidence{"claude:ended": {e}}, worktrees, 200); len(got.Trails) != 0 {
+		t.Fatalf("inactive session introduced trail: %#v", got.Trails)
+	}
+	prior := wtfState{Trails: map[string]wtfTrail{e.Key: {Key: e.Key, Owner: e.Owner, Repo: e.Repo, Number: e.Number, OwnerSession: "claude:old", FirstClaim: &wtfClaim{SessionKey: "claude:old", Worktree: "/wt/old", At: 50}, CanonicalWorktree: "/wt/old"}}}
+	got := reconcileTrails(prior, ended, map[string][]trailEvidence{"claude:ended": {e}}, worktrees, 200)
+	if trail := got.Trails[e.Key]; trail.OwnerSession != "claude:old" || trail.FirstClaim.SessionKey != "claude:old" || len(trail.Associations) != 0 {
+		t.Fatalf("inactive session changed persisted claim: %#v", trail)
+	}
+}
+
+func TestReconcileTrailsAssociationsAreIdempotentAndRejectBareGitNumbers(t *testing.T) {
+	trail := wtfTrail{Key: "acme/api#11", Owner: "acme", Repo: "api", Number: 11}
+	prior := wtfState{Trails: map[string]wtfTrail{trail.Key: trail}}
+	worktrees := map[string]wtfWorktree{"/wt/git": {Repo: "acme/api", Path: "/wt/git", GitEvidence: []wtfGitEvidence{{Source: "branch", Text: "fix trail 11 and acme/api#11"}}}}
+	first := reconcileTrails(prior, nil, nil, worktrees, 200)
+	second := reconcileTrails(first, nil, nil, worktrees, 300)
+	if got := second.Trails[trail.Key].Associations; len(got) != 1 || got[0].Evidence != "acme/api#11" {
+		t.Fatalf("git associations: %#v", got)
+	}
+}
+
+func TestChooseInitialCanonical(t *testing.T) {
+	claims := []wtfClaim{{SessionKey: "claude:first", Worktree: "/wt/first", At: 100}, {SessionKey: "claude:later", Worktree: "/wt/match", At: 200}}
+	worktrees := map[string]wtfWorktree{"/wt/first": {Path: "/wt/first", Branch: "feat/other"}, "/wt/match": {Path: "/wt/match", Branch: "feat/1223"}}
+	if got := chooseInitialCanonical(wtfTrail{SourceBranch: "feat/1223"}, claims, worktrees); got != "/wt/match" {
+		t.Fatalf("source branch match: got %q", got)
+	}
+	if got := chooseInitialCanonical(wtfTrail{}, claims, worktrees); got != "/wt/first" {
+		t.Fatalf("first claim fallback: got %q", got)
+	}
+	prior := wtfState{Trails: map[string]wtfTrail{"acme/api#12": {Key: "acme/api#12", Owner: "acme", Repo: "api", Number: 12, CanonicalWorktree: "/wt/first", SourceBranch: "feat/1223"}}}
+	got := reconcileTrails(prior, nil, nil, worktrees, 300)
+	if got.Trails["acme/api#12"].CanonicalWorktree != "/wt/first" {
+		t.Fatalf("persisted canonical moved: %#v", got.Trails["acme/api#12"])
+	}
+}
