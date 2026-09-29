@@ -619,15 +619,18 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `q` abort). Pure `updateHandoverPick` reducer + `renderHandoverPick` + the
   `buildGroups` collapse, split from the tty driver `runHandoverPicker` — same
   reduce/render/driver split as `tree.go`.
-- `wtf.go` / `wtf_summary.go` / `wtf_view.go` — the first `entire wtf` /
-  `entire-tail wtf` dashboard slice. It merges exact live Claude/Amp identity
-  with sessions active since local midnight, groups active rows under Now and
-  ended rows under Recently stopped, and opens the selected session on Enter.
-  Summaries use the on-device Apple Foundation Models CLI with deterministic
-  title/id fallback;
-  pending Claude markers supply `needsUser`. The TUI refreshes on `r`, moves with
-  arrows, and exits on `q`/Escape. This phase is read-only: it does not install
-  monitoring or assign trails.
+- `wtf.go` / `wtf_scan.go` / `wtf_summary.go` / `wtf_view.go` — the foreground
+  `entire wtf` / `entire-tail wtf` dashboard. It loads the durable registry,
+  reconciles exact Claude/Amp sessions, trail claims, worktrees and findings,
+  then saves only a complete successful scan. Degraded sources stay visible in
+  the footer without blanking the in-memory result. Sections are Badness, Now,
+  WIP trails, and Recently stopped. Only session rows are selectable. WIP means
+  any active associated session, dirty files, or commits absent from the local
+  remote-default ref; clean merged history is hidden. Findings are sorted by
+  severity descending then first-seen ascending and delivery remains
+  `not attempted` until monitoring exists. The timed tty reader publishes
+  dimension changes even on zero-byte timeout reads, and the refresh worker
+  selects on shutdown while idle.
 - `pending.go` — the marker protocol and model (Claude-only): when Claude blocks
   on a question or permission prompt, the opt-in hooks write a per-session marker
   file to `~/.claude/entire-tail/pending/<session_id>.json` the instant it appears,

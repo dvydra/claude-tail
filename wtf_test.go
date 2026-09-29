@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -186,6 +187,58 @@ func TestRunWTFRejectsArguments(t *testing.T) {
 	err := runWTF(Config{WTFArgs: []string{"status"}})
 	if err == nil || err.Error() != "wtf: unsupported arguments: status" {
 		t.Fatalf("runWTF(status) error = %v", err)
+	}
+}
+
+func TestReconcileWTFDashboardSavesOnlySuccessfulCompleteScan(t *testing.T) {
+	now := time.Date(2026, 9, 29, 14, 37, 8, 0, time.UTC)
+	prior := newWTFState(now.Add(-time.Hour).Unix())
+	prior.Trails["acme/api#1"] = wtfTrail{Key: "acme/api#1", Owner: "acme", Repo: "api", Number: 1, MetadataNextRetry: now.Add(time.Hour).Unix()}
+	deps := wtfScanDeps{
+		Inventory: wtfInventoryDeps{
+			Today: func(string, int64, *time.Location) []handoverItem { return nil },
+			Live:  func(string) []liveSession { return nil },
+		},
+		Run: func(context.Context, string, string, ...string) ([]byte, error) { return nil, nil },
+		Summarize: func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+			return wtfSummary{}, wtfSummaryCache{}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+	saved := 0
+	snapshot, next, err := reconcileWTFDashboard(context.Background(), t.TempDir(), prior, deps, func(wtfState) error {
+		saved++
+		return nil
+	})
+	if err != nil || saved != 1 || next.UpdatedAt != now.Unix() || snapshot.GeneratedAt != now.Unix() {
+		t.Fatalf("snapshot=%+v state.updated=%d saved=%d err=%v", snapshot, next.UpdatedAt, saved, err)
+	}
+}
+
+func TestReconcileWTFDashboardRendersDegradedStateWithoutSaving(t *testing.T) {
+	now := time.Date(2026, 9, 29, 14, 37, 8, 0, time.UTC)
+	prior := newWTFState(now.Add(-time.Hour).Unix())
+	prior.Worktrees["/missing"] = wtfWorktree{Repo: "acme/api", Path: "/missing"}
+	deps := wtfScanDeps{
+		Inventory: wtfInventoryDeps{
+			Today: func(string, int64, *time.Location) []handoverItem { return nil },
+			Live:  func(string) []liveSession { return nil },
+		},
+		Run: func(context.Context, string, string, ...string) ([]byte, error) {
+			return nil, errors.New("git unavailable")
+		},
+		Summarize: func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+			return wtfSummary{}, wtfSummaryCache{}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+	saved := 0
+	snapshot, _, err := reconcileWTFDashboard(context.Background(), t.TempDir(), prior, deps, func(wtfState) error {
+		saved++
+		return nil
+	})
+	if err == nil || saved != 0 || len(snapshot.Errors) == 0 || !strings.Contains(renderWTFSnapshot(snapshot, 120, false), "degraded: git worktrees for acme/api") {
+		t.Fatalf("snapshot=%+v saved=%d err=%v", snapshot, saved, err)
 	}
 }
 

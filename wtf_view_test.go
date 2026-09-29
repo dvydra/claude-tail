@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -15,6 +16,66 @@ func testWTFSnapshot() wtfSnapshot {
 		{Agent: AgentClaude, ID: "older-ended", Name: "old-fix", Repo: "org/old", Cwd: "/home/dan/src/old", State: "ended", LastActivity: 10, Summary: "Fixed an older issue."},
 		{Agent: AgentAmp, ID: "T-new-ended", Name: "new-fix", Repo: "org/new", Cwd: "/home/dan/src/new", State: "ended", LastActivity: 20, Summary: "Fixed the latest issue."},
 	}}
+}
+
+func TestRenderWTFBadness(t *testing.T) {
+	snapshot := wtfSnapshot{
+		GeneratedAt: 1_700_000_000,
+		Findings: []wtfFinding{
+			{ID: "later", Kind: "outside-canonical", Severity: 2, TrailKey: "acme/api#2", Owner: "claude:owner", Challenger: "amp:challenger", Worktrees: []string{"/canonical/two", "/actual/two"}, Explanation: "second finding", Evidence: []string{"session evidence", "git evidence"}, FirstSeen: 20, Active: true},
+			{ID: "highest", Kind: "default-branch", Severity: 3, TrailKey: "acme/api#3", Owner: "claude:owner3", Challenger: "amp:challenger3", Worktrees: []string{"/canonical/three", "/actual/three"}, Explanation: "highest finding", Evidence: []string{"default evidence"}, FirstSeen: 30, Active: true},
+			{ID: "earlier", Kind: "existing-wip-elsewhere", Severity: 2, TrailKey: "acme/api#1", Owner: "claude:owner1", Challenger: "amp:challenger1", Worktrees: []string{"/canonical/one", "/actual/one"}, Explanation: "first finding", Evidence: []string{"earlier evidence"}, FirstSeen: 10, Active: true},
+			{ID: "cleared", Kind: "missing-canonical", Severity: 9, TrailKey: "acme/api#9", Active: false},
+		},
+	}
+
+	got := renderWTFSnapshot(snapshot, 160, false)
+	for _, want := range []string{"Badness", "default-branch", "owner claude:owner3", "challenger amp:challenger3", "canonical /canonical/three", "actual /actual/three", "default evidence", "delivery not attempted"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("render missing %q:\n%s", want, got)
+		}
+	}
+	for _, pair := range [][2]string{{"default-branch", "existing-wip-elsewhere"}, {"existing-wip-elsewhere", "outside-canonical"}} {
+		if strings.Index(got, pair[0]) >= strings.Index(got, pair[1]) {
+			t.Errorf("%q should precede %q:\n%s", pair[0], pair[1], got)
+		}
+	}
+	if strings.Contains(got, "missing-canonical") {
+		t.Fatalf("cleared finding rendered:\n%s", got)
+	}
+}
+
+func TestRenderWTFWIPTrails(t *testing.T) {
+	snapshot := wtfSnapshot{
+		Sessions: []wtfSession{{Agent: AgentClaude, ID: "active", Active: true}},
+		Trails: []wtfTrail{
+			{Key: "acme/api#1", OwnerSession: "claude:owner", CanonicalWorktree: "/wt/active", Associations: []wtfAssociation{{SessionKey: "claude:active", Worktree: "/wt/active"}}},
+			{Key: "acme/api#2", OwnerSession: "amp:owner", CanonicalWorktree: "/wt/dirty", Associations: []wtfAssociation{{Worktree: "/wt/dirty"}}},
+			{Key: "acme/api#3", OwnerSession: "claude:owner3", CanonicalWorktree: "/wt/unmerged", Associations: []wtfAssociation{{Worktree: "/wt/unmerged"}}},
+			{Key: "acme/api#4", OwnerSession: "claude:old", CanonicalWorktree: "/wt/clean", Associations: []wtfAssociation{{Worktree: "/wt/clean"}}},
+		},
+		Worktrees: []wtfWorktree{
+			{Path: "/wt/active", DirtyFiles: 0, UnmergedCommits: 0},
+			{Path: "/wt/dirty", DirtyFiles: 2, UnmergedCommits: 0},
+			{Path: "/wt/unmerged", DirtyFiles: 0, UnmergedCommits: 3},
+			{Path: "/wt/clean", DirtyFiles: 0, UnmergedCommits: 0},
+		},
+	}
+
+	got := renderWTFSnapshot(snapshot, 160, false)
+	for _, want := range []string{"WTF  1 active · 0 ended today · 3 WIP trails · 0 findings", "WIP trails", "acme/api#1", "canonical /wt/active", "owner claude:owner", "active 1", "dirty 0", "unmerged 0", "active session", "acme/api#2", "dirty worktree", "acme/api#3", "unmerged commits"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("render missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "acme/api#4") {
+		t.Fatalf("merged clean history rendered as WIP:\n%s", got)
+	}
+	for _, pair := range [][2]string{{"\nBadness\n", "\nNow\n"}, {"\nNow\n", "\nWIP trails\n"}, {"\nWIP trails\n", "\nRecently stopped\n"}} {
+		if strings.Index(got, pair[0]) >= strings.Index(got, pair[1]) {
+			t.Errorf("section %q should precede %q:\n%s", pair[0], pair[1], got)
+		}
+	}
 }
 
 func TestRenderWTFSnapshotSectionsOrderingAndContent(t *testing.T) {
@@ -203,7 +264,7 @@ func TestRenderWTFMinimalViewportShowsSelectedAcrossHeaders(t *testing.T) {
 	ui := wtfUI{Snapshot: snapshot, Cursor: 1, Top: 1, Width: 80, Height: 1}
 
 	got := strings.TrimPrefix(renderWTF(ui, Theme{}), "\x1b[H\x1b[2J")
-	if !strings.Contains(got, "Today  1 active · 1 ended today") {
+	if !strings.Contains(got, "WTF  1 active · 1 ended today") {
 		t.Fatalf("one-row viewport hid fixed header:\n%s", got)
 	}
 	if strings.Contains(got, "▸ A  ended") || strings.Contains(got, "Recently stopped") || strings.Contains(got, "repo/b") {
@@ -220,7 +281,7 @@ func TestRenderWTFKeepsTodayHeaderFixedWhileBodyScrolls(t *testing.T) {
 	ui := wtfUI{Snapshot: snapshot, Cursor: 2, Top: 2, Width: 80, Height: 5}
 
 	got := renderWTF(ui, Theme{})
-	if !strings.Contains(got, "Today  2 active · 1 ended today") || !strings.Contains(got, "▸ A  three") {
+	if !strings.Contains(got, "WTF  2 active · 1 ended today") || !strings.Contains(got, "▸ A  three") {
 		t.Fatalf("scrolled render must retain header and selection:\n%s", got)
 	}
 }
@@ -324,6 +385,64 @@ func TestWTFDashboardLoopStartsWithLoadedCache(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("collector did not receive initial cache")
+	}
+}
+
+func TestWTFRefreshWorkerStopsWhileWaitingForRequest(t *testing.T) {
+	keys := make(chan wtfKeyEvent, 1)
+	renders := make(chan struct{}, 2)
+	exited := make(chan struct{})
+	loopDone := make(chan error, 1)
+	go func() {
+		_, err := runWTFDashboardLoopWithWorkerExit(wtfUI{Width: 80, Height: 20}, nil, func(cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
+			return wtfSnapshot{}, cache
+		}, keys, func(wtfUI) error {
+			renders <- struct{}{}
+			return nil
+		}, exited)
+		loopDone <- err
+	}()
+	<-renders // initial state
+	<-renders // first refresh completed; worker is idle again
+	keys <- wtfKeyEvent{key: kEsc}
+	if err := <-loopDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("refresh worker remained blocked waiting for a request")
+	}
+}
+
+type timedWTFReader struct {
+	reads int
+}
+
+func (r *timedWTFReader) Read([]byte) (int, error) {
+	r.reads++
+	if r.reads == 1 {
+		return 0, io.EOF
+	}
+	return 0, io.ErrClosedPipe
+}
+
+func TestWTFKeyReaderPublishesResizeOnTimedZeroByteRead(t *testing.T) {
+	reader := &timedWTFReader{}
+	events := make(chan wtfKeyEvent, 2)
+	done := make(chan struct{})
+	defer close(done)
+	readWTFKeyEvents(reader, func() (int, int) {
+		return 100, 30
+	}, 80, 20, events, done)
+
+	select {
+	case event := <-events:
+		if event.key != kNone || event.width != 100 || event.height != 30 || event.err != nil {
+			t.Fatalf("resize event = %+v", event)
+		}
+	default:
+		t.Fatal("timed zero-byte read did not publish changed dimensions")
 	}
 }
 

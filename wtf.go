@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -271,6 +272,36 @@ type wtfSnapshot struct {
 	GeneratedAt int64
 	Home        string
 	Sessions    []wtfSession
+	Trails      []wtfTrail
+	Worktrees   []wtfWorktree
+	Findings    []wtfFinding
+	Errors      []string
+}
+
+func snapshotFromWTFState(home string, state wtfState, scanErr error) wtfSnapshot {
+	snapshot := wtfSnapshot{GeneratedAt: state.UpdatedAt, Home: home}
+	for _, key := range sortedMapKeys(state.Sessions) {
+		snapshot.Sessions = append(snapshot.Sessions, state.Sessions[key])
+	}
+	for _, key := range sortedMapKeys(state.Trails) {
+		snapshot.Trails = append(snapshot.Trails, state.Trails[key])
+	}
+	for _, key := range sortedMapKeys(state.Worktrees) {
+		snapshot.Worktrees = append(snapshot.Worktrees, state.Worktrees[key])
+	}
+	for _, key := range sortedMapKeys(state.Findings) {
+		snapshot.Findings = append(snapshot.Findings, state.Findings[key])
+	}
+	if scanErr != nil {
+		if joined, ok := scanErr.(interface{ Unwrap() []error }); ok {
+			for _, err := range joined.Unwrap() {
+				snapshot.Errors = append(snapshot.Errors, err.Error())
+			}
+		} else {
+			snapshot.Errors = append(snapshot.Errors, scanErr.Error())
+		}
+	}
+	return snapshot
 }
 
 type wtfInventoryDeps struct {
@@ -360,6 +391,32 @@ func summarizeWTFSnapshot(snapshot wtfSnapshot, home string, cache map[string]wt
 		session.NeedsUser = summary.NeedsUser
 	}
 	return snapshot, cache
+}
+
+func reconcileWTFDashboard(ctx context.Context, home string, prior wtfState, deps wtfScanDeps, save func(wtfState) error) (wtfSnapshot, wtfState, error) {
+	next, scanErr := scanWTF(ctx, home, prior, deps)
+	snapshot := snapshotFromWTFState(home, next, scanErr)
+	if scanErr != nil {
+		return snapshot, next, scanErr
+	}
+	if err := save(next); err != nil {
+		snapshot.Errors = append(snapshot.Errors, "save state: "+err.Error())
+		return snapshot, next, err
+	}
+	return snapshot, next, nil
+}
+
+func defaultWTFScanDeps() wtfScanDeps {
+	return wtfScanDeps{
+		Inventory: wtfInventoryDeps{Today: todaysSessions, Live: currentLiveSessions},
+		Run: func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+			cmd := exec.CommandContext(ctx, name, args...)
+			cmd.Dir = dir
+			return cmd.Output()
+		},
+		Summarize: summarizeWTFSession,
+		Now:       time.Now,
+	}
 }
 
 func runWTF(cfg Config) error {

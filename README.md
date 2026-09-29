@@ -105,11 +105,17 @@ convenience — flags override env vars when both are set. The legacy
 
 ### Today's dashboard (`entire wtf`)
 
-`entire wtf`, or `entire-tail wtf` when run standalone, shows active Claude and Amp sessions plus sessions with activity since local midnight. Active sessions appear under **Now** and stopped sessions under **Recently stopped**.
+`entire wtf`, or `entire-tail wtf` when run standalone, shows **Badness**, **Now**, **WIP trails**, and **Recently stopped**, in that order. Sessions remain selectable; findings and trail rows are informational. The registry keeps trail and worktree history indefinitely, while ended session rows expire after local midnight.
 
 Each row gets a concise summary from Apple's on-device Foundation Models CLI when it is available. If `fm` is missing, fails, or returns unusable output, the dashboard keeps the row and uses a deterministic session title or id instead. Claude pending-question and permission markers add a `needsUser` note without relying on the model.
 
-Use `↑`/`↓` to select a session, `Enter` to open it, `r` to refresh, and `q` or Escape to quit. This first phase only reports active and today's sessions. It does not install monitoring or assign sessions to trails.
+Trail references may be a full `https://entire.io/gh/<owner>/<repo>/trails/<id>` URL, `<owner>/<repo>#<id>`, `<repo>#<id>`, `trail <id>`, or `trail #<id>`. Repo-qualified shorthand must resolve unambiguously; bare trail numbers resolve only against the session's current repo. The first timestamped valid session/worktree mention owns the trail and survives restarts. The canonical worktree is selected once: a source-branch match wins, otherwise the first valid claim wins.
+
+A trail is WIP while an associated session is active, an associated worktree is dirty, or it has commits absent from the local remote-default ref. Clean merged history is hidden. Missing and unknown worktree state are never treated as clean, and old dirty or unmerged associations remain visible regardless of age.
+
+Badness reports five finding kinds: duplicate active claims, existing WIP elsewhere, work outside the canonical worktree, work on the default branch, and a missing canonical worktree with active or unfinished work elsewhere. Each finding shows its owner, challenger, canonical and actual paths, deterministic evidence, and delivery state. Delivery remains `not attempted` until monitoring is added.
+
+Use `↑`/`↓` to select a session, `Enter` to open it, `r` to refresh, and `q` or Escape to quit. Each successful foreground reconciliation is saved atomically. A degraded source is printed in the footer while the rest of the dashboard remains available; degraded scans are not saved.
 
 ### It picks its own mode (iTerm2, macOS)
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -142,10 +143,49 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		}
 	}
 
-	header = append(header, wtfComposedRow{text: clip(fmt.Sprintf("%sToday%s  %d active · %d ended today", opts.theme.ClaudeANSI, reset, active, ended))})
+	findings := activeWTFFindings(snapshot.Findings)
+	wipTrails := selectWIPTrails(snapshot)
+	stamp := ""
+	if snapshot.GeneratedAt > 0 {
+		stamp = "       " + time.Unix(snapshot.GeneratedAt, 0).Format("15:04:05")
+	}
+	header = append(header, wtfComposedRow{text: clip(fmt.Sprintf("%sWTF%s  %d active · %d ended today · %d WIP trails · %d findings%s", opts.theme.ClaudeANSI, reset, active, ended, len(wipTrails), len(findings), stamp))})
+
+	line("")
+	line(opts.theme.ClaudeANSI + "Badness" + reset)
+	trailCanonical := make(map[string]string, len(snapshot.Trails))
+	for _, trail := range snapshot.Trails {
+		trailCanonical[trail.Key] = trail.CanonicalWorktree
+	}
+	if len(findings) == 0 {
+		line(opts.theme.DimANSI + "  None" + reset)
+	}
+	for _, finding := range findings {
+		canonical := trailCanonical[finding.TrailKey]
+		if canonical == "" && len(finding.Worktrees) > 0 {
+			canonical = finding.Worktrees[0]
+		}
+		var actual []string
+		for _, path := range finding.Worktrees {
+			if path != canonical {
+				actual = append(actual, path)
+			}
+		}
+		line(fmt.Sprintf("  S%d %s  %s", finding.Severity, finding.Kind, finding.TrailKey))
+		line(fmt.Sprintf("    owner %s · challenger %s · delivery %s", firstNonEmpty(finding.Owner, "unknown"), firstNonEmpty(finding.Challenger, "none"), wtfDeliveryLabel(finding)))
+		line(fmt.Sprintf("    canonical %s · actual %s", firstNonEmpty(canonical, "unknown"), firstNonEmpty(strings.Join(actual, ", "), "none")))
+		if finding.Explanation != "" {
+			line("    " + finding.Explanation)
+		}
+		for _, evidence := range finding.Evidence {
+			line("    evidence " + evidence)
+		}
+	}
+
 	if len(sessions) == 0 {
 		line("")
-		line("No sessions active or seen today.")
+		line(opts.theme.ClaudeANSI + "Now" + reset)
+		line("  No sessions active or seen today.")
 	} else {
 		renderSection := func(title string, wantActive bool) {
 			rendered := false
@@ -185,14 +225,53 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		}
 		if active > 0 {
 			renderSection("Now", true)
-		}
-		if ended > 0 {
-			renderSection("Recently stopped", false)
-		}
-		if opts.clear {
+		} else {
 			line("")
-			line(opts.theme.DimANSI + "↑↓ move · ⏎ tail · r refresh · q quit" + reset)
+			line(opts.theme.ClaudeANSI + "Now" + reset)
+			line("  No active sessions.")
 		}
+	}
+	line("")
+	line(opts.theme.ClaudeANSI + "WIP trails" + reset)
+	if len(wipTrails) == 0 {
+		line(opts.theme.DimANSI + "  None" + reset)
+	}
+	for _, trail := range wipTrails {
+		line(fmt.Sprintf("  %s  canonical %s", trail.trail.Key, firstNonEmpty(trail.trail.CanonicalWorktree, "unknown")))
+		line(fmt.Sprintf("    owner %s · active %d · dirty %d · unmerged %d · %s", firstNonEmpty(trail.trail.OwnerSession, "unknown"), trail.active, trail.dirty, trail.unmerged, strings.Join(trail.reasons, ", ")))
+	}
+	line("")
+	line(opts.theme.ClaudeANSI + "Recently stopped" + reset)
+	if ended > 0 {
+		// renderSection supplies its own heading, so render ended rows directly here.
+		lastRepo := "\x00"
+		for i, session := range sessions {
+			if session.Active || i < opts.top {
+				continue
+			}
+			repo := firstNonEmpty(session.Repo, tildify(session.Cwd, snapshot.Home), "Other")
+			if repo != lastRepo {
+				line(opts.theme.DimANSI + "  " + repo + reset)
+				lastRepo = repo
+			}
+			key := wtfSessionKey(session.Agent, session.ID)
+			for rowIndex, row := range wtfSessionLines(session, opts, reset) {
+				if rowIndex == 0 {
+					sessionLine(row, key)
+				} else {
+					line(row)
+				}
+			}
+		}
+	} else {
+		line(opts.theme.DimANSI + "  None" + reset)
+	}
+	for _, sourceErr := range snapshot.Errors {
+		line("  degraded: " + sourceErr)
+	}
+	if opts.clear {
+		line("")
+		line(opts.theme.DimANSI + "↑↓ move · ⏎ tail · r refresh · q quit" + reset)
 	}
 	bodyHeight := opts.height
 	if bodyHeight > 0 {
@@ -219,6 +298,87 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		result = "\x1b[H\x1b[2J" + result
 	}
 	return result
+}
+
+func activeWTFFindings(findings []wtfFinding) []wtfFinding {
+	out := make([]wtfFinding, 0, len(findings))
+	for _, finding := range findings {
+		if finding.Active {
+			out = append(out, finding)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Severity != out[j].Severity {
+			return out[i].Severity > out[j].Severity
+		}
+		if out[i].FirstSeen != out[j].FirstSeen {
+			return out[i].FirstSeen < out[j].FirstSeen
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+func wtfDeliveryLabel(finding wtfFinding) string {
+	if len(finding.Delivery) == 0 {
+		return "not attempted"
+	}
+	states := make([]string, 0, len(finding.Delivery))
+	for _, delivery := range finding.Delivery {
+		states = append(states, delivery.State)
+	}
+	sort.Strings(states)
+	return strings.Join(states, ", ")
+}
+
+type wtfWIPTrail struct {
+	trail                   wtfTrail
+	active, dirty, unmerged int
+	reasons                 []string
+}
+
+func selectWIPTrails(snapshot wtfSnapshot) []wtfWIPTrail {
+	sessions := make(map[string]wtfSession, len(snapshot.Sessions))
+	for _, session := range snapshot.Sessions {
+		sessions[wtfSessionKey(session.Agent, session.ID)] = session
+	}
+	worktrees := make(map[string]wtfWorktree, len(snapshot.Worktrees))
+	for _, worktree := range snapshot.Worktrees {
+		worktrees[worktree.Path] = worktree
+	}
+	var out []wtfWIPTrail
+	for _, trail := range snapshot.Trails {
+		item := wtfWIPTrail{trail: trail}
+		seenPaths := map[string]bool{}
+		seenSessions := map[string]bool{}
+		for _, association := range trail.Associations {
+			if !seenSessions[association.SessionKey] && sessions[association.SessionKey].Active {
+				item.active++
+				seenSessions[association.SessionKey] = true
+			}
+			if association.Worktree == "" || seenPaths[association.Worktree] {
+				continue
+			}
+			seenPaths[association.Worktree] = true
+			worktree := worktrees[association.Worktree]
+			item.dirty += max(0, worktree.DirtyFiles)
+			item.unmerged += max(0, worktree.UnmergedCommits)
+		}
+		if item.active > 0 {
+			item.reasons = append(item.reasons, "active session")
+		}
+		if item.dirty > 0 {
+			item.reasons = append(item.reasons, "dirty worktree")
+		}
+		if item.unmerged > 0 {
+			item.reasons = append(item.reasons, "unmerged commits")
+		}
+		if len(item.reasons) > 0 {
+			out = append(out, item)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].trail.Key < out[j].trail.Key })
+	return out
 }
 
 // wtfComposedRows returns the exact row count for a rendered session range,
@@ -358,12 +518,27 @@ type wtfCollectResult struct {
 }
 
 func runWTFDashboardLoop(ui wtfUI, initialCache map[string]wtfSummaryCache, collect func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache), keys <-chan wtfKeyEvent, render func(wtfUI) error) (*wtfSession, error) {
-	requests := make(chan map[string]wtfSummaryCache, 1)
+	return runWTFDashboardLoopWithWorkerExit(ui, initialCache, collect, keys, render, nil)
+}
+
+func runWTFDashboardLoopWithWorkerExit(ui wtfUI, initialCache map[string]wtfSummaryCache, collect func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache), keys <-chan wtfKeyEvent, render func(wtfUI) error, workerExited chan<- struct{}) (*wtfSession, error) {
+	requests := make(chan map[string]wtfSummaryCache)
 	results := make(chan wtfCollectResult)
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
-		for cache := range requests {
+		defer func() {
+			if workerExited != nil {
+				close(workerExited)
+			}
+		}()
+		for {
+			var cache map[string]wtfSummaryCache
+			select {
+			case cache = <-requests:
+			case <-done:
+				return
+			}
 			snapshot, nextCache := collect(cache)
 			select {
 			case results <- wtfCollectResult{snapshot: snapshot, cache: nextCache}:
@@ -436,13 +611,58 @@ func runWTFDashboardLoop(ui wtfUI, initialCache map[string]wtfSummaryCache, coll
 	}
 }
 
+type wtfReader interface{ Read([]byte) (int, error) }
+
+func readWTFKeyEvents(reader wtfReader, size func() (int, int), width, height int, events chan<- wtfKeyEvent, done <-chan struct{}) {
+	buf := make([]byte, 16)
+	for {
+		n, readErr := reader.Read(buf)
+		w, h := size()
+		event := wtfKeyEvent{width: w, height: h}
+		publish := w != width || h != height
+		if n > 0 {
+			event.key, event.r = decodeKey(buf[:n])
+			publish = true
+		}
+		if publish {
+			select {
+			case events <- event:
+				width, height = w, h
+			case <-done:
+				return
+			}
+		}
+		if readErr != nil && readErr != io.EOF {
+			select {
+			case events <- wtfKeyEvent{err: readErr}:
+			case <-done:
+			}
+			return
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
+	}
+}
+
 func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
-	cache, err := loadWTFDashboardCache(home, time.Now().Unix())
+	state, err := loadWTFState(home, time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}
+	cache := state.SummaryCache
+	deps := defaultWTFScanDeps()
+	collect := func(_ map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
+		snapshot, next, _ := reconcileWTFDashboard(context.Background(), home, state, deps, func(next wtfState) error {
+			return saveWTFState(home, next)
+		})
+		state = next
+		return snapshot, next.SummaryCache
+	}
 	if !isCharDevice(os.Stdout) {
-		snapshot, _ := collectWTFSnapshot(home, cache)
+		snapshot, _ := collect(cache)
 		_, err := io.WriteString(os.Stdout, renderWTFSnapshot(snapshot, 120, false))
 		return nil, err
 	}
@@ -468,35 +688,8 @@ func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
 	readDone := make(chan struct{})
 	defer close(readDone)
 	go func() {
-		buf := make([]byte, 16)
-		for {
-			n, readErr := tty.Read(buf)
-			if n > 0 {
-				key, r := decodeKey(buf[:n])
-				w, h := termSize(tty)
-				select {
-				case keys <- wtfKeyEvent{key: key, r: r, width: w, height: h}:
-				case <-readDone:
-					return
-				}
-			}
-			if readErr != nil && readErr != io.EOF {
-				select {
-				case keys <- wtfKeyEvent{err: readErr}:
-				case <-readDone:
-				}
-				return
-			}
-			select {
-			case <-readDone:
-				return
-			default:
-			}
-		}
+		readWTFKeyEvents(tty, func() (int, int) { return termSize(tty) }, width, height, keys, readDone)
 	}()
-	collect := func(cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
-		return collectWTFSnapshot(home, cache)
-	}
 	render := func(ui wtfUI) error {
 		_, err := io.WriteString(tty, renderWTF(ui, theme))
 		return err
