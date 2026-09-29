@@ -28,6 +28,7 @@ type wtfSession struct {
 
 type wtfSnapshot struct {
 	GeneratedAt int64
+	Home        string
 	Sessions    []wtfSession
 }
 

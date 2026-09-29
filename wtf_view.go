@@ -23,11 +23,19 @@ type wtfUI struct {
 }
 
 type wtfRenderOpts struct {
-	width    int
-	home     string
-	theme    Theme
-	selected string
-	clear    bool
+	width        int
+	theme        Theme
+	selected     string
+	clear        bool
+	top          int
+	height       int
+	snapshotHome string
+}
+
+var defaultWTFTheme = Theme{
+	UserANSI:   "\x1b[1;38;2;187;154;247m",
+	ClaudeANSI: "\x1b[1;38;2;122;162;247m",
+	DimANSI:    "\x1b[2;38;2;86;95;137m",
 }
 
 func orderedWTFSessions(snapshot wtfSnapshot) []wtfSession {
@@ -72,10 +80,9 @@ func orderedWTFSessions(snapshot wtfSnapshot) []wtfSession {
 func renderWTFSnapshot(snapshot wtfSnapshot, width int, color bool) string {
 	theme := Theme{}
 	if color {
-		theme, _ = loadTheme("tokyo-night", "")
+		theme = defaultWTFTheme
 	}
-	home, _ := os.UserHomeDir()
-	return composeWTF(snapshot, wtfRenderOpts{width: width, home: home, theme: theme})
+	return composeWTF(snapshot, wtfRenderOpts{width: width, theme: theme})
 }
 
 func renderWTF(ui wtfUI, theme Theme) string {
@@ -85,12 +92,12 @@ func renderWTF(ui wtfUI, theme Theme) string {
 		cursor := max(0, min(ui.Cursor, len(sessions)-1))
 		selected = wtfSessionKey(sessions[cursor].Agent, sessions[cursor].ID)
 	}
-	home, _ := os.UserHomeDir()
-	return composeWTF(ui.Snapshot, wtfRenderOpts{width: ui.Width, home: home, theme: theme, selected: selected, clear: true})
+	return composeWTF(ui.Snapshot, wtfRenderOpts{width: ui.Width, theme: theme, selected: selected, clear: true, top: ui.Top, height: ui.Height})
 }
 
 func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
-	width := max(opts.width, 20)
+	opts.snapshotHome = snapshot.Home
+	width := opts.width
 	reset := ""
 	if opts.theme.DimANSI != "" || opts.theme.ClaudeANSI != "" || opts.theme.UserANSI != "" {
 		reset = "\x1b[0m"
@@ -115,9 +122,6 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	}
 
 	var b strings.Builder
-	if opts.clear {
-		b.WriteString("\x1b[H\x1b[2J")
-	}
 	line(&b, fmt.Sprintf("%sToday%s  %d active · %d ended today", opts.theme.ClaudeANSI, reset, active, ended))
 	if len(sessions) == 0 {
 		line(&b, "")
@@ -126,14 +130,27 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	}
 
 	renderSection := func(title string, wantActive bool) {
+		rendered := false
+		for i, session := range sessions {
+			if session.Active == wantActive && i >= opts.top {
+				rendered = true
+				break
+			}
+		}
+		if !rendered {
+			return
+		}
 		line(&b, "")
 		line(&b, opts.theme.ClaudeANSI+title+reset)
 		lastRepo := "\x00"
-		for _, session := range sessions {
+		for i, session := range sessions {
 			if session.Active != wantActive {
 				continue
 			}
-			repo := firstNonEmpty(session.Repo, tildify(session.Cwd, opts.home), "Other")
+			if i < opts.top {
+				continue
+			}
+			repo := firstNonEmpty(session.Repo, tildify(session.Cwd, snapshot.Home), "Other")
 			if repo != lastRepo {
 				line(&b, opts.theme.DimANSI+"  "+repo+reset)
 				lastRepo = repo
@@ -153,7 +170,18 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		line(&b, "")
 		line(&b, opts.theme.DimANSI+"↑↓ move · ⏎ tail · r refresh · q quit"+reset)
 	}
-	return b.String()
+	result := b.String()
+	if opts.height > 0 {
+		lines := strings.SplitAfter(result, "\n")
+		if len(lines) > opts.height {
+			lines = lines[:opts.height]
+		}
+		result = strings.Join(lines, "")
+	}
+	if opts.clear {
+		result = "\x1b[H\x1b[2J" + result
+	}
+	return result
 }
 
 func wtfSessionLines(session wtfSession, opts wtfRenderOpts, reset string) []string {
@@ -167,7 +195,7 @@ func wtfSessionLines(session wtfSession, opts wtfRenderOpts, reset string) []str
 	}
 	name := firstNonEmpty(session.Name, shortID(session.ID))
 	state := firstNonEmpty(session.State, "ended")
-	meta := strings.TrimSpace(strings.Join([]string{session.Branch, tildify(session.Cwd, opts.home)}, "   "))
+	meta := strings.TrimSpace(strings.Join([]string{session.Branch, tildify(session.Cwd, opts.snapshotHome)}, "   "))
 	head := fmt.Sprintf("%s%s%s%s  %-13s %-6s %s", mark, color, agent, reset, name, state, meta)
 	lines := []string{head}
 	if summary := strings.TrimSpace(session.Summary); summary != "" {
@@ -211,12 +239,16 @@ func updateWTF(ui wtfUI, key treeKey, r rune) wtfUI {
 	if ui.Cursor < ui.Top {
 		ui.Top = ui.Cursor
 	}
+	visibleSessions := max(1, (ui.Height-4)/3)
+	if ui.Cursor >= ui.Top+visibleSessions {
+		ui.Top = ui.Cursor - visibleSessions + 1
+	}
 	return ui
 }
 
 func collectWTFSnapshot(home string, cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
 	now := time.Now().Unix()
-	snapshot := wtfSnapshot{GeneratedAt: now, Sessions: collectWTFSessions(home, now, time.Local, wtfInventoryDeps{Today: todaysSessions, Live: currentLiveSessions})}
+	snapshot := wtfSnapshot{GeneratedAt: now, Home: home, Sessions: collectWTFSessions(home, now, time.Local, wtfInventoryDeps{Today: todaysSessions, Live: currentLiveSessions})}
 	return summarizeWTFSnapshot(snapshot, home, cache, summarizeWTFSession)
 }
 

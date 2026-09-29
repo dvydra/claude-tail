@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -41,6 +42,32 @@ func TestRenderWTFSnapshotClipsAndDisablesColor(t *testing.T) {
 	for _, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
 		if width := visWidth(line); width > 48 {
 			t.Errorf("line width = %d, want <= 48: %q", width, line)
+		}
+	}
+}
+
+func TestRenderWTFSnapshotHonorsAsymmetricNarrowWidth(t *testing.T) {
+	got := renderWTFSnapshot(testWTFSnapshot(), 13, false)
+	for _, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
+		if width := visWidth(line); width > 13 {
+			t.Errorf("line width = %d, want <= 13: %q", width, line)
+		}
+	}
+}
+
+func TestWTFRenderersDoNotReadHome(t *testing.T) {
+	original := os.Getenv("HOME")
+	t.Cleanup(func() { _ = os.Setenv("HOME", original) })
+	_ = os.Setenv("HOME", "/home/dan")
+
+	snapshot := renderWTFSnapshot(testWTFSnapshot(), 120, false)
+	interactive := renderWTF(wtfUI{Snapshot: testWTFSnapshot(), Width: 120, Height: 40}, Theme{})
+	for name, got := range map[string]string{"snapshot": snapshot, "interactive": interactive} {
+		if strings.Contains(got, "~/src") {
+			t.Errorf("%s renderer read HOME:\n%s", name, got)
+		}
+		if !strings.Contains(got, "/home/dan/src") {
+			t.Errorf("%s renderer did not use explicit snapshot cwd:\n%s", name, got)
 		}
 	}
 }
@@ -87,5 +114,22 @@ func TestUpdateWTFNavigationRefreshQuitAndChoose(t *testing.T) {
 	got := updateWTF(base, kEnter, 0)
 	if got.Chosen == nil || got.Chosen.ID != "T-idle" {
 		t.Fatalf("enter chose %+v", got.Chosen)
+	}
+}
+
+func TestUpdateWTFScrollsSelectionWithinSmallViewport(t *testing.T) {
+	ui := wtfUI{Snapshot: testWTFSnapshot(), Width: 80, Height: 6}
+	ui = updateWTF(ui, kDown, 0)
+	ui = updateWTF(ui, kDown, 0)
+	if ui.Top == 0 {
+		t.Fatalf("top = %d, want viewport to scroll past first session", ui.Top)
+	}
+
+	got := renderWTF(ui, Theme{})
+	if !strings.Contains(got, "▸ A  new-fix") {
+		t.Fatalf("selected row is outside viewport:\n%s", got)
+	}
+	if lines := strings.Count(strings.TrimSuffix(got, "\n"), "\n") + 1; lines > ui.Height {
+		t.Fatalf("rendered %d lines, want <= height %d:\n%s", lines, ui.Height, got)
 	}
 }
