@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -529,6 +530,118 @@ type wtfObservation struct {
 	Worktree   string
 	Branch     string
 	Evidence   trailEvidence
+}
+
+func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps) (wtfState, error) {
+	now := deps.Now()
+	nowUnix := now.Unix()
+	initializeWTFStateMaps(&prior)
+	sessions := collectWTFSessions(home, nowUnix, now.Location(), deps.Inventory)
+	state := prior
+	state.Sessions = make(map[string]wtfSession, len(sessions))
+	for _, session := range sessions {
+		state.Sessions[wtfSessionKey(session.Agent, session.ID)] = session
+	}
+	expireWTFSessions(&state, localMidnight(nowUnix, now.Location()))
+
+	knownRepos := make([]string, 0, len(prior.Trails)+len(sessions))
+	for _, trail := range prior.Trails {
+		knownRepos = append(knownRepos, trail.Owner+"/"+trail.Repo)
+	}
+	for _, session := range sessions {
+		knownRepos = append(knownRepos, session.Repo)
+	}
+	knownRepos = sortedUnique(knownRepos)
+	evidence := make(map[string][]trailEvidence)
+	for _, session := range sessions {
+		if !session.Active {
+			continue
+		}
+		key := wtfSessionKey(session.Agent, session.ID)
+		events := transcriptTrailEvents(session, home, session.LastActivity)
+		evidence[key] = extractTrailEvidence(events, trailContext{CurrentRepo: session.Repo, KnownRepos: knownRepos})
+	}
+
+	repoCwds := make(map[string]string)
+	for _, session := range sessions {
+		if session.Repo != "" && session.Cwd != "" {
+			repoCwds[session.Repo] = session.Cwd
+		}
+	}
+	for _, worktree := range prior.Worktrees {
+		if worktree.Repo != "" && worktree.Path != "" {
+			if _, exists := repoCwds[worktree.Repo]; !exists {
+				repoCwds[worktree.Repo] = worktree.Path
+			}
+		}
+	}
+	worktrees := make(map[string]wtfWorktree)
+	var degraded []error
+	for _, repo := range sortedMapKeys(repoCwds) {
+		var old []wtfWorktree
+		for _, worktree := range prior.Worktrees {
+			if worktree.Repo == repo {
+				old = append(old, worktree)
+			}
+		}
+		inspected := inspectRepoWorktrees(ctx, repo, repoCwds[repo], nowUnix, old, deps.Run)
+		if len(inspected) == 0 && len(old) > 0 {
+			degraded = append(degraded, fmt.Errorf("git worktrees for %s: unavailable", repo))
+			inspected = old
+		}
+		for _, worktree := range inspected {
+			worktrees[worktree.Path] = worktree
+		}
+	}
+
+	state = reconcileTrails(state, sessions, evidence, worktrees, nowUnix)
+	state.Findings = mergeWTFFindings(prior.Findings, detectWTFFindings(state, nowUnix), nowUnix)
+	for _, key := range sortedMapKeys(state.Trails) {
+		trail := state.Trails[key]
+		if !trailMetadataDue(trail, len(activeTrailAssociations(state, trail)) > 0, nowUnix) {
+			continue
+		}
+		updated, err := fetchTrailMetadata(ctx, trail, nowUnix, deps.Run)
+		state.Trails[key] = updated
+		if err != nil {
+			degraded = append(degraded, fmt.Errorf("trail metadata %s: %w", key, err))
+		}
+	}
+	state = reconcileTrails(state, sessions, evidence, state.Worktrees, nowUnix)
+	state.Findings = mergeWTFFindings(prior.Findings, detectWTFFindings(state, nowUnix), nowUnix)
+
+	for _, key := range sortedMapKeys(state.Sessions) {
+		session := state.Sessions[key]
+		old, existed := prior.Sessions[key]
+		if existed && !wtfSessionChanged(old, session) {
+			session.Summary = old.Summary
+			session.NeedsUser = old.NeedsUser
+			state.Sessions[key] = session
+			continue
+		}
+		if session.Transcript == "" {
+			session.Summary = fallbackWTFSummary(session)
+			session.NeedsUser = deterministicNeed(home, session)
+			state.Sessions[key] = session
+			continue
+		}
+		summary, cache, err := deps.Summarize(session, home, state.SummaryCache[key])
+		state.SummaryCache[key] = cache
+		session.Summary = summary.Summary
+		session.NeedsUser = summary.NeedsUser
+		state.Sessions[key] = session
+		if err != nil {
+			degraded = append(degraded, fmt.Errorf("summary %s: %w", key, err))
+		}
+	}
+	state.UpdatedAt = nowUnix
+	return state, errors.Join(degraded...)
+}
+
+func wtfSessionChanged(old, current wtfSession) bool {
+	return old.Agent != current.Agent || old.ID != current.ID || old.Name != current.Name || old.Repo != current.Repo ||
+		old.Cwd != current.Cwd || old.Branch != current.Branch || old.Transcript != current.Transcript || old.State != current.State ||
+		old.Active != current.Active || old.StartedAt != current.StartedAt || old.LastActivity != current.LastActivity || old.SocketPath != current.SocketPath
 }
 
 func reconcileTrails(prior wtfState, sessions []wtfSession, evidence map[string][]trailEvidence, worktrees map[string]wtfWorktree, now int64) wtfState {

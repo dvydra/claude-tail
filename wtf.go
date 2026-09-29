@@ -280,6 +280,13 @@ type wtfInventoryDeps struct {
 
 type wtfSummarizer func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error)
 
+type wtfScanDeps struct {
+	Inventory wtfInventoryDeps
+	Run       wtfCommandRunner
+	Summarize wtfSummarizer
+	Now       func() time.Time
+}
+
 func collectWTFSessions(home string, now int64, loc *time.Location, deps wtfInventoryDeps) []wtfSession {
 	byID := map[string]wtfSession{}
 	for _, item := range deps.Today(home, now, loc) {

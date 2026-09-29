@@ -580,6 +580,97 @@ func TestReconcileTrailsCanonicalFallbackUsesClaimsOnly(t *testing.T) {
 	}
 }
 
+func TestScanWTFIntegration(t *testing.T) {
+	home := t.TempDir()
+	oldWorktree := t.TempDir()
+	activeWorktree := t.TempDir()
+	exportPath := filepath.Join(home, "active.json")
+	if err := os.WriteFile(exportPath, []byte(`{"v":1,"id":"T-active","messages":[{"role":"user","createdAt":"2026-09-29T09:00:00Z","content":[{"type":"text","text":"Continue acme/api#1223"}]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	oldAt := now.Add(-48 * time.Hour).Unix()
+	oldClaim := wtfClaim{SessionKey: "claude:old", Worktree: oldWorktree, At: oldAt, Evidence: "acme/api#1223"}
+	prior := newWTFState(oldAt)
+	prior.Sessions["claude:old"] = wtfSession{Agent: AgentClaude, ID: "old", Repo: "acme/api", Cwd: oldWorktree, State: "ended", LastActivity: oldAt}
+	prior.Trails["acme/api#1223"] = wtfTrail{
+		Key: "acme/api#1223", Owner: "acme", Repo: "api", Number: 1223,
+		OwnerSession: "claude:old", CanonicalWorktree: oldWorktree, FirstClaim: &oldClaim,
+		Associations: []wtfAssociation{{SessionKey: "claude:old", Worktree: oldWorktree, At: oldAt, Evidence: oldClaim.Evidence, Source: "user"}},
+		FirstSeen:    oldAt, LastSeen: oldAt,
+	}
+	prior.Worktrees[oldWorktree] = wtfWorktree{Repo: "acme/api", Path: oldWorktree, Branch: "feat/old", Exists: true, DirtyFiles: 1, UnmergedCommits: 0, TrailKeys: []string{"acme/api#1223"}, SessionKeys: []string{"claude:old"}, FirstSeen: oldAt, LastSeen: oldAt, LastWIPAt: oldAt}
+
+	var commands []string
+	run := func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if name == "entire" {
+			return []byte(`{"number":1223,"branch":"feat/old","base":"main","title":"Registry","status":"open"}`), nil
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "worktree list --porcelain"):
+			return []byte("worktree " + oldWorktree + "\nHEAD old\nbranch refs/heads/feat/old\n\nworktree " + activeWorktree + "\nHEAD active\nbranch refs/heads/feat/new\n"), nil
+		case strings.Contains(joined, "status --porcelain") && dir == oldWorktree:
+			return []byte(" M old.go\n"), nil
+		case strings.Contains(joined, "status --porcelain"):
+			return nil, nil
+		case strings.Contains(joined, "symbolic-ref --quiet refs/remotes/origin/HEAD"):
+			return []byte("refs/remotes/origin/main\n"), nil
+		case strings.Contains(joined, "rev-list --count"):
+			return []byte("0\n"), nil
+		case strings.Contains(joined, "log --format=%s"), strings.Contains(joined, "diff --no-ext-diff"):
+			return nil, nil
+		default:
+			return nil, exec.ErrNotFound
+		}
+	}
+	summaryCalls := 0
+	deps := wtfScanDeps{
+		Inventory: wtfInventoryDeps{
+			Today: func(string, int64, *time.Location) []handoverItem {
+				return []handoverItem{{Agent: AgentAmp, SessionID: "T-active", Repo: "acme/api", Cwd: activeWorktree, Branch: "feat/new", Path: exportPath, LastActivity: now.Unix()}}
+			},
+			Live: func(string) []liveSession {
+				return []liveSession{{Agent: AgentAmp, SessionID: "T-active", Cwd: activeWorktree, Branch: "feat/new", Path: exportPath, Status: "busy", UpdatedAt: now.UnixMilli()}}
+			},
+		},
+		Run: run,
+		Summarize: func(session wtfSession, _ string, _ wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+			summaryCalls++
+			return wtfSummary{Summary: "Active challenger"}, wtfSummaryCache{InputHash: "active", Value: wtfSummary{Summary: "Active challenger"}}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+
+	got, err := scanWTF(context.Background(), home, prior, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sessions) != 1 || !got.Sessions["amp:T-active"].Active {
+		t.Fatalf("sessions: %#v", got.Sessions)
+	}
+	if len(got.Trails) != 1 || len(got.Worktrees) != 2 {
+		t.Fatalf("registry sizes: trails=%d worktrees=%d", len(got.Trails), len(got.Worktrees))
+	}
+	trail := got.Trails["acme/api#1223"]
+	if trail.OwnerSession != "claude:old" || trail.FirstClaim == nil || trail.FirstClaim.SessionKey != "claude:old" || trail.CanonicalWorktree != oldWorktree {
+		t.Fatalf("persisted ownership changed: %#v", trail)
+	}
+	if findingOfKind(got.Findings, "existing-wip-elsewhere") == nil || findingOfKind(got.Findings, "outside-canonical") == nil {
+		t.Fatalf("findings: %#v", got.Findings)
+	}
+	if summaryCalls != 1 {
+		t.Fatalf("summary calls=%d, want 1", summaryCalls)
+	}
+	for _, command := range commands {
+		if strings.Contains(command, "trail list") {
+			t.Fatalf("global trail listing invoked: %s", command)
+		}
+	}
+}
+
 func TestDetectWTFFindingsDuplicateActiveClaim(t *testing.T) {
 	state := findingState()
 	state.Sessions["claude:a"] = wtfSession{Active: true, Cwd: "/wt/a"}
