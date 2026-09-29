@@ -665,7 +665,9 @@ func TestWTFDaemonDelivery(t *testing.T) {
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	terminalSnapshots := make(chan wtfDelivery, 4)
-	postTerminalScanEntered := make(chan struct{})
+	finalTerminalSaveEntered := make(chan struct{})
+	releaseFinalTerminalSave := make(chan struct{})
+	var gateFinalTerminalSave sync.Once
 	var logMu sync.Mutex
 	var events []wtfDeliveryTestEvent
 	terminalSeen := make(map[string]bool)
@@ -676,19 +678,17 @@ func TestWTFDaemonDelivery(t *testing.T) {
 		RequestAfter: func(time.Duration) <-chan time.Time { return requests },
 		Scan: func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) {
 			n := scanCount.Add(1)
-			if n == 5 {
-				close(postTerminalScanEntered)
-				return state, nil
-			}
 			switch n {
 			case 1, 2:
 				return base, nil
 			case 3:
 				base.Findings = mergeWTFFindings(base.Findings, nil, 102)
 				return base, nil
-			default:
+			case 4:
 				base.Findings = mergeWTFFindings(base.Findings, map[string]wtfFinding{finding.ID: finding}, 103)
 				return base, nil
+			default:
+				return state, fmt.Errorf("unexpected scan %d", n)
 			}
 		},
 		Save: func(_ string, state wtfState) error {
@@ -713,6 +713,12 @@ func TestWTFDaemonDelivery(t *testing.T) {
 				}
 			}
 			logMu.Unlock()
+			if current.Occurrence == 2 && current.Delivery["mac"].State == "sent" && current.Delivery["session:"+finding.Challenger].State == "sent" {
+				gateFinalTerminalSave.Do(func() {
+					close(finalTerminalSaveEntered)
+					<-releaseFinalTerminalSave
+				})
+			}
 			if hasSending {
 				gateSendingSave.Do(func() {
 					close(sendingSaveEntered)
@@ -772,17 +778,19 @@ func TestWTFDaemonDelivery(t *testing.T) {
 	ticks <- time.Now()
 	waitForScans(t, &scanCount, 4)
 	waitForWTFTerminalSnapshots(t, terminalSnapshots, 2)
-
-	// The daemon loop cannot enter this scan until every preceding terminal Save returns.
-	ticks <- time.Now()
 	select {
-	case <-postTerminalScanEntered:
+	case <-finalTerminalSaveEntered:
 	case <-time.After(time.Second):
-		t.Fatal("post-terminal scan did not start")
+		t.Fatal("final terminal save did not start")
 	}
-	waitForScans(t, &scanCount, 5)
 
 	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("daemon returned while final terminal save was blocked: %v", err)
+	default:
+	}
+	close(releaseFinalTerminalSave)
 	select {
 	case err := <-done:
 		if err != nil {
@@ -795,11 +803,6 @@ func TestWTFDaemonDelivery(t *testing.T) {
 	defer logMu.Unlock()
 	if got := notifyCount.Load(); got != 4 {
 		t.Fatalf("notifier calls = %d, want 4", got)
-	}
-	for _, event := range events {
-		if event.occurrence > 2 {
-			t.Fatalf("post-terminal scan created occurrence %d, events = %#v", event.occurrence, events)
-		}
 	}
 	for _, occurrence := range []int{1, 2} {
 		for _, channel := range []string{"mac", "session:" + finding.Challenger} {
