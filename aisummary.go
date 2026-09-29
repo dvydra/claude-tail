@@ -60,16 +60,20 @@ func aiSummarize(text string) (aiSummary, error) {
 // parseSummaryJSON pulls the JSON object out of fm's output (ignoring any spinner
 // or ANSI chrome) and decodes it.
 func parseSummaryJSON(out []byte) (aiSummary, bool) {
-	s := string(out)
-	i, j := strings.IndexByte(s, '{'), strings.LastIndexByte(s, '}')
-	if i < 0 || j <= i {
-		return aiSummary{}, false
-	}
 	var sum aiSummary
-	if json.Unmarshal([]byte(s[i:j+1]), &sum) != nil || strings.TrimSpace(sum.Summary) == "" {
+	if !parseSummaryObject(out, &sum) || strings.TrimSpace(sum.Summary) == "" {
 		return aiSummary{}, false
 	}
 	return sum, true
+}
+
+func parseSummaryObject(out []byte, dst any) bool {
+	s := string(out)
+	i, j := strings.IndexByte(s, '{'), strings.LastIndexByte(s, '}')
+	if i < 0 || j <= i {
+		return false
+	}
+	return json.Unmarshal([]byte(s[i:j+1]), dst) == nil
 }
 
 // summaryBudget caps the characters fed to the model (~4k-token context for the

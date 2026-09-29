@@ -12,6 +12,15 @@ func TestRunWTFRejectsArguments(t *testing.T) {
 	}
 }
 
+func TestFallbackWTFSummaryUsesStableSessionMetadata(t *testing.T) {
+	if got := fallbackWTFSummary(wtfSession{Name: "  Add dashboard  ", ID: "abc"}); got != "Add dashboard" {
+		t.Fatalf("named fallback = %q", got)
+	}
+	if got := fallbackWTFSummary(wtfSession{ID: "abc"}); got != "Session abc" {
+		t.Fatalf("id fallback = %q", got)
+	}
+}
+
 func TestCollectWTFSessionsMergesExactLiveState(t *testing.T) {
 	today := []handoverItem{
 		{Agent: AgentClaude, SessionID: "c1", Repo: "o/r", Cwd: "/old", Branch: "old", Title: "old title", LastActivity: 100, Path: "/t/c1.jsonl"},

@@ -34,6 +34,8 @@ type wtfInventoryDeps struct {
 	Live  func(home string) []liveSession
 }
 
+type wtfSummarizer func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error)
+
 func collectWTFSessions(home string, now int64, loc *time.Location, deps wtfInventoryDeps) []wtfSession {
 	byID := map[string]wtfSession{}
 	for _, item := range deps.Today(home, now, loc) {
@@ -87,6 +89,26 @@ func collectWTFSessions(home string, now int64, loc *time.Location, deps wtfInve
 
 func wtfSessionKey(agent Agent, id string) string {
 	return string(agent) + ":" + id
+}
+
+func summarizeWTFSnapshot(snapshot wtfSnapshot, home string, cache map[string]wtfSummaryCache, summarize wtfSummarizer) (wtfSnapshot, map[string]wtfSummaryCache) {
+	if cache == nil {
+		cache = make(map[string]wtfSummaryCache)
+	}
+	for i := range snapshot.Sessions {
+		session := &snapshot.Sessions[i]
+		if session.Transcript == "" {
+			session.Summary = fallbackWTFSummary(*session)
+			session.NeedsUser = deterministicNeed(home, *session)
+			continue
+		}
+		key := wtfSessionKey(session.Agent, session.ID)
+		summary, updated, _ := summarize(*session, home, cache[key])
+		cache[key] = updated
+		session.Summary = summary.Summary
+		session.NeedsUser = summary.NeedsUser
+	}
+	return snapshot, cache
 }
 
 func runWTF(cfg Config) error {
