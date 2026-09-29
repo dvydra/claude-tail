@@ -32,12 +32,6 @@ type wtfRenderOpts struct {
 	snapshotHome string
 }
 
-var defaultWTFTheme = Theme{
-	UserANSI:   "\x1b[1;38;2;187;154;247m",
-	ClaudeANSI: "\x1b[1;38;2;122;162;247m",
-	DimANSI:    "\x1b[2;38;2;86;95;137m",
-}
-
 func orderedWTFSessions(snapshot wtfSnapshot) []wtfSession {
 	sessions := append([]wtfSession(nil), snapshot.Sessions...)
 	sort.SliceStable(sessions, func(i, j int) bool {
@@ -80,7 +74,11 @@ func orderedWTFSessions(snapshot wtfSnapshot) []wtfSession {
 func renderWTFSnapshot(snapshot wtfSnapshot, width int, color bool) string {
 	theme := Theme{}
 	if color {
-		theme = defaultWTFTheme
+		theme = Theme{
+			UserANSI:   "\x1b[1;38;2;187;154;247m",
+			ClaudeANSI: "\x1b[1;38;2;122;162;247m",
+			DimANSI:    "\x1b[2;38;2;86;95;137m",
+		}
 	}
 	return composeWTF(snapshot, wtfRenderOpts{width: width, theme: theme})
 }
@@ -96,6 +94,12 @@ func renderWTF(ui wtfUI, theme Theme) string {
 }
 
 func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
+	if opts.width <= 0 {
+		if opts.clear {
+			return "\x1b[H\x1b[2J"
+		}
+		return ""
+	}
 	opts.snapshotHome = snapshot.Home
 	width := opts.width
 	reset := ""
@@ -126,49 +130,48 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	if len(sessions) == 0 {
 		line(&b, "")
 		line(&b, "No sessions active or seen today.")
-		return b.String()
-	}
-
-	renderSection := func(title string, wantActive bool) {
-		rendered := false
-		for i, session := range sessions {
-			if session.Active == wantActive && i >= opts.top {
-				rendered = true
-				break
+	} else {
+		renderSection := func(title string, wantActive bool) {
+			rendered := false
+			for i, session := range sessions {
+				if session.Active == wantActive && i >= opts.top {
+					rendered = true
+					break
+				}
+			}
+			if !rendered {
+				return
+			}
+			line(&b, "")
+			line(&b, opts.theme.ClaudeANSI+title+reset)
+			lastRepo := "\x00"
+			for i, session := range sessions {
+				if session.Active != wantActive {
+					continue
+				}
+				if i < opts.top {
+					continue
+				}
+				repo := firstNonEmpty(session.Repo, tildify(session.Cwd, snapshot.Home), "Other")
+				if repo != lastRepo {
+					line(&b, opts.theme.DimANSI+"  "+repo+reset)
+					lastRepo = repo
+				}
+				for _, row := range wtfSessionLines(session, opts, reset) {
+					line(&b, row)
+				}
 			}
 		}
-		if !rendered {
-			return
+		if active > 0 {
+			renderSection("Now", true)
 		}
-		line(&b, "")
-		line(&b, opts.theme.ClaudeANSI+title+reset)
-		lastRepo := "\x00"
-		for i, session := range sessions {
-			if session.Active != wantActive {
-				continue
-			}
-			if i < opts.top {
-				continue
-			}
-			repo := firstNonEmpty(session.Repo, tildify(session.Cwd, snapshot.Home), "Other")
-			if repo != lastRepo {
-				line(&b, opts.theme.DimANSI+"  "+repo+reset)
-				lastRepo = repo
-			}
-			for _, row := range wtfSessionLines(session, opts, reset) {
-				line(&b, row)
-			}
+		if ended > 0 {
+			renderSection("Recently stopped", false)
 		}
-	}
-	if active > 0 {
-		renderSection("Now", true)
-	}
-	if ended > 0 {
-		renderSection("Recently stopped", false)
-	}
-	if opts.clear {
-		line(&b, "")
-		line(&b, opts.theme.DimANSI+"↑↓ move · ⏎ tail · r refresh · q quit"+reset)
+		if opts.clear {
+			line(&b, "")
+			line(&b, opts.theme.DimANSI+"↑↓ move · ⏎ tail · r refresh · q quit"+reset)
+		}
 	}
 	result := b.String()
 	if opts.height > 0 {
@@ -182,6 +185,41 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		result = "\x1b[H\x1b[2J" + result
 	}
 	return result
+}
+
+// wtfComposedRows returns the exact row count for a rendered session range,
+// including section and repository headers introduced at viewport boundaries.
+func wtfComposedRows(snapshot wtfSnapshot, top, end int) int {
+	sessions := orderedWTFSessions(snapshot)
+	if top < 0 || top >= len(sessions) || end < top {
+		return 0
+	}
+	end = min(end, len(sessions)-1)
+	rows := 0
+	lastRepo := "\x00"
+	lastActive := false
+	for i := top; i <= end; i++ {
+		session := sessions[i]
+		count := 1
+		if strings.TrimSpace(session.Summary) != "" {
+			count++
+		}
+		if strings.TrimSpace(session.NeedsUser) != "" {
+			count++
+		}
+		if i == top || session.Active != lastActive {
+			count += 2 // blank row and section heading
+			lastRepo = "\x00"
+		}
+		repo := firstNonEmpty(session.Repo, tildify(session.Cwd, snapshot.Home), "Other")
+		if repo != lastRepo {
+			count++
+			lastRepo = repo
+		}
+		rows += count
+		lastActive = session.Active
+	}
+	return rows
 }
 
 func wtfSessionLines(session wtfSession, opts wtfRenderOpts, reset string) []string {
@@ -236,12 +274,13 @@ func updateWTF(ui wtfUI, key treeKey, r rune) wtfUI {
 		}
 	}
 	ui.Cursor = max(0, min(ui.Cursor, len(sessions)-1))
+	ui.Top = max(0, min(ui.Top, ui.Cursor))
 	if ui.Cursor < ui.Top {
 		ui.Top = ui.Cursor
 	}
-	visibleSessions := max(1, (ui.Height-4)/3)
-	if ui.Cursor >= ui.Top+visibleSessions {
-		ui.Top = ui.Cursor - visibleSessions + 1
+	rowBudget := max(1, ui.Height-1) // the Today row remains fixed above the viewport
+	for wtfComposedRows(ui.Snapshot, ui.Top, ui.Cursor) > rowBudget && ui.Top < ui.Cursor {
+		ui.Top++
 	}
 	return ui
 }
@@ -283,6 +322,7 @@ func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
 		if ui.Refresh || time.Since(last) >= wtfRefresh {
 			ui.Snapshot, cache = collectWTFSnapshot(home, cache)
 			ui.Refresh = false
+			ui = updateWTF(ui, treeKey(-1), 0)
 			last = time.Now()
 		}
 		ui.Width, ui.Height = termSize(tty)

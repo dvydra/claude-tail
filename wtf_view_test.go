@@ -55,6 +55,26 @@ func TestRenderWTFSnapshotHonorsAsymmetricNarrowWidth(t *testing.T) {
 	}
 }
 
+func TestRenderWTFSnapshotBoundsNonPositiveWidths(t *testing.T) {
+	for _, width := range []int{0, -7} {
+		if got := renderWTFSnapshot(testWTFSnapshot(), width, false); got != "" {
+			t.Errorf("width %d render = %q, want empty bounded output", width, got)
+		}
+	}
+}
+
+func TestRenderWTFSnapshotColorIsDeterministic(t *testing.T) {
+	want := renderWTFSnapshot(testWTFSnapshot(), 120, true)
+	_ = renderWTF(wtfUI{Snapshot: testWTFSnapshot(), Width: 120, Height: 40}, Theme{UserANSI: "MUTATED", ClaudeANSI: "MUTATED", DimANSI: "MUTATED"})
+	got := renderWTFSnapshot(testWTFSnapshot(), 120, true)
+	if got != want {
+		t.Fatalf("static render changed after interactive render with another theme")
+	}
+	if !strings.Contains(got, "\x1b[1;38;2;122;162;247m") {
+		t.Fatalf("static color render lacks deterministic palette: %q", got)
+	}
+}
+
 func TestWTFRenderersDoNotReadHome(t *testing.T) {
 	original := os.Getenv("HOME")
 	t.Cleanup(func() { _ = os.Setenv("HOME", original) })
@@ -75,6 +95,17 @@ func TestWTFRenderersDoNotReadHome(t *testing.T) {
 func TestRenderWTFSnapshotEmpty(t *testing.T) {
 	if got := renderWTFSnapshot(wtfSnapshot{}, 80, false); !strings.Contains(got, "No sessions active or seen today.") {
 		t.Fatalf("empty render = %q", got)
+	}
+}
+
+func TestRenderWTFEmptyHonorsHeightAndClearPrefix(t *testing.T) {
+	got := renderWTF(wtfUI{Width: 80, Height: 2}, Theme{ClaudeANSI: "\x1b[31m"})
+	if !strings.HasPrefix(got, "\x1b[H\x1b[2J") {
+		t.Fatalf("empty interactive render lacks clear prefix: %q", got)
+	}
+	body := strings.TrimPrefix(got, "\x1b[H\x1b[2J")
+	if lines := strings.Count(strings.TrimSuffix(body, "\n"), "\n") + 1; lines > 2 {
+		t.Fatalf("empty interactive render has %d lines, want <= 2: %q", lines, body)
 	}
 }
 
@@ -117,19 +148,30 @@ func TestUpdateWTFNavigationRefreshQuitAndChoose(t *testing.T) {
 	}
 }
 
-func TestUpdateWTFScrollsSelectionWithinSmallViewport(t *testing.T) {
-	ui := wtfUI{Snapshot: testWTFSnapshot(), Width: 80, Height: 6}
-	ui = updateWTF(ui, kDown, 0)
-	ui = updateWTF(ui, kDown, 0)
-	if ui.Top == 0 {
-		t.Fatalf("top = %d, want viewport to scroll past first session", ui.Top)
+func TestUpdateWTFUsesExactRowsAndClampsTopAfterRefresh(t *testing.T) {
+	snapshot := wtfSnapshot{Sessions: []wtfSession{
+		{Agent: AgentClaude, ID: "one", Repo: "repo/a", Active: true, State: "busy", Summary: "summary", NeedsUser: "answer"},
+		{Agent: AgentAmp, ID: "two", Repo: "repo/a", Active: true, State: "idle"},
+		{Agent: AgentClaude, ID: "three", Repo: "repo/b", Active: true, State: "busy", Summary: "summary"},
+		{Agent: AgentAmp, ID: "four", Repo: "repo/c", Active: false, State: "ended", Summary: "summary", NeedsUser: "answer"},
+	}}
+	ui := wtfUI{Snapshot: snapshot, Width: 80, Height: 9}
+	for range 3 {
+		ui = updateWTF(ui, kDown, 0)
+	}
+	if ui.Top != 3 {
+		t.Fatalf("top = %d, want exact first visible session 3", ui.Top)
+	}
+	if got := renderWTF(ui, Theme{}); !strings.Contains(got, "▸ A  four") {
+		t.Fatalf("selected session is outside viewport:\n%s", got)
 	}
 
-	got := renderWTF(ui, Theme{})
-	if !strings.Contains(got, "▸ A  new-fix") {
-		t.Fatalf("selected row is outside viewport:\n%s", got)
+	ui.Snapshot.Sessions = ui.Snapshot.Sessions[:2]
+	ui = updateWTF(ui, treeKey(-1), 0)
+	if ui.Cursor != 1 || ui.Top < 0 || ui.Top > ui.Cursor {
+		t.Fatalf("after refresh cursor/top = %d/%d, want clamped to remaining sessions", ui.Cursor, ui.Top)
 	}
-	if lines := strings.Count(strings.TrimSuffix(got, "\n"), "\n") + 1; lines > ui.Height {
-		t.Fatalf("rendered %d lines, want <= height %d:\n%s", lines, ui.Height, got)
+	if got := renderWTF(ui, Theme{}); !strings.Contains(got, "▸ A  two") {
+		t.Fatalf("selected remaining session is outside viewport:\n%s", got)
 	}
 }
