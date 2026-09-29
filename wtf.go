@@ -175,6 +175,7 @@ func loadWTFState(home string, now int64) (wtfState, error) {
 		return fresh, fmt.Errorf("wtf state: unsupported version %d, expected %d", state.Version, wtfStateVersion)
 	}
 	initializeWTFStateMaps(&state)
+	recoverWTFDeliveries(&state)
 	return state, nil
 }
 
