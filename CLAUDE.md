@@ -631,6 +631,21 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `not attempted` until monitoring exists. The timed tty reader publishes
   dimension changes even on zero-byte timeout reads, and the refresh worker
   selects on shutdown while idle.
+- `wtfdaemon.go` / `wtf_notify.go` — the opt-in monitoring daemon installed by
+  `entire wtf install` as LaunchAgent `io.entire.entire-tail.wtf`. It scans every
+  two seconds; the dashboard's `r` key writes a manual scan request. Durable
+  files live under `~/Library/Application Support/entire-tail/wtf/`:
+  `state.json`, `health.json`, and `daemon.log`. The plist lives at
+  `~/Library/LaunchAgents/io.entire.entire-tail.wtf.plist`. One daemon owns
+  registry writes and each finding occurrence gets one attempt per delivery
+  channel at a time. Claude records `held`, `sent`, or `refused`; a complete
+  socket write without a receipt is sent. Amp timeout after process start is
+  `unknown` and is never retried. Failed channels retry independently. Restart
+  converts an interrupted `sending` state to `unknown`, preventing duplicate
+  delivery. `uninstall` removes the agent and health file but preserves registry
+  history in `state.json`. Monitoring only warns the challenger to stop and
+  check with Daniel. It never cleans worktrees, reassigns trails, switches
+  branches, mutates trails, or performs automatic cleanup.
 - `pending.go` — the marker protocol and model (Claude-only): when Claude blocks
   on a question or permission prompt, the opt-in hooks write a per-session marker
   file to `~/.claude/entire-tail/pending/<session_id>.json` the instant it appears,

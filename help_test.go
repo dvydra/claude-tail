@@ -107,7 +107,14 @@ func TestHelpKeyIsWired(t *testing.T) {
 
 func TestHelpDocumentsWTFDashboard(t *testing.T) {
 	help := helpText()
-	for _, want := range []string{"entire-tail wtf", "active and today’s sessions"} {
+	for _, want := range []string{
+		"entire-tail wtf",
+		"active and today’s sessions",
+		"wtf install",
+		"wtf status",
+		"wtf uninstall",
+		"stop and check with Daniel",
+	} {
 		if !strings.Contains(help, want) {
 			t.Errorf("help missing %q", want)
 		}

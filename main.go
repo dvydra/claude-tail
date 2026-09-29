@@ -1361,15 +1361,25 @@ USAGE:
   entire tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]   # as an entire plugin
   entire-tail handover                                     # write today's handover docs
   entire-tail wtf                                          # active and today’s sessions
+  entire-tail wtf install|status|uninstall                 # monitoring lifecycle
 
 SUBCOMMANDS:
   wtf                       Show active and today’s sessions in a dashboard.
                             Ended sessions are retained since local midnight.
                             Summaries use Apple Foundation Models when available
                             and fall back to deterministic session labels.
-                            ↑/↓ select, Enter opens a session, r refreshes, and
-                            q/Escape quits. This phase does not install monitoring
-                            or assign sessions to trails.
+                            ↑/↓ select, Enter opens a session, r requests a
+                            manual scan, and q/Escape quits. Monitoring scans
+                            every 2s when installed:
+                              wtf install    install/load the LaunchAgent
+                              wtf status     report monitoring health
+                              wtf uninstall  unload it; preserve state.json
+                            A new finding occurrence sends one Mac notification
+                            and tells the active challenger to stop and check with Daniel.
+                            Claude may report held/refused; Amp is
+                            unknown after a started command times out. Monitoring
+                            never cleans, reassigns, switches branches, or mutates
+                            trails automatically.
   handover                  Enumerate today's Claude and Amp sessions, group them in a
                             picker (1-9 group · x separate · - skip · ⏎ write),
                             then launch an interactive agent that enriches each
