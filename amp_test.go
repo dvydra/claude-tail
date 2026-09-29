@@ -254,6 +254,77 @@ func TestAmpSnapshotReportsRepeatedRefreshErrorOnce(t *testing.T) {
 	}
 }
 
+func TestAmpSnapshotFollowsPluginFeedWithoutExporting(t *testing.T) {
+	home := t.TempDir()
+	logPath := filepath.Join(home, ".cache", "amp", "logs", "threads", "T-feed.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	livePath := ampLivePath(home, "T-feed")
+	if err := os.MkdirAll(filepath.Dir(livePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	line := func(id, text string) string {
+		return fmt.Sprintf(`{"agent":"amp","message":{"role":"assistant","protocolMessageID":%q,"state":{"type":"complete"},"content":[{"type":"text","text":%q}]}}`+"\n", id, text)
+	}
+	if err := os.WriteFile(livePath, []byte(line("M-a", "exported")+line("M-b", "streamed-late")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	old := ampRun
+	t.Cleanup(func() { ampRun = old })
+	var calls atomic.Int32
+	ampRun = func(context.Context, ...string) ([]byte, error) {
+		calls.Add(1)
+		return []byte(`{"v":1,"id":"T-feed","messages":[` +
+			`{"role":"assistant","protocolMessageID":"M-a","state":{"type":"complete"},"content":[{"type":"text","text":"exported"}]},` +
+			`{"role":"assistant","protocolMessageID":"M-b","state":{"type":"streaming"},"content":[{"type":"text","text":"streamed-"}]}]}`), nil
+	}
+
+	path, stop, sourceErrors, err := startAmpSnapshot(home, "T-feed", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopAmpSnapshot(stop, sourceErrors)
+
+	f, err := os.OpenFile(livePath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(line("M-c", "live-new"))
+	_ = f.Close()
+	for i := 0; i < 3; i++ {
+		lf, _ := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0)
+		_, _ = lf.WriteString(`{"type":"message_added"}` + "\n")
+		_ = lf.Close()
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if data, _ := os.ReadFile(path); bytes.Contains(data, []byte("live-new")) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	data, _ := os.ReadFile(path)
+	if !bytes.Contains(data, []byte("live-new")) {
+		t.Fatalf("plugin feed line not appended:\n%s", data)
+	}
+	if n := bytes.Count(data, []byte(`"exported"`)); n != 1 {
+		t.Fatalf("already-exported message rendered %d times:\n%s", n, data)
+	}
+	if !bytes.Contains(data, []byte("streamed-late")) {
+		t.Fatalf("message incomplete in the export was dropped as a duplicate:\n%s", data)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("amp threads export ran %d times, want only the initial backfill", got)
+	}
+}
+
 func stopAmpSnapshot(stop chan struct{}, sourceErrors <-chan error) {
 	close(stop)
 	for range sourceErrors {
