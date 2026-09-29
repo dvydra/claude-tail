@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -53,6 +54,12 @@ func wtfAgentPath(home string) string {
 }
 func wtfLogPath(home string) string { return filepath.Join(wtfDir(home), "daemon.log") }
 
+func wtfPlistString(value string) string {
+	var escaped strings.Builder
+	_ = xml.EscapeText(&escaped, []byte(value))
+	return escaped.String()
+}
+
 func wtfAgentPlist(bin, logPath string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -72,7 +79,7 @@ func wtfAgentPlist(bin, logPath string) string {
   <key>StandardErrorPath</key><string>%s</string>
 </dict>
 </plist>
-`, wtfAgentLabel, bin, logPath, logPath)
+`, wtfPlistString(wtfAgentLabel), wtfPlistString(bin), wtfPlistString(logPath), wtfPlistString(logPath))
 }
 
 func installWTFAgent(home, bin string, out io.Writer) (string, error) {
@@ -126,7 +133,12 @@ func runWTFCommand(args []string, home string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		_ = wtfAgentUnload(path)
+		if err := wtfAgentUnload(path); err != nil {
+			return err
+		}
+		if err := os.Remove(wtfHealthPath(home)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		if err := wtfAgentLoad(path); err != nil {
 			return err
 		}
@@ -242,7 +254,7 @@ func acquireWTFLock(home string) (func(), bool) {
 
 func wtfIsEntireTailProcess(command string) bool {
 	fields := strings.Fields(command)
-	return len(fields) > 0 && filepath.Base(fields[0]) == "entire-tail"
+	return len(fields) == 3 && filepath.Base(fields[0]) == "entire-tail" && fields[1] == "wtf" && fields[2] == "daemon"
 }
 
 func readWTFHealth(home string) (wtfHealth, bool) {

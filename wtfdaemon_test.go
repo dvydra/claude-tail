@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"os"
 	"path/filepath"
@@ -28,6 +29,19 @@ func TestWTFAgentPlist(t *testing.T) {
 	} {
 		if !strings.Contains(plist, want) {
 			t.Errorf("plist missing %q:\n%s", want, plist)
+		}
+	}
+}
+
+func TestWTFAgentPlistEscapesInterpolatedStrings(t *testing.T) {
+	plist := wtfAgentPlist("/Applications/A&B/<current>/entire-tail", "/tmp/A&B/<logs>/daemon.log")
+	var document any
+	if err := xml.Unmarshal([]byte(plist), &document); err != nil {
+		t.Fatalf("generated plist is not XML: %v\n%s", err, plist)
+	}
+	for _, want := range []string{"A&amp;B", "&lt;current&gt;", "&lt;logs&gt;"} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("plist missing escaped value %q:\n%s", want, plist)
 		}
 	}
 }
@@ -84,6 +98,79 @@ func TestRunWTFCommandInstallReportsFailedHealth(t *testing.T) {
 	err := runWTFCommand([]string{"install"}, home, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), wtfLogPath(home)) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunWTFCommandInstallStopsWhenUnloadFails(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "entire-tail"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	calls, _ := stubWTFAgentLifecycle(t, wtfHealth{}, false)
+	wtfAgentUnload = func(path string) error {
+		*calls = append(*calls, "unload "+path)
+		return errors.New("unload failed")
+	}
+	err := runWTFCommand([]string{"install"}, home, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "unload failed") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(*calls) != 1 || !strings.HasPrefix((*calls)[0], "unload ") {
+		t.Fatalf("calls after unload failure = %v", *calls)
+	}
+}
+
+func TestRunWTFCommandInstallRemovesStaleHealthBeforeLoadAndPreservesState(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "entire-tail"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	if err := writeWTFHealth(home, wtfHealth{PID: 99}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveWTFState(home, newWTFState(1)); err != nil {
+		t.Fatal(err)
+	}
+	stubWTFAgentLifecycle(t, wtfHealth{PID: 100}, true)
+	assertClean := func(stage string) {
+		if _, err := os.Stat(wtfHealthPath(home)); !os.IsNotExist(err) {
+			t.Fatalf("%s saw stale health: %v", stage, err)
+		}
+		if _, err := os.Stat(wtfStatePath(home)); err != nil {
+			t.Fatalf("%s lost state.json: %v", stage, err)
+		}
+	}
+	wtfAgentLoad = func(string) error { assertClean("load"); return nil }
+	wtfAgentWait = func(string, time.Duration) (wtfHealth, bool) {
+		assertClean("wait")
+		return wtfHealth{PID: 100}, true
+	}
+	if err := runWTFCommand([]string{"install"}, home, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunWTFCommandInstallStopsWhenStaleHealthRemovalFails(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "entire-tail"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	if err := os.MkdirAll(filepath.Join(wtfHealthPath(home), "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ := stubWTFAgentLifecycle(t, wtfHealth{}, false)
+	err := runWTFCommand([]string{"install"}, home, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("install succeeded despite health removal failure")
+	}
+	if len(*calls) != 1 || !strings.HasPrefix((*calls)[0], "unload ") {
+		t.Fatalf("calls after remove failure = %v", *calls)
 	}
 }
 
@@ -146,6 +233,12 @@ func TestRunWTFCommandUninstallPreservesState(t *testing.T) {
 	}
 	if _, err := os.Stat(wtfStatePath(home)); err != nil {
 		t.Fatalf("state.json was removed: %v", err)
+	}
+	if err := runWTFCommand([]string{"uninstall"}, home, &bytes.Buffer{}); err != nil {
+		t.Fatalf("repeated uninstall: %v", err)
+	}
+	if _, err := os.Stat(wtfStatePath(home)); err != nil {
+		t.Fatalf("repeated uninstall removed state.json: %v", err)
 	}
 }
 
@@ -308,15 +401,25 @@ func TestWTFHealthRoundTripsAndChecksProcessIdentity(t *testing.T) {
 	if !wtfDaemonRunning(got) {
 		t.Fatal("live entire-tail pid reported stopped")
 	}
-	wtfProcessName = func(int) string { return "another-process" }
-	if wtfDaemonRunning(got) {
-		t.Fatal("recycled pid reported running")
-	}
-	for _, command := range []string{"/tmp/not-entire-tail --entire-tail", "helper entire-tail", "/usr/bin/entire-tail-helper"} {
+	for _, command := range []string{
+		"another-process",
+		"/tmp/not-entire-tail --entire-tail",
+		"helper entire-tail",
+		"/usr/bin/entire-tail-helper",
+		"entire-tail",
+		"entire-tail dashboard",
+		"entire-tail tap daemon",
+		"entire-tail wtf status",
+		"entire-tail wtf daemon extra",
+	} {
 		wtfProcessName = func(int) string { return command }
 		if wtfDaemonRunning(got) {
-			t.Fatalf("command %q reported as entire-tail", command)
+			t.Fatalf("command %q reported as WTF daemon", command)
 		}
+	}
+	wtfProcessName = func(int) string { return "/opt/tools/entire-tail wtf daemon" }
+	if !wtfDaemonRunning(got) {
+		t.Fatal("exact executable path daemon reported stopped")
 	}
 }
 
@@ -334,6 +437,26 @@ func TestWTFLockDoesNotTrustProcessArgumentSubstring(t *testing.T) {
 		t.Fatal("argument substring prevented stale lock replacement")
 	}
 	release()
+}
+
+func TestWTFLockReplacesOtherEntireTailSubcommands(t *testing.T) {
+	for _, command := range []string{"entire-tail dashboard", "entire-tail tap daemon", "entire-tail wtf status"} {
+		t.Run(command, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(wtfLockPath(home), []byte("42\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			withWTFProcessFakes(t, 101, func(int) bool { return true }, func(int) string { return command })
+			release, ok := acquireWTFLock(home)
+			if !ok {
+				t.Fatalf("command %q prevented stale lock replacement", command)
+			}
+			release()
+		})
+	}
 }
 
 func TestWTFLockConcurrentStaleReplacementKeepsWinner(t *testing.T) {
