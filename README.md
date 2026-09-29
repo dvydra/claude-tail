@@ -54,7 +54,8 @@ The script does three things in one shot:
 2. Symlinks `entire-tail` into `~/.local/bin/` so the standalone command
    works.
 3. Registers it via `entire plugin install` if the [`entire`](https://docs.entire.io)
-   CLI is on `$PATH`, so you can also invoke it as `entire tail`.
+   CLI is on `$PATH`, so you can invoke it as `entire tail` or open the dashboard
+   directly with `entire wtf`.
 
 The binary embeds its themes, so it's self-contained — the symlink works from
 anywhere. After editing source or themes, re-run `./install.sh` (or

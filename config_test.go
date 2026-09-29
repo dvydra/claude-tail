@@ -35,6 +35,15 @@ func TestParseCLIWTF(t *testing.T) {
 	}
 }
 
+func TestCommandArgsMakesEntireWTFAnAlias(t *testing.T) {
+	if got := commandArgs("/plugins/entire-wtf", []string{"status"}); !reflect.DeepEqual(got, []string{"wtf", "status"}) {
+		t.Fatalf("entire-wtf args = %v, want [wtf status]", got)
+	}
+	if got := commandArgs("/bin/entire-tail", []string{"wtf", "status"}); !reflect.DeepEqual(got, []string{"wtf", "status"}) {
+		t.Fatalf("entire-tail args = %v, want unchanged", got)
+	}
+}
+
 func TestParseCLIEnvDefaults(t *testing.T) {
 	env := map[string]string{
 		"ENTIRE_TAIL_AGENT":    "codex",
