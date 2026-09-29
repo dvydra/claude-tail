@@ -266,13 +266,20 @@ func defaultWTFExec(ctx context.Context, name string, args ...string) ([]byte, e
 	if err := command.Start(); err != nil {
 		return nil, err
 	}
-	if err := command.Wait(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			err = ctxErr
+	waitResult := make(chan error, 1)
+	go func() {
+		waitResult <- command.Wait()
+	}()
+	select {
+	case err := <-waitResult:
+		if err == nil {
+			return nil, nil
 		}
 		return nil, &wtfExecError{Started: true, Err: err}
+	case <-ctx.Done():
+		<-waitResult
+		return nil, &wtfExecError{Started: true, Err: ctx.Err()}
 	}
-	return nil, nil
 }
 
 const (

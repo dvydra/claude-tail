@@ -97,6 +97,71 @@ func TestDefaultWTFExecMissingBinaryIsPreStartError(t *testing.T) {
 	}
 }
 
+func TestDefaultWTFExecNonzeroExitIsStartedCommandFailure(t *testing.T) {
+	falseBin, err := exec.LookPath("false")
+	if err != nil {
+		t.Skip("false is not installed")
+	}
+	_, err = defaultWTFExec(context.Background(), falseBin)
+	assertWTFStartedError(t, err)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want non-context command failure", err)
+	}
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) {
+		t.Fatalf("error = %T %v, want wrapped *exec.ExitError", err, err)
+	}
+}
+
+func TestDefaultWTFExecDeadlineIsStartedDeadlineFailure(t *testing.T) {
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = defaultWTFExec(ctx, sleepBin, "5")
+	assertWTFStartedError(t, err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestDefaultWTFExecCompletionBeforeCancellationPreservesExitError(t *testing.T) {
+	falseBin, err := exec.LookPath("false")
+	if err != nil {
+		t.Skip("false is not installed")
+	}
+	_, err = defaultWTFExec(completedBeforeCancellationContext{}, falseBin)
+
+	assertWTFStartedError(t, err)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want completed command failure", err)
+	}
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) {
+		t.Fatalf("error = %T %v, want wrapped *exec.ExitError", err, err)
+	}
+}
+
+type completedBeforeCancellationContext struct{}
+
+func (completedBeforeCancellationContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (completedBeforeCancellationContext) Done() <-chan struct{}       { return nil }
+func (completedBeforeCancellationContext) Err() error                  { return context.Canceled }
+func (completedBeforeCancellationContext) Value(any) any               { return nil }
+
+func assertWTFStartedError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	var executionError *wtfExecError
+	if !errors.As(err, &executionError) || !executionError.Started {
+		t.Fatalf("error = %T %v, want started execution error", err, err)
+	}
+}
+
 func TestSendAmpWarningRedactsIndividualWarningLines(t *testing.T) {
 	target := wtfSession{Agent: AgentAmp, ID: "T-123", Active: true}
 	warning := "first private line\nmiddle private line\nlast private line"
