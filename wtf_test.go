@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -194,10 +195,16 @@ func infoMode(info os.FileInfo) os.FileMode {
 	return info.Mode().Perm()
 }
 
-func TestRunWTFRejectsArguments(t *testing.T) {
-	err := runWTF(Config{WTFArgs: []string{"status"}})
-	if err == nil || err.Error() != "wtf: unsupported arguments: status" {
-		t.Fatalf("runWTF(status) error = %v", err)
+func TestRunWTFDispatchesLifecycleCommand(t *testing.T) {
+	old := wtfCommandRun
+	defer func() { wtfCommandRun = old }()
+	var got []string
+	wtfCommandRun = func(args []string, _ string, _ io.Writer) error { got = append([]string(nil), args...); return nil }
+	if err := runWTF(Config{WTFArgs: []string{"status"}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, " ") != "status" {
+		t.Fatalf("args = %v", got)
 	}
 }
 

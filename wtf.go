@@ -9,11 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
 const wtfStateVersion = 1
+
+var wtfCommandRun = runWTFCommand
 
 type wtfState struct {
 	Version      int                        `json:"version"`
@@ -432,7 +433,7 @@ func defaultWTFScanDeps() wtfScanDeps {
 
 func runWTF(cfg Config) error {
 	if len(cfg.WTFArgs) > 0 {
-		return fmt.Errorf("wtf: unsupported arguments: %s", strings.Join(cfg.WTFArgs, " "))
+		return wtfCommandRun(cfg.WTFArgs, firstNonEmpty(os.Getenv("HOME"), mustHome()), os.Stdout)
 	}
 
 	home := firstNonEmpty(os.Getenv("HOME"), mustHome())

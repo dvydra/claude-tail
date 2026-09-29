@@ -1,15 +1,167 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestWTFAgentPlist(t *testing.T) {
+	plist := wtfAgentPlist("/usr/local/bin/entire-tail", "/Users/d/Library/Application Support/entire-tail/wtf/daemon.log")
+	for _, want := range []string{
+		"<key>Label</key><string>" + wtfAgentLabel + "</string>",
+		"<string>/usr/local/bin/entire-tail</string>",
+		"<string>wtf</string>",
+		"<string>daemon</string>",
+		"<key>RunAtLoad</key><true/>",
+		"<key>KeepAlive</key><true/>",
+		"<key>ThrottleInterval</key><integer>10</integer>",
+		"<key>StandardOutPath</key><string>/Users/d/Library/Application Support/entire-tail/wtf/daemon.log</string>",
+		"<key>StandardErrorPath</key><string>/Users/d/Library/Application Support/entire-tail/wtf/daemon.log</string>",
+	} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("plist missing %q:\n%s", want, plist)
+		}
+	}
+}
+
+func stubWTFAgentLifecycle(t *testing.T, health wtfHealth, healthy bool) (*[]string, *int) {
+	t.Helper()
+	oldLoad, oldUnload, oldWait, oldDaemon := wtfAgentLoad, wtfAgentUnload, wtfAgentWait, wtfDaemonRun
+	var calls []string
+	daemonCalls := 0
+	wtfAgentLoad = func(path string) error { calls = append(calls, "load "+path); return nil }
+	wtfAgentUnload = func(path string) error { calls = append(calls, "unload "+path); return nil }
+	wtfAgentWait = func(string, time.Duration) (wtfHealth, bool) { return health, healthy }
+	wtfDaemonRun = func(context.Context, string, wtfDaemonDeps) error { daemonCalls++; return nil }
+	t.Cleanup(func() {
+		wtfAgentLoad, wtfAgentUnload, wtfAgentWait, wtfDaemonRun = oldLoad, oldUnload, oldWait, oldDaemon
+	})
+	return &calls, &daemonCalls
+}
+
+func TestRunWTFCommandInstallReloadsAndReportsPID(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	bin := filepath.Join(binDir, "entire-tail")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	calls, _ := stubWTFAgentLifecycle(t, wtfHealth{PID: 4242}, true)
+	var out bytes.Buffer
+	if err := runWTFCommand([]string{"install"}, home, &out); err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []string{"unload " + wtfAgentPath(home), "load " + wtfAgentPath(home)}
+	if strings.Join(*calls, "\n") != strings.Join(wantCalls, "\n") {
+		t.Fatalf("calls = %v", *calls)
+	}
+	plist, err := os.ReadFile(wtfAgentPath(home))
+	if err != nil || !strings.Contains(string(plist), bin) {
+		t.Fatalf("plist = %q, %v", plist, err)
+	}
+	if !strings.Contains(out.String(), "pid 4242") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestRunWTFCommandInstallReportsFailedHealth(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "entire-tail"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	stubWTFAgentLifecycle(t, wtfHealth{}, false)
+	err := runWTFCommand([]string{"install"}, home, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), wtfLogPath(home)) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunWTFCommandStatusStates(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		installed, running bool
+		want               string
+	}{
+		{"not installed", false, false, "not installed"},
+		{"stale", true, false, "stale health"},
+		{"running", true, true, "running (pid 77)"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			if test.installed {
+				if err := os.MkdirAll(filepath.Dir(wtfAgentPath(home)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(wtfAgentPath(home), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			withWTFProcessFakes(t, 1, func(pid int) bool { return test.running && pid == 77 }, func(int) string { return "entire-tail wtf daemon" })
+			if test.installed {
+				if err := writeWTFHealth(home, wtfHealth{PID: 77}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var out bytes.Buffer
+			if err := runWTFCommand([]string{"status"}, home, &out); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), test.want) {
+				t.Fatalf("output = %q, want %q", out.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestRunWTFCommandUninstallPreservesState(t *testing.T) {
+	home := t.TempDir()
+	stubWTFAgentLifecycle(t, wtfHealth{}, false)
+	if _, err := installWTFAgent(home, "/usr/local/bin/entire-tail", &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWTFHealth(home, wtfHealth{PID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveWTFState(home, newWTFState(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := runWTFCommand([]string{"uninstall"}, home, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{wtfAgentPath(home), wtfHealthPath(home)} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("%s remains: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(wtfStatePath(home)); err != nil {
+		t.Fatalf("state.json was removed: %v", err)
+	}
+}
+
+func TestRunWTFCommandDaemonAndUnknown(t *testing.T) {
+	home := t.TempDir()
+	_, daemonCalls := stubWTFAgentLifecycle(t, wtfHealth{}, false)
+	if err := runWTFCommand([]string{"daemon"}, home, &bytes.Buffer{}); err != nil || *daemonCalls != 1 {
+		t.Fatalf("daemon calls = %d, err = %v", *daemonCalls, err)
+	}
+	before, _ := os.ReadDir(home)
+	err := runWTFCommand([]string{"bogus"}, home, &bytes.Buffer{})
+	after, _ := os.ReadDir(home)
+	if err == nil || !strings.Contains(err.Error(), "want install|status|uninstall") || len(before) != len(after) {
+		t.Fatalf("error = %v, entries %d -> %d", err, len(before), len(after))
+	}
+}
 
 func withWTFProcessFakes(t *testing.T, pid int, alive func(int) bool, name func(int) string) {
 	t.Helper()

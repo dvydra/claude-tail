@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,6 +18,7 @@ import (
 
 const wtfScanInterval = 2 * time.Second
 const wtfRequestPollInterval = 100 * time.Millisecond
+const wtfAgentLabel = "io.entire.entire-tail.wtf"
 
 type wtfHealth struct {
 	PID                int    `json:"pid"`
@@ -45,6 +48,125 @@ var (
 func wtfLockPath(home string) string        { return filepath.Join(wtfDir(home), "daemon.lock") }
 func wtfHealthPath(home string) string      { return filepath.Join(wtfDir(home), "health.json") }
 func wtfScanRequestPath(home string) string { return filepath.Join(wtfDir(home), "scan-request") }
+func wtfAgentPath(home string) string {
+	return filepath.Join(home, "Library", "LaunchAgents", wtfAgentLabel+".plist")
+}
+func wtfLogPath(home string) string { return filepath.Join(wtfDir(home), "daemon.log") }
+
+func wtfAgentPlist(bin, logPath string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>%s</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>%s</string>
+    <string>wtf</string>
+    <string>daemon</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>%s</string>
+  <key>StandardErrorPath</key><string>%s</string>
+</dict>
+</plist>
+`, wtfAgentLabel, bin, logPath, logPath)
+}
+
+func installWTFAgent(home, bin string, out io.Writer) (string, error) {
+	path := wtfAgentPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(wtfAgentPlist(bin, wtfLogPath(home))), 0o644); err != nil {
+		return "", err
+	}
+	if looksEphemeralBinary(bin) {
+		fmt.Fprintf(out, "entire-tail wtf: WARNING: the agent points at temporary path %s\n", bin)
+	}
+	return path, nil
+}
+
+func waitForWTF(home string, timeout time.Duration) (wtfHealth, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if health, ok := readWTFHealth(home); ok && wtfDaemonRunning(health) {
+			return health, true
+		}
+		if time.Now().After(deadline) {
+			return wtfHealth{}, false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+var (
+	wtfAgentLoad   = launchctlLoad
+	wtfAgentUnload = func(path string) error { return launchctlUnloadLabel(path, wtfAgentLabel) }
+	wtfAgentWait   = waitForWTF
+	wtfDaemonRun   = runWTFDaemon
+)
+
+func runWTFCommand(args []string, home string, out io.Writer) error {
+	if len(args) != 1 {
+		return fmt.Errorf("wtf: unknown subcommand %q (want install|status|uninstall)", strings.Join(args, " "))
+	}
+	switch args[0] {
+	case "install":
+		bin, err := tapAgentBinary("", exec.LookPath)
+		if err != nil {
+			return fmt.Errorf("wtf install: resolve binary: %w", err)
+		}
+		path, err := installWTFAgent(home, bin, out)
+		if err != nil {
+			return err
+		}
+		_ = wtfAgentUnload(path)
+		if err := wtfAgentLoad(path); err != nil {
+			return err
+		}
+		if health, ok := wtfAgentWait(home, 8*time.Second); ok {
+			fmt.Fprintf(out, "entire-tail wtf: monitoring (pid %d)\n", health.PID)
+			return nil
+		}
+		return fmt.Errorf("wtf install: agent loaded but health check failed; see %s", wtfLogPath(home))
+	case "status":
+		if _, err := os.Stat(wtfAgentPath(home)); errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintln(out, "entire-tail wtf: not installed")
+			return nil
+		} else if err != nil {
+			return err
+		}
+		health, ok := readWTFHealth(home)
+		if !ok || !wtfDaemonRunning(health) {
+			fmt.Fprintln(out, "entire-tail wtf: installed, stale health")
+			return nil
+		}
+		fmt.Fprintf(out, "entire-tail wtf: running (pid %d)\n", health.PID)
+		return nil
+	case "uninstall":
+		path := wtfAgentPath(home)
+		if err := wtfAgentUnload(path); err != nil {
+			return err
+		}
+		for _, remove := range []string{path, wtfHealthPath(home)} {
+			if err := os.Remove(remove); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		fmt.Fprintln(out, "entire-tail wtf: uninstalled; state.json preserved")
+		return nil
+	case "daemon":
+		return wtfDaemonRun(context.Background(), home, wtfDaemonDeps{})
+	default:
+		return fmt.Errorf("wtf: unknown subcommand %q (want install|status|uninstall)", args[0])
+	}
+}
 
 func lockWTFBreaker(path string, operation int) (func(), bool) {
 	breaker, err := os.OpenFile(path+".breaker", os.O_CREATE|os.O_RDWR, 0o600)

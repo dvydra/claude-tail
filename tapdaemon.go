@@ -674,8 +674,12 @@ func launchctlLoad(path string) error {
 // launchctlUnload removes the agent from the user's GUI domain. Both verbs are
 // tried and a "not loaded" outcome is success — disabling must be idempotent.
 func launchctlUnload(path string) error {
+	return launchctlUnloadLabel(path, tapAgentLabel)
+}
+
+func launchctlUnloadLabel(path, label string) error {
 	uid := os.Getuid()
-	if _, err := exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/%s", uid, tapAgentLabel)).CombinedOutput(); err == nil {
+	if _, err := exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/%s", uid, label)).CombinedOutput(); err == nil {
 		return nil
 	}
 	if out, err := exec.Command("launchctl", "unload", path).CombinedOutput(); err != nil {
