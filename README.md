@@ -90,6 +90,8 @@ entire tail --no-wrap                      # don't wrap prose; let the terminal 
 entire tail --list                         # static ls-style dump of every session
 entire tail --list --days 3                # ...only sessions from the last 3 days
 entire tail --live                         # only the sessions running right now
+entire wtf                                 # active sessions plus sessions seen today
+entire-tail wtf                            # same dashboard, standalone
 entire tail --list-themes                  # see what's available
 entire tail --help                         # full options
 ```
@@ -100,6 +102,14 @@ All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 `ENTIRE_TAIL_CLAUDE_BIN`, `ENTIRE_TAIL_NO_WRAP`, `GLOW_STYLE`) for shell-rc
 convenience — flags override env vars when both are set. The legacy
 `CLAUDE_TAIL_*` variants are still honored.
+
+### Today's dashboard (`entire wtf`)
+
+`entire wtf`, or `entire-tail wtf` when run standalone, shows active Claude and Amp sessions plus sessions with activity since local midnight. Active sessions appear under **Now** and stopped sessions under **Recently stopped**.
+
+Each row gets a concise summary from Apple's on-device Foundation Models CLI when it is available. If `fm` is missing, fails, or returns unusable output, the dashboard keeps the row and uses a deterministic session title or id instead. Claude pending-question and permission markers add a `needsUser` note without relying on the model.
+
+Use `↑`/`↓` to select a session, `Enter` to open it, `r` to refresh, and `q` or Escape to quit. This first phase only reports active and today's sessions. It does not install monitoring or assign sessions to trails.
 
 ### It picks its own mode (iTerm2, macOS)
 

@@ -1360,8 +1360,16 @@ USAGE:
   entire-tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]
   entire tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]   # as an entire plugin
   entire-tail handover                                     # write today's handover docs
+  entire-tail wtf                                          # active and today’s sessions
 
 SUBCOMMANDS:
+  wtf                       Show active and today’s sessions in a dashboard.
+                            Ended sessions are retained since local midnight.
+                            Summaries use Apple Foundation Models when available
+                            and fall back to deterministic session labels.
+                            ↑/↓ select, Enter opens a session, r refreshes, and
+                            q/Escape quits. This phase does not install monitoring
+                            or assign sessions to trails.
   handover                  Enumerate today's Claude and Amp sessions, group them in a
                             picker (1-9 group · x separate · - skip · ⏎ write),
                             then launch an interactive agent that enriches each

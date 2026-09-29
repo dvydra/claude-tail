@@ -105,6 +105,15 @@ func TestHelpKeyIsWired(t *testing.T) {
 	}
 }
 
+func TestHelpDocumentsWTFDashboard(t *testing.T) {
+	help := helpText()
+	for _, want := range []string{"entire-tail wtf", "active and today’s sessions"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help missing %q", want)
+		}
+	}
+}
+
 func TestVisWidthSkipsANSI(t *testing.T) {
 	if got := visWidth("\x1b[2mab\x1b[0m"); got != 2 {
 		t.Errorf("visWidth = %d, want 2", got)

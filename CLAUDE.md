@@ -619,6 +619,14 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `q` abort). Pure `updateHandoverPick` reducer + `renderHandoverPick` + the
   `buildGroups` collapse, split from the tty driver `runHandoverPicker` — same
   reduce/render/driver split as `tree.go`.
+- `wtf.go` / `wtf_summary.go` / `wtf_view.go` — the first `entire wtf`
+  dashboard slice. It merges exact live Claude/Amp identity with sessions active
+  since local midnight, groups active rows under Now and ended rows under
+  Recently stopped, and opens the selected session on Enter. Summaries use the
+  on-device Foundation Models CLI with deterministic title/id fallback;
+  pending Claude markers supply `needsUser`. The TUI refreshes on `r`, moves with
+  arrows, and exits on `q`/Escape. This phase is read-only: it does not install
+  monitoring or assign trails.
 - `pending.go` — the marker protocol and model (Claude-only): when Claude blocks
   on a question or permission prompt, the opt-in hooks write a per-session marker
   file to `~/.claude/entire-tail/pending/<session_id>.json` the instant it appears,
