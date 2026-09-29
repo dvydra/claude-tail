@@ -131,6 +131,49 @@ func TestWTFLockConcurrentStaleReplacementKeepsWinner(t *testing.T) {
 	(<-releases)()
 }
 
+func TestWTFLockIgnoresPreExistingBreakerFile(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wtfLockPath(home)+".breaker", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withWTFProcessFakes(t, 101, func(int) bool { return false }, func(int) string { return "" })
+	release, ok := acquireWTFLock(home)
+	if !ok {
+		t.Fatal("pre-existing breaker file blocked lock acquisition")
+	}
+	release()
+}
+
+func TestWTFLockReplacesMalformedContents(t *testing.T) {
+	for name, contents := range map[string]string{
+		"empty":     "",
+		"malformed": "not-a-pid token\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(wtfLockPath(home), []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			withWTFProcessFakes(t, 101, func(int) bool { return false }, func(int) string { return "" })
+			release, ok := acquireWTFLock(home)
+			if !ok {
+				t.Fatal("malformed lock was not replaced")
+			}
+			data, err := os.ReadFile(wtfLockPath(home))
+			if err != nil || string(data) == contents {
+				t.Fatalf("lock contents = %q, %v", data, err)
+			}
+			release()
+		})
+	}
+}
+
 func TestRequestWTFScanCoalescesAtomicMarker(t *testing.T) {
 	home := t.TempDir()
 	if err := requestWTFScan(home); err != nil {

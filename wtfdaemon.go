@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -51,12 +52,18 @@ func acquireWTFLock(home string) (func(), bool) {
 		return func() {}, false
 	}
 	breakerPath := path + ".breaker"
-	breaker, err := os.OpenFile(breakerPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	breaker, err := os.OpenFile(breakerPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return func() {}, false
 	}
-	_ = breaker.Close()
-	defer os.Remove(breakerPath)
+	if err := syscall.Flock(int(breaker.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = breaker.Close()
+		return func() {}, false
+	}
+	defer func() {
+		_ = syscall.Flock(int(breaker.Fd()), syscall.LOCK_UN)
+		_ = breaker.Close()
+	}()
 
 	pid := wtfCurrentPID()
 	identity := fmt.Sprintf("%d %d\n", pid, wtfLockSequence.Add(1))
@@ -84,7 +91,11 @@ func acquireWTFLock(home string) (func(), bool) {
 		if readErr != nil {
 			return func() {}, false
 		}
-		owner, _ := strconv.Atoi(strings.Fields(string(data))[0])
+		fields := strings.Fields(string(data))
+		owner := 0
+		if len(fields) > 0 {
+			owner, _ = strconv.Atoi(fields[0])
+		}
 		if owner > 0 && wtfPIDAlive(owner) && wtfIsEntireTailProcess(wtfProcessName(owner)) {
 			return func() {}, false
 		}
