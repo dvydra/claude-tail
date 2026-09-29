@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "id": "T-test",
+  "messages": [
+    {"role":"user","createdAt":"2026-09-29T09:00:00.123456789Z","content":[{"type":"text","text":"user acme/api#5"}]},
+    {"role":"assistant","createdAt":"2026-09-29T09:00:01.123456789Z","content":[{"type":"text","text":"assistant acme/api#6"}]},
+    {"role":"assistant","createdAt":"2026-09-29T09:00:02.123456789Z","content":[{"type":"tool_use","name":"shell_command","input":{"command":"input acme/api#7"}}]},
+    {"role":"user","createdAt":"2026-09-29T09:00:03.123456789Z","content":[{"type":"tool_result","run":{"stdout":"result acme/api#8"}}]},
+    {"role":"assistant","createdAt":"2026-09-29T09:00:04.123456789Z","content":[{"type":"thinking","text":"thinking acme/api#99"}]}
+  ]
+}
