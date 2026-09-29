@@ -101,6 +101,65 @@ func TestInspectWorktreeCountsPorcelainLines(t *testing.T) {
 	}
 }
 
+func TestInspectRepoWorktreesPreservesPriorRecordsMissingFromPorcelain(t *testing.T) {
+	currentPath := t.TempDir()
+	missingPath := filepath.Join(t.TempDir(), "removed")
+	prior := []wtfWorktree{
+		{
+			Repo:        "acme/repo",
+			Path:        currentPath,
+			FirstSeen:   10,
+			SessionKeys: []string{"claude:current"},
+			TrailKeys:   []string{"acme/repo#1"},
+		},
+		{
+			Repo:            "acme/repo",
+			Path:            missingPath,
+			Branch:          "feat/removed",
+			Head:            "old-head",
+			Exists:          true,
+			DirtyFiles:      2,
+			DirtySummary:    []string{" M old"},
+			UnmergedCommits: 3,
+			SessionKeys:     []string{"claude:old"},
+			TrailKeys:       []string{"acme/repo#2"},
+			GitEvidence:     []wtfGitEvidence{{Source: "unmerged subjects", Text: "old work"}},
+			FirstSeen:       11,
+			LastSeen:        20,
+			LastWIPAt:       20,
+		},
+	}
+	run := gitOutputRunner(map[string]string{
+		"worktree list --porcelain":                          "worktree " + currentPath + "\nHEAD new-head\nbranch refs/heads/main\n",
+		"status --porcelain":                                 "",
+		"show-ref --verify --quiet refs/remotes/origin/main": "",
+		"rev-list --count origin/main..HEAD":                 "0\n",
+		"log --format=%s origin/main..HEAD":                  "",
+		"diff --no-ext-diff --unified=0 HEAD --":             "",
+	})
+
+	got := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, run)
+	if len(got) != 2 {
+		t.Fatalf("worktrees=%d, want 2: %#v", len(got), got)
+	}
+	byPath := make(map[string]wtfWorktree, len(got))
+	for _, worktree := range got {
+		byPath[worktree.Path] = worktree
+	}
+	current := byPath[currentPath]
+	if current.Head != "new-head" || current.Branch != "main" || current.FirstSeen != 10 ||
+		!reflect.DeepEqual(current.SessionKeys, prior[0].SessionKeys) || !reflect.DeepEqual(current.TrailKeys, prior[0].TrailKeys) {
+		t.Fatalf("current worktree did not refresh facts and preserve history: %#v", current)
+	}
+	missing := byPath[missingPath]
+	if missing.Exists || missing.GitError != "worktree path missing" || missing.DirtyFiles != -1 || missing.UnmergedCommits != -1 ||
+		missing.LastSeen != 42 || missing.LastWIPAt != 42 || missing.FirstSeen != 11 || missing.Branch != "feat/removed" || missing.Head != "old-head" ||
+		!reflect.DeepEqual(missing.SessionKeys, prior[1].SessionKeys) || !reflect.DeepEqual(missing.TrailKeys, prior[1].TrailKeys) ||
+		!reflect.DeepEqual(missing.GitEvidence, prior[1].GitEvidence) || !reflect.DeepEqual(missing.DirtySummary, prior[1].DirtySummary) {
+		t.Fatalf("missing worktree did not preserve WIP history: %#v", missing)
+	}
+}
+
 func TestInspectWorktreeRealRepositoryDistinguishesDirtyAndUnmerged(t *testing.T) {
 	root := t.TempDir()
 	origin := filepath.Join(root, "origin.git")
@@ -132,7 +191,7 @@ func TestInspectWorktreeRealRepositoryDistinguishesDirtyAndUnmerged(t *testing.T
 		cmd.Dir = dir
 		return cmd.Output()
 	}
-	got := inspectRepoWorktrees(context.Background(), "acme/repo", repo, 42, run)
+	got := inspectRepoWorktrees(context.Background(), "acme/repo", repo, 42, nil, run)
 	var found *wtfWorktree
 	for i := range got {
 		if got[i].Branch == "feat/test" {

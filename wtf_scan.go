@@ -65,7 +65,7 @@ func parseGitWorktreePorcelain(data []byte) []gitWorktreeEntry {
 	return entries
 }
 
-func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, run wtfCommandRunner) []wtfWorktree {
+func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prior []wtfWorktree, run wtfCommandRunner) []wtfWorktree {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	data, err := run(ctx, cwd, "git", "-C", cwd, "worktree", "list", "--porcelain")
@@ -73,9 +73,43 @@ func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, run 
 		return nil
 	}
 	entries := parseGitWorktreePorcelain(data)
-	worktrees := make([]wtfWorktree, 0, len(entries))
+	priorByPath := make(map[string]wtfWorktree, len(prior))
+	for _, worktree := range prior {
+		if worktree.Repo == repo {
+			priorByPath[worktree.Path] = worktree
+		}
+	}
+	worktrees := make([]wtfWorktree, 0, len(entries)+len(priorByPath))
 	for _, entry := range entries {
-		worktrees = append(worktrees, inspectWorktree(ctx, repo, entry, now, run))
+		worktree := inspectWorktree(ctx, repo, entry, now, run)
+		if old, ok := priorByPath[entry.Path]; ok {
+			worktree.FirstSeen = old.FirstSeen
+			worktree.SessionKeys = old.SessionKeys
+			worktree.TrailKeys = old.TrailKeys
+			if worktree.LastWIPAt == 0 {
+				worktree.LastWIPAt = old.LastWIPAt
+			}
+			delete(priorByPath, entry.Path)
+		}
+		worktrees = append(worktrees, worktree)
+	}
+	for _, old := range prior {
+		worktree, ok := priorByPath[old.Path]
+		if !ok || old.Repo != repo {
+			continue
+		}
+		worktree.Exists = false
+		worktree.DirtyFiles = -1
+		worktree.UnmergedCommits = -1
+		worktree.LastSeen = now
+		worktree.LastWIPAt = now
+		if info, err := os.Stat(worktree.Path); err != nil || !info.IsDir() {
+			worktree.GitError = "worktree path missing"
+		} else {
+			worktree.GitError = "worktree not listed by git"
+		}
+		worktrees = append(worktrees, worktree)
+		delete(priorByPath, old.Path)
 	}
 	return worktrees
 }
