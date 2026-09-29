@@ -563,6 +563,35 @@ func TestReconcileTrailsChoosesEarliestClaimAndPreservesIt(t *testing.T) {
 	}
 }
 
+// A registry written before tool text stopped counting still holds claims
+// made by reading a trail's number. Left in place they keep the warnings
+// coming, so a reconcile drops them and whatever ownership they decided.
+func TestReconcileTrailsDropsStoredToolClaims(t *testing.T) {
+	read := wtfAssociation{SessionKey: "claude:reader", Worktree: "/wt/main", At: 100, Evidence: "trail 7", Source: "tool result"}
+	prior := wtfState{Trails: map[string]wtfTrail{"acme/api#7": {
+		Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7,
+		OwnerSession: "claude:reader", CanonicalWorktree: "/wt/main",
+		FirstClaim:   &wtfClaim{SessionKey: "claude:reader", Worktree: "/wt/main", At: 100, Evidence: "trail 7"},
+		Associations: []wtfAssociation{read, {Worktree: "/wt/feature", At: 50, Evidence: "feature", Source: "source branch"}},
+	}}}
+	sessions := []wtfSession{{Agent: AgentClaude, ID: "worker", Repo: "acme/api", Cwd: "/wt/feature", Active: true}}
+	evidence := map[string][]trailEvidence{"claude:worker": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, Matched: "api#7", Source: "user", At: 200, Resolved: true}}}
+	worktrees := map[string]wtfWorktree{
+		"/wt/main":    {Repo: "acme/api", Path: "/wt/main", Exists: true},
+		"/wt/feature": {Repo: "acme/api", Path: "/wt/feature", Exists: true},
+	}
+
+	trail := reconcileTrails(prior, sessions, evidence, worktrees, 300).Trails["acme/api#7"]
+	for _, association := range trail.Associations {
+		if association.SessionKey == "claude:reader" {
+			t.Fatalf("stored tool claim survived: %#v", trail.Associations)
+		}
+	}
+	if trail.OwnerSession != "claude:worker" || trail.FirstClaim == nil || trail.FirstClaim.At != 200 || trail.CanonicalWorktree != "/wt/feature" {
+		t.Fatalf("ownership still decided by the tool claim: %#v", trail)
+	}
+}
+
 func TestReconcileTrailsClaimsRequireActiveLocalWorktree(t *testing.T) {
 	e := trailEvidence{Key: "acme/api#8", Owner: "acme", Repo: "api", Number: 8, Matched: "acme/api#8", Source: "user", At: 100, Resolved: true}
 	sessions := []wtfSession{

@@ -703,7 +703,7 @@ func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map
 	} else {
 		trails := make(map[string]wtfTrail, len(state.Trails))
 		for key, trail := range state.Trails {
-			trails[key] = trail
+			trails[key] = dropToolClaims(trail)
 		}
 		state.Trails = trails
 	}
@@ -810,6 +810,35 @@ func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map
 	state.Version = wtfStateVersion
 	state.UpdatedAt = now
 	return state
+}
+
+// dropToolClaims removes session associations a registry recorded from tool
+// text before trailClaimSource existed. If one of them was the first claim,
+// the owner and canonical worktree it chose go too, and the next claim from
+// the session's own words decides them again.
+func dropToolClaims(trail wtfTrail) wtfTrail {
+	kept := make([]wtfAssociation, 0, len(trail.Associations))
+	firstWasTool := false
+	for _, association := range trail.Associations {
+		if association.SessionKey != "" && !trailClaimSource(association.Source) {
+			if claim := trail.FirstClaim; claim != nil && claim.SessionKey == association.SessionKey &&
+				claim.Worktree == association.Worktree && claim.At == association.At && claim.Evidence == association.Evidence {
+				firstWasTool = true
+			}
+			continue
+		}
+		kept = append(kept, association)
+	}
+	if len(kept) == len(trail.Associations) {
+		return trail
+	}
+	trail.Associations = kept
+	if firstWasTool {
+		trail.FirstClaim = nil
+		trail.OwnerSession = ""
+		trail.CanonicalWorktree = ""
+	}
+	return trail
 }
 
 func chooseInitialCanonical(trail wtfTrail, claims []wtfClaim, worktrees map[string]wtfWorktree) string {
