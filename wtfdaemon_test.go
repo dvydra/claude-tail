@@ -788,7 +788,7 @@ func TestWTFDaemonDelivery(t *testing.T) {
 	select {
 	case err := <-done:
 		t.Fatalf("daemon returned while final terminal save was blocked: %v", err)
-	default:
+	case <-time.After(50 * time.Millisecond):
 	}
 	close(releaseFinalTerminalSave)
 	select {
