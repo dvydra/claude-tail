@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -655,11 +656,13 @@ func TestWTFDaemonDelivery(t *testing.T) {
 
 	base, finding := notificationState()
 	var scanCount atomic.Int32
-	var saveCount atomic.Int32
 	var notifyCount atomic.Int32
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
-	notifyDone := make(chan wtfDelivery, 4)
+	terminals := make(chan wtfDelivery, 4)
+	var logMu sync.Mutex
+	var events []wtfDeliveryTestEvent
+	terminalSeen := make(map[string]bool)
 	deps := wtfDaemonDeps{
 		Load:         func(string, int64) (wtfState, error) { return newWTFState(1), nil },
 		Now:          func() time.Time { return time.Unix(100+int64(scanCount.Load()), 0) },
@@ -679,19 +682,32 @@ func TestWTFDaemonDelivery(t *testing.T) {
 			}
 		},
 		Save: func(_ string, state wtfState) error {
-			saveCount.Add(1)
+			logMu.Lock()
+			events = append(events, savedWTFDeliveryTestEvent(state, finding.ID))
+			current := state.Findings[finding.ID]
+			for channel, status := range current.Delivery {
+				key := fmt.Sprintf("%d/%s/%d", current.Occurrence, channel, status.Attempts)
+				if status.State == "sent" && !terminalSeen[key] {
+					terminalSeen[key] = true
+					terminals <- wtfDelivery{FindingID: finding.ID, Channel: channel, Occurrence: current.Occurrence, Attempt: status.Attempts}
+				}
+			}
+			logMu.Unlock()
 			return nil
 		},
 		Notify: func(_ context.Context, state wtfState, delivery wtfDelivery) wtfDeliveryResult {
-			if state.Findings[delivery.FindingID].Delivery[delivery.Channel].State != "sending" || saveCount.Load() < 2 {
-				t.Errorf("notifier ran before sending state was saved: saves=%d state=%#v", saveCount.Load(), state.Findings[delivery.FindingID].Delivery[delivery.Channel])
+			status := state.Findings[delivery.FindingID].Delivery[delivery.Channel]
+			if status.State != "sending" || status.Attempts != delivery.Attempt {
+				t.Errorf("notifier snapshot status = %#v, delivery = %#v", status, delivery)
 			}
+			logMu.Lock()
+			events = append(events, wtfDeliveryTestEvent{kind: "notify", occurrence: delivery.Occurrence, channel: delivery.Channel, attempt: delivery.Attempt})
+			logMu.Unlock()
 			n := notifyCount.Add(1)
 			if n == 1 {
 				close(firstStarted)
 				<-releaseFirst
 			}
-			notifyDone <- delivery
 			return wtfDeliveryResult{State: "sent"}
 		},
 	}
@@ -706,13 +722,16 @@ func TestWTFDaemonDelivery(t *testing.T) {
 	// A blocked notifier must not delay the next 2-second scan.
 	ticks <- time.Now()
 	waitForScans(t, &scanCount, 2)
+	logMu.Lock()
+	assertWTFDeliveryCallCounts(t, events, finding.ID, 1)
+	logMu.Unlock()
 	close(releaseFirst)
-	waitForDeliveries(t, &notifyCount, 2)
+	waitForWTFTerminals(t, terminals, 2)
 	ticks <- time.Now()
 	waitForScans(t, &scanCount, 3)
 	ticks <- time.Now()
 	waitForScans(t, &scanCount, 4)
-	waitForDeliveries(t, &notifyCount, 4)
+	waitForWTFTerminals(t, terminals, 2)
 
 	cancel()
 	select {
@@ -723,18 +742,175 @@ func TestWTFDaemonDelivery(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("daemon did not stop")
 	}
-	seen := map[int]map[string]int{}
-	for range 4 {
-		delivery := <-notifyDone
-		if seen[delivery.Occurrence] == nil {
-			seen[delivery.Occurrence] = map[string]int{}
-		}
-		seen[delivery.Occurrence][delivery.Channel]++
-	}
+	logMu.Lock()
+	defer logMu.Unlock()
 	for _, occurrence := range []int{1, 2} {
-		if seen[occurrence]["mac"] != 1 || seen[occurrence]["session:"+finding.Challenger] != 1 {
-			t.Fatalf("occurrence %d deliveries = %#v", occurrence, seen[occurrence])
+		for _, channel := range []string{"mac", "session:" + finding.Challenger} {
+			assertWTFDeliverySequence(t, events, occurrence, channel, 1, "sent")
+			if got := countWTFDeliveryCalls(events, occurrence, channel); got != 1 {
+				t.Fatalf("occurrence %d channel %q invoked %d times, want 1", occurrence, channel, got)
+			}
 		}
+	}
+}
+
+type wtfDeliveryTestEvent struct {
+	kind       string
+	occurrence int
+	channel    string
+	attempt    int
+	statuses   map[string]wtfDeliveryStatus
+}
+
+func savedWTFDeliveryTestEvent(state wtfState, findingID string) wtfDeliveryTestEvent {
+	finding := state.Findings[findingID]
+	statuses := make(map[string]wtfDeliveryStatus, len(finding.Delivery))
+	for channel, status := range finding.Delivery {
+		statuses[channel] = status
+	}
+	return wtfDeliveryTestEvent{kind: "save", occurrence: finding.Occurrence, statuses: statuses}
+}
+
+func assertWTFDeliverySequence(t *testing.T, events []wtfDeliveryTestEvent, occurrence int, channel string, attempt int, terminal string) {
+	t.Helper()
+	stage := 0
+	for _, event := range events {
+		if event.occurrence != occurrence {
+			continue
+		}
+		status := event.statuses[channel]
+		switch stage {
+		case 0:
+			if event.kind == "save" && status.State == "" {
+				stage++
+			}
+		case 1:
+			if event.kind == "save" && status.State == "sending" && status.Attempts == attempt {
+				stage++
+			}
+		case 2:
+			if event.kind == "notify" && event.channel == channel && event.attempt == attempt {
+				stage++
+			}
+		case 3:
+			if event.kind == "save" && status.State == terminal && status.Attempts == attempt {
+				stage++
+			}
+		}
+	}
+	if stage != 4 {
+		t.Fatalf("occurrence %d channel %q reached sequence stage %d, events = %#v", occurrence, channel, stage, events)
+	}
+}
+
+func assertWTFDeliveryCallCounts(t *testing.T, events []wtfDeliveryTestEvent, findingID string, occurrence int) {
+	t.Helper()
+	for _, channel := range []string{"mac", "session:amp:challenger"} {
+		if count := countWTFDeliveryCalls(events, occurrence, channel); count > 1 {
+			t.Fatalf("finding %q occurrence %d channel %q invoked %d times while in flight", findingID, occurrence, channel, count)
+		}
+	}
+}
+
+func countWTFDeliveryCalls(events []wtfDeliveryTestEvent, occurrence int, channel string) int {
+	count := 0
+	for _, event := range events {
+		if event.kind == "notify" && event.occurrence == occurrence && event.channel == channel {
+			count++
+		}
+	}
+	return count
+}
+
+func waitForWTFTerminals(t *testing.T, terminals <-chan wtfDelivery, count int) {
+	t.Helper()
+	for range count {
+		select {
+		case <-terminals:
+		case <-time.After(time.Second):
+			t.Fatal("terminal delivery state was not durably saved")
+		}
+	}
+}
+
+func TestWTFDaemonDeliveryChannelsAreIsolated(t *testing.T) {
+	home := t.TempDir()
+	withWTFProcessFakes(t, 710, func(pid int) bool { return pid == 710 }, func(int) string { return "entire-tail" })
+	state, finding := notificationState()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	terminals := make(chan wtfDelivery, 2)
+	var mu sync.Mutex
+	var saved wtfState
+	calls := make(map[string]int)
+	terminalSeen := make(map[string]bool)
+	deps := wtfDaemonDeps{
+		Load:         func(string, int64) (wtfState, error) { return newWTFState(1), nil },
+		Now:          func() time.Time { return time.Unix(100, 0) },
+		After:        func(time.Duration) <-chan time.Time { return make(chan time.Time) },
+		RequestAfter: func(time.Duration) <-chan time.Time { return make(chan time.Time) },
+		Scan:         func(context.Context, string, wtfState, wtfScanDeps) (wtfState, error) { return state, nil },
+		Save: func(_ string, got wtfState) error {
+			mu.Lock()
+			saved, _ = cloneWTFState(got)
+			for channel, status := range got.Findings[finding.ID].Delivery {
+				if (status.State == "sent" || status.State == "failed") && !terminalSeen[channel] {
+					terminalSeen[channel] = true
+					select {
+					case terminals <- wtfDelivery{Channel: channel}:
+					default:
+					}
+				}
+			}
+			mu.Unlock()
+			return nil
+		},
+		Notify: func(_ context.Context, _ wtfState, delivery wtfDelivery) wtfDeliveryResult {
+			mu.Lock()
+			calls[delivery.Channel]++
+			mu.Unlock()
+			if delivery.Channel == "mac" {
+				close(blocked)
+				<-release
+				return wtfDeliveryResult{State: "failed", Error: "mac unavailable"}
+			}
+			return wtfDeliveryResult{State: "sent"}
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- runWTFDaemon(ctx, home, deps) }()
+	select {
+	case <-blocked:
+	case <-time.After(time.Second):
+		t.Fatal("blocked channel did not start")
+	}
+	waitForWTFTerminals(t, terminals, 1)
+	mu.Lock()
+	if got := saved.Findings[finding.ID].Delivery["session:"+finding.Challenger].State; got != "sent" {
+		t.Fatalf("unblocked channel state = %q, want sent", got)
+	}
+	mu.Unlock()
+	close(release)
+	waitForWTFTerminals(t, terminals, 1)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not stop")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls["mac"] != 1 || calls["session:"+finding.Challenger] != 1 {
+		t.Fatalf("calls = %#v", calls)
+	}
+	delivery := saved.Findings[finding.ID].Delivery
+	if delivery["mac"].State != "failed" || delivery["mac"].LastError != "mac unavailable" || delivery["session:"+finding.Challenger].State != "sent" {
+		t.Fatalf("terminal delivery states = %#v", delivery)
 	}
 }
 

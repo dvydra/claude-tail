@@ -776,6 +776,42 @@ func TestWTFDeliveryResultCannotOverwriteRecurringOccurrence(t *testing.T) {
 	}
 }
 
+func TestWTFDeliveryResultCannotOverwriteNewerAttemptInSameOccurrence(t *testing.T) {
+	state, finding := notificationState()
+	delivery := pendingWTFDeliveries(state, 100)[0]
+	markWTFDeliveryStarted(&state, delivery, 100)
+	stale := identifyWTFDelivery(state, delivery)
+
+	currentFinding := state.Findings[finding.ID]
+	status := currentFinding.Delivery[delivery.Channel]
+	status.State = "failed"
+	currentFinding.Delivery[delivery.Channel] = status
+	state.Findings[finding.ID] = currentFinding
+	markWTFDeliveryStarted(&state, delivery, 200)
+	current := identifyWTFDelivery(state, delivery)
+
+	applyWTFDeliveryResult(&state, wtfDeliveryResult{FindingID: stale.FindingID, Channel: stale.Channel, Occurrence: stale.Occurrence, Attempt: stale.Attempt, State: "sent"}, 201)
+	status = state.Findings[finding.ID].Delivery[delivery.Channel]
+	if status.State != "sending" || status.Attempts != current.Attempt || status.LastAttempt != 200 {
+		t.Fatalf("stale attempt changed current delivery: %#v", status)
+	}
+}
+
+func TestDefaultWTFNotifierRejectsMissingAndUnsupportedTargetsWithoutLeakingWarning(t *testing.T) {
+	const warning = "private warning body"
+	state := newWTFState(100)
+	state.Sessions["unsupported"] = wtfSession{Agent: AgentCodex, ID: "unsupported", Active: true}
+	for _, delivery := range []wtfDelivery{
+		{Channel: "session:missing", Target: "missing", Message: warning},
+		{Channel: "session:unsupported", Target: "unsupported", Message: warning},
+	} {
+		got := defaultWTFNotifier(context.Background(), state, delivery)
+		if got.State != "failed" || got.Error == "" || strings.Contains(got.Error, warning) {
+			t.Fatalf("delivery %#v result = %#v", delivery, got)
+		}
+	}
+}
+
 func TestWTFDeliveryCrashRecoveryMarksSendingUnknown(t *testing.T) {
 	home := t.TempDir()
 	state, finding := notificationState()
