@@ -251,6 +251,30 @@ type wtfDeliveryResult struct {
 
 type wtfExec func(ctx context.Context, name string, args ...string) ([]byte, error)
 
+type wtfExecError struct {
+	Started bool
+	Err     error
+}
+
+func (e *wtfExecError) Error() string { return e.Err.Error() }
+func (e *wtfExecError) Unwrap() error { return e.Err }
+
+func defaultWTFExec(ctx context.Context, name string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, name, args...)
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Start(); err != nil {
+		return nil, err
+	}
+	if err := command.Wait(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		}
+		return nil, &wtfExecError{Started: true, Err: err}
+	}
+	return nil, nil
+}
+
 const (
 	wtfAmpTimeout          = 15 * time.Second
 	wtfNotificationTimeout = 5 * time.Second
@@ -272,12 +296,8 @@ func sendAmpWarning(ctx context.Context, target wtfSession, text string, run wtf
 	if err == nil {
 		return wtfDeliveryResult{State: "sent"}
 	}
-	var lookupError *exec.Error
-	var startError *os.PathError
-	if errors.As(err, &lookupError) || errors.As(err, &startError) {
-		return wtfFailedDelivery(err, text)
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || commandCtx.Err() != nil {
+	var executionError *wtfExecError
+	if errors.As(err, &executionError) && executionError.Started && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
 		return wtfDeliveryResult{State: "unknown", Error: wtfSafeError(err, text)}
 	}
 	return wtfFailedDelivery(err, text)

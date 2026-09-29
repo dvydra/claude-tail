@@ -65,8 +65,11 @@ func TestSendAmpWarningFailureMappings(t *testing.T) {
 		{"lookup", &exec.Error{Name: "amp", Err: exec.ErrNotFound}, "failed"},
 		{"start", &os.PathError{Op: "fork/exec", Path: "/missing/amp", Err: os.ErrNotExist}, "failed"},
 		{"command failure", errors.New("exit status 1\nwarning body must not leak"), "failed"},
-		{"timeout after invocation", context.DeadlineExceeded, "unknown"},
-		{"cancel after invocation", context.Canceled, "unknown"},
+		{"bare timeout", context.DeadlineExceeded, "failed"},
+		{"bare cancellation", context.Canceled, "failed"},
+		{"started timeout", &wtfExecError{Started: true, Err: context.DeadlineExceeded}, "unknown"},
+		{"started cancellation", &wtfExecError{Started: true, Err: context.Canceled}, "unknown"},
+		{"started command failure", &wtfExecError{Started: true, Err: errors.New("exit status 1")}, "failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := sendAmpWarning(context.Background(), target, "warning body must not leak", func(context.Context, string, ...string) ([]byte, error) {
@@ -76,6 +79,21 @@ func TestSendAmpWarningFailureMappings(t *testing.T) {
 				t.Fatalf("result = %#v, want safe %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDefaultWTFExecMissingBinaryIsPreStartError(t *testing.T) {
+	_, err := defaultWTFExec(context.Background(), filepath.Join(t.TempDir(), "missing-command"))
+	if err == nil {
+		t.Fatal("expected missing binary error")
+	}
+	var executionError *wtfExecError
+	if errors.As(err, &executionError) {
+		t.Fatalf("pre-start error was wrapped as started: %#v", executionError)
+	}
+	var pathError *os.PathError
+	if !errors.As(err, &pathError) {
+		t.Fatalf("error = %T %v, want *os.PathError", err, err)
 	}
 }
 
