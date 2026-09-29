@@ -980,6 +980,20 @@ func TestDetectWTFFindingsExistingWIPElsewhere(t *testing.T) {
 	}
 }
 
+func TestDetectWTFFindingsExistingWIPElsewhereIgnoresUnknownGitState(t *testing.T) {
+	state := findingState()
+	state.Sessions["claude:new"] = wtfSession{Active: true, Cwd: "/wt/new"}
+	state.Worktrees["/wt/new"] = wtfWorktree{Path: "/wt/new", Exists: true}
+	state.Worktrees["/wt/old"] = wtfWorktree{Path: "/wt/old", Exists: true, DirtyFiles: 2, GitError: "git status failed"}
+	trail := state.Trails["acme/api#7"]
+	trail.Associations = []wtfAssociation{{SessionKey: "claude:new", Worktree: "/wt/new"}, {Worktree: "/wt/old"}}
+	state.Trails[trail.Key] = trail
+
+	if got := detectWTFFindings(state, 100); findingOfKind(got, "existing-wip-elsewhere") != nil {
+		t.Fatalf("unknown worktree state triggered finding: %#v", got)
+	}
+}
+
 func TestDetectWTFFindingsOutsideCanonical(t *testing.T) {
 	state := findingState()
 	state.Sessions["claude:owner"] = wtfSession{Active: true, Cwd: "/wt/moved"}
@@ -1035,6 +1049,19 @@ func TestDetectWTFFindingsMissingCanonical(t *testing.T) {
 	state.Worktrees["/wt/a"] = wtfWorktree{Path: "/wt/a", Exists: true}
 	if got := detectWTFFindings(state, 100); findingOfKind(got, "missing-canonical") != nil {
 		t.Fatalf("inactive clean association triggered finding: %#v", got)
+	}
+}
+
+func TestDetectWTFFindingsMissingCanonicalIgnoresUnknownGitState(t *testing.T) {
+	state := findingState()
+	state.Worktrees["/wt/canonical"] = wtfWorktree{Path: "/wt/canonical", Exists: false}
+	state.Worktrees["/wt/other"] = wtfWorktree{Path: "/wt/other", Exists: true, DirtyFiles: 1, GitError: "git diff failed"}
+	trail := state.Trails["acme/api#7"]
+	trail.Associations = []wtfAssociation{{Worktree: "/wt/other"}}
+	state.Trails[trail.Key] = trail
+
+	if got := detectWTFFindings(state, 100); findingOfKind(got, "missing-canonical") != nil {
+		t.Fatalf("unknown worktree state triggered finding: %#v", got)
 	}
 }
 

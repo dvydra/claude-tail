@@ -69,6 +69,66 @@ func TestWTFHealthRoundTripsAndChecksProcessIdentity(t *testing.T) {
 	if wtfDaemonRunning(got) {
 		t.Fatal("recycled pid reported running")
 	}
+	for _, command := range []string{"/tmp/not-entire-tail --entire-tail", "helper entire-tail", "/usr/bin/entire-tail-helper"} {
+		wtfProcessName = func(int) string { return command }
+		if wtfDaemonRunning(got) {
+			t.Fatalf("command %q reported as entire-tail", command)
+		}
+	}
+}
+
+func TestWTFLockDoesNotTrustProcessArgumentSubstring(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wtfLockPath(home), []byte("42\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withWTFProcessFakes(t, 101, func(int) bool { return true }, func(int) string { return "helper --name entire-tail" })
+	release, ok := acquireWTFLock(home)
+	if !ok {
+		t.Fatal("argument substring prevented stale lock replacement")
+	}
+	release()
+}
+
+func TestWTFLockConcurrentStaleReplacementKeepsWinner(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wtfLockPath(home), []byte("42\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withWTFProcessFakes(t, 101, func(int) bool { return false }, func(int) string { return "" })
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	releases := make(chan func(), 2)
+	for range 2 {
+		go func() {
+			<-start
+			release, ok := acquireWTFLock(home)
+			results <- ok
+			if ok {
+				releases <- release
+			}
+		}()
+	}
+	close(start)
+	winners := 0
+	for range 2 {
+		if <-results {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("concurrent winners = %d, want 1", winners)
+	}
+	if _, err := os.Stat(wtfLockPath(home)); err != nil {
+		t.Fatalf("winning lock was removed: %v", err)
+	}
+	(<-releases)()
 }
 
 func TestRequestWTFScanCoalescesAtomicMarker(t *testing.T) {
@@ -93,15 +153,17 @@ func TestRunWTFDaemonSerializesScansAndSurvivesDegradation(t *testing.T) {
 	home := t.TempDir()
 	withWTFProcessFakes(t, 707, func(pid int) bool { return pid == 707 }, func(int) string { return "entire-tail" })
 	ticks := make(chan time.Time, 4)
+	requests := make(chan time.Time, 4)
 	var nowUnix atomic.Int64
 	nowUnix.Store(100)
 	var active, maxActive, scans atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
 	deps := wtfDaemonDeps{
-		Load:  loadWTFState,
-		Save:  saveWTFState,
-		Now:   func() time.Time { return time.Unix(nowUnix.Load(), 0) },
-		After: func(time.Duration) <-chan time.Time { return ticks },
+		Load:         loadWTFState,
+		Save:         saveWTFState,
+		Now:          func() time.Time { return time.Unix(nowUnix.Load(), 0) },
+		After:        func(time.Duration) <-chan time.Time { return ticks },
+		RequestAfter: func(time.Duration) <-chan time.Time { return requests },
 		Scan: func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) {
 			current := active.Add(1)
 			if current > maxActive.Load() {
@@ -122,7 +184,17 @@ func TestRunWTFDaemonSerializesScansAndSurvivesDegradation(t *testing.T) {
 	if err := requestWTFScan(home); err != nil {
 		t.Fatal(err)
 	}
-	for want := int32(2); want <= 4; want++ {
+	requests <- time.Unix(nowUnix.Add(1), 0)
+	waitForScans(t, &scans, 2)
+	if err := requestWTFScan(home); err != nil {
+		t.Fatal(err)
+	}
+	if err := requestWTFScan(home); err != nil {
+		t.Fatal(err)
+	}
+	requests <- time.Unix(nowUnix.Add(1), 0)
+	waitForScans(t, &scans, 3)
+	for want := int32(4); want <= 6; want++ {
 		now := nowUnix.Add(1)
 		ticks <- time.Unix(now, 0)
 		waitForScans(t, &scans, want)
@@ -147,7 +219,7 @@ func TestRunWTFDaemonSerializesScansAndSurvivesDegradation(t *testing.T) {
 		t.Fatalf("health = %#v, %v", health, ok)
 	}
 	state, err := loadWTFState(home, 0)
-	if err != nil || state.UpdatedAt != 4 {
+	if err != nil || state.UpdatedAt != 6 {
 		t.Fatalf("state = %#v, %v", state, err)
 	}
 }

@@ -291,7 +291,7 @@ func detectWTFFindings(state wtfState, now int64) map[string]wtfFinding {
 				continue
 			}
 			worktree, ok := state.Worktrees[path]
-			if ok && (worktree.DirtyFiles > 0 || worktree.UnmergedCommits > 0) {
+			if ok && worktree.Exists && worktree.GitError == "" && (worktree.DirtyFiles > 0 || worktree.UnmergedCommits > 0) {
 				elsewhere = append(elsewhere, path)
 			}
 		}
@@ -349,7 +349,7 @@ func detectWTFFindings(state wtfState, now int64) map[string]wtfFinding {
 				continue
 			}
 			worktree := state.Worktrees[path]
-			if worktree.DirtyFiles > 0 || worktree.UnmergedCommits > 0 {
+			if worktree.Exists && worktree.GitError == "" && (worktree.DirtyFiles > 0 || worktree.UnmergedCommits > 0) {
 				supportingWorktrees = append(supportingWorktrees, path)
 			}
 		}

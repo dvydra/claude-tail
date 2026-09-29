@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 const wtfScanInterval = 2 * time.Second
+const wtfRequestPollInterval = 100 * time.Millisecond
 
 type wtfHealth struct {
 	PID                int    `json:"pid"`
@@ -24,17 +26,19 @@ type wtfHealth struct {
 }
 
 type wtfDaemonDeps struct {
-	Scan  func(context.Context, string, wtfState, wtfScanDeps) (wtfState, error)
-	Load  func(string, int64) (wtfState, error)
-	Save  func(string, wtfState) error
-	Now   func() time.Time
-	After func(time.Duration) <-chan time.Time
+	Scan         func(context.Context, string, wtfState, wtfScanDeps) (wtfState, error)
+	Load         func(string, int64) (wtfState, error)
+	Save         func(string, wtfState) error
+	Now          func() time.Time
+	After        func(time.Duration) <-chan time.Time
+	RequestAfter func(time.Duration) <-chan time.Time
 }
 
 var (
-	wtfCurrentPID  = os.Getpid
-	wtfPIDAlive    = pidAlive
-	wtfProcessName = psCommand
+	wtfCurrentPID   = os.Getpid
+	wtfPIDAlive     = pidAlive
+	wtfProcessName  = psCommand
+	wtfLockSequence atomic.Uint64
 )
 
 func wtfLockPath(home string) string        { return filepath.Join(wtfDir(home), "daemon.lock") }
@@ -46,11 +50,20 @@ func acquireWTFLock(home string) (func(), bool) {
 	if os.MkdirAll(filepath.Dir(path), 0o700) != nil {
 		return func() {}, false
 	}
+	breakerPath := path + ".breaker"
+	breaker, err := os.OpenFile(breakerPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return func() {}, false
+	}
+	_ = breaker.Close()
+	defer os.Remove(breakerPath)
+
 	pid := wtfCurrentPID()
+	identity := fmt.Sprintf("%d %d\n", pid, wtfLockSequence.Add(1))
 	for attempt := 0; attempt < 2; attempt++ {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			if _, err = fmt.Fprintf(file, "%d\n", pid); err == nil {
+			if _, err = file.WriteString(identity); err == nil {
 				err = file.Close()
 			} else {
 				_ = file.Close()
@@ -61,7 +74,7 @@ func acquireWTFLock(home string) (func(), bool) {
 			}
 			release := func() {
 				data, err := os.ReadFile(path)
-				if err == nil && strings.TrimSpace(string(data)) == strconv.Itoa(pid) {
+				if err == nil && string(data) == identity {
 					_ = os.Remove(path)
 				}
 			}
@@ -71,8 +84,8 @@ func acquireWTFLock(home string) (func(), bool) {
 		if readErr != nil {
 			return func() {}, false
 		}
-		owner, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-		if owner > 0 && wtfPIDAlive(owner) && strings.Contains(wtfProcessName(owner), "entire-tail") {
+		owner, _ := strconv.Atoi(strings.Fields(string(data))[0])
+		if owner > 0 && wtfPIDAlive(owner) && wtfIsEntireTailProcess(wtfProcessName(owner)) {
 			return func() {}, false
 		}
 		if os.Remove(path) != nil {
@@ -80,6 +93,11 @@ func acquireWTFLock(home string) (func(), bool) {
 		}
 	}
 	return func() {}, false
+}
+
+func wtfIsEntireTailProcess(command string) bool {
+	fields := strings.Fields(command)
+	return len(fields) > 0 && filepath.Base(fields[0]) == "entire-tail"
 }
 
 func readWTFHealth(home string) (wtfHealth, bool) {
@@ -100,7 +118,7 @@ func writeWTFHealth(home string, health wtfHealth) error {
 }
 
 func wtfDaemonRunning(health wtfHealth) bool {
-	return health.PID > 0 && wtfPIDAlive(health.PID) && strings.Contains(wtfProcessName(health.PID), "entire-tail")
+	return health.PID > 0 && wtfPIDAlive(health.PID) && wtfIsEntireTailProcess(wtfProcessName(health.PID))
 }
 
 func requestWTFScan(home string) error {
@@ -179,6 +197,9 @@ func runWTFDaemon(ctx context.Context, home string, deps wtfDaemonDeps) error {
 	if deps.After == nil {
 		deps.After = time.After
 	}
+	if deps.RequestAfter == nil {
+		deps.RequestAfter = time.After
+	}
 
 	started := deps.Now()
 	health := wtfHealth{PID: wtfCurrentPID(), Version: version, StartedAt: started.Unix()}
@@ -190,11 +211,8 @@ func runWTFDaemon(ctx context.Context, home string, deps wtfDaemonDeps) error {
 		return err
 	}
 
-	for {
+	scan := func() error {
 		now := deps.Now().Unix()
-		if _, err := os.Stat(wtfScanRequestPath(home)); err == nil {
-			_ = os.Remove(wtfScanRequestPath(home))
-		}
 		health.LastAttemptedScan = now
 		if err := writeWTFHealth(home, health); err != nil {
 			return err
@@ -211,10 +229,31 @@ func runWTFDaemon(ctx context.Context, home string, deps wtfDaemonDeps) error {
 		if err := writeWTFHealth(home, health); err != nil {
 			return err
 		}
+		return nil
+	}
+	if err := scan(); err != nil {
+		return err
+	}
+	periodic := deps.After(wtfScanInterval)
+	requestPoll := deps.RequestAfter(wtfRequestPollInterval)
+	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-deps.After(wtfScanInterval):
+		case <-periodic:
+			if err := scan(); err != nil {
+				return err
+			}
+			periodic = deps.After(wtfScanInterval)
+		case <-requestPoll:
+			if err := os.Remove(wtfScanRequestPath(home)); err == nil {
+				if err := scan(); err != nil {
+					return err
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			requestPoll = deps.RequestAfter(wtfRequestPollInterval)
 		}
 	}
 }
