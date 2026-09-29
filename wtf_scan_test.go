@@ -160,6 +160,38 @@ func TestInspectRepoWorktreesPreservesPriorRecordsMissingFromPorcelain(t *testin
 	}
 }
 
+func TestInspectRepoWorktreesDistinguishesUnlistedAndMissingPriorPaths(t *testing.T) {
+	currentPath := t.TempDir()
+	unlistedPath := t.TempDir()
+	missingPath := filepath.Join(t.TempDir(), "removed")
+	prior := []wtfWorktree{
+		{Repo: "acme/repo", Path: unlistedPath, Exists: true, DirtyFiles: 1, UnmergedCommits: 2},
+		{Repo: "acme/repo", Path: missingPath, Exists: true, DirtyFiles: 3, UnmergedCommits: 4},
+	}
+	run := gitOutputRunner(map[string]string{
+		"worktree list --porcelain":                          "worktree " + currentPath + "\nHEAD new-head\nbranch refs/heads/main\n",
+		"status --porcelain":                                 "",
+		"show-ref --verify --quiet refs/remotes/origin/main": "",
+		"rev-list --count origin/main..HEAD":                 "0\n",
+		"log --format=%s origin/main..HEAD":                  "",
+		"diff --no-ext-diff --unified=0 HEAD --":             "",
+	})
+
+	got := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, run)
+	byPath := make(map[string]wtfWorktree, len(got))
+	for _, worktree := range got {
+		byPath[worktree.Path] = worktree
+	}
+	unlisted := byPath[unlistedPath]
+	if !unlisted.Exists || unlisted.GitError != "worktree not listed by git" || unlisted.DirtyFiles != -1 || unlisted.UnmergedCommits != -1 || !worktreeHasWIP(unlisted) {
+		t.Fatalf("existing unlisted worktree: %#v", unlisted)
+	}
+	missing := byPath[missingPath]
+	if missing.Exists || missing.GitError != "worktree path missing" || missing.DirtyFiles != -1 || missing.UnmergedCommits != -1 || !worktreeHasWIP(missing) {
+		t.Fatalf("missing worktree: %#v", missing)
+	}
+}
+
 func TestInspectWorktreeRealRepositoryDistinguishesDirtyAndUnmerged(t *testing.T) {
 	root := t.TempDir()
 	origin := filepath.Join(root, "origin.git")

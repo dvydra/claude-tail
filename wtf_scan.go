@@ -98,14 +98,15 @@ func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prio
 		if !ok || old.Repo != repo {
 			continue
 		}
-		worktree.Exists = false
 		worktree.DirtyFiles = -1
 		worktree.UnmergedCommits = -1
 		worktree.LastSeen = now
 		worktree.LastWIPAt = now
 		if info, err := os.Stat(worktree.Path); err != nil || !info.IsDir() {
+			worktree.Exists = false
 			worktree.GitError = "worktree path missing"
 		} else {
+			worktree.Exists = true
 			worktree.GitError = "worktree not listed by git"
 		}
 		worktrees = append(worktrees, worktree)
