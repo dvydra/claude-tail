@@ -260,7 +260,7 @@ func sendAmpWarning(ctx context.Context, target wtfSession, text string, run wtf
 	if target.Agent != AgentAmp || !target.Active {
 		return wtfFailedDelivery(errors.New("target is not an active Amp session"), text)
 	}
-	if !strings.HasPrefix(target.ID, "T-") || len(target.ID) == 2 {
+	if !validAmpThreadID(target.ID) {
 		return wtfFailedDelivery(errors.New("target Amp thread id is invalid"), text)
 	}
 	if err := ctx.Err(); err != nil {
@@ -293,6 +293,9 @@ func notificationArgs(trailKey, text string) []string {
 }
 
 func sendMacNotification(ctx context.Context, trailKey, text string, run wtfExec) wtfDeliveryResult {
+	if err := ctx.Err(); err != nil {
+		return wtfFailedDelivery(err, text)
+	}
 	commandCtx, cancel := context.WithTimeout(ctx, wtfNotificationTimeout)
 	defer cancel()
 	_, err := run(commandCtx, "osascript", notificationArgs(trailKey, text)...)
@@ -310,12 +313,26 @@ func wtfSafeError(err error, sensitive ...string) string {
 	if err == nil {
 		return ""
 	}
-	line := strings.TrimSpace(strings.SplitN(strings.ReplaceAll(err.Error(), "\r", ""), "\n", 2)[0])
+	message := err.Error()
+	var redactions []string
 	for _, value := range sensitive {
-		if value != "" {
-			line = strings.ReplaceAll(line, value, "[warning omitted]")
+		if value == "" {
+			continue
+		}
+		redactions = append(redactions, value)
+		normalized := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(value)
+		for _, warningLine := range strings.Split(normalized, "\n") {
+			if warningLine = strings.TrimSpace(warningLine); warningLine != "" {
+				redactions = append(redactions, warningLine)
+			}
 		}
 	}
+	sort.Slice(redactions, func(i, j int) bool { return len(redactions[i]) > len(redactions[j]) })
+	for _, value := range redactions {
+		message = strings.ReplaceAll(message, value, "[warning omitted]")
+	}
+	message = strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(message)
+	line := strings.TrimSpace(strings.SplitN(message, "\n", 2)[0])
 	if line == "" {
 		line = "command failed"
 	}

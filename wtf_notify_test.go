@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -39,6 +40,9 @@ func TestSendAmpWarningRejectsInvalidTargetsWithoutExec(t *testing.T) {
 		{Agent: AgentClaude, ID: "T-123", Active: true},
 		{Agent: AgentAmp, Active: true},
 		{Agent: AgentAmp, ID: "not-a-thread", Active: true},
+		{Agent: AgentAmp, ID: "T- 123", Active: true},
+		{Agent: AgentAmp, ID: "T-/123", Active: true},
+		{Agent: AgentAmp, ID: "T-123\n456", Active: true},
 	} {
 		called := false
 		got := sendAmpWarning(context.Background(), target, "warning", func(context.Context, string, ...string) ([]byte, error) {
@@ -59,6 +63,7 @@ func TestSendAmpWarningFailureMappings(t *testing.T) {
 		want string
 	}{
 		{"lookup", &exec.Error{Name: "amp", Err: exec.ErrNotFound}, "failed"},
+		{"start", &os.PathError{Op: "fork/exec", Path: "/missing/amp", Err: os.ErrNotExist}, "failed"},
 		{"command failure", errors.New("exit status 1\nwarning body must not leak"), "failed"},
 		{"timeout after invocation", context.DeadlineExceeded, "unknown"},
 		{"cancel after invocation", context.Canceled, "unknown"},
@@ -71,6 +76,45 @@ func TestSendAmpWarningFailureMappings(t *testing.T) {
 				t.Fatalf("result = %#v, want safe %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSendAmpWarningRedactsIndividualWarningLines(t *testing.T) {
+	target := wtfSession{Agent: AgentAmp, ID: "T-123", Active: true}
+	warning := "first private line\nmiddle private line\nlast private line"
+	for _, leaked := range []string{"first private line", "middle private line"} {
+		got := sendAmpWarning(context.Background(), target, warning, func(context.Context, string, ...string) ([]byte, error) {
+			return nil, fmt.Errorf("executor included %s in its error", leaked)
+		})
+		if got.State != "failed" || strings.Contains(got.Error, leaked) {
+			t.Fatalf("error %q produced %#v", leaked, got)
+		}
+	}
+}
+
+func TestSendAmpWarningDeadlineAndPreCanceledContext(t *testing.T) {
+	target := wtfSession{Agent: AgentAmp, ID: "T-123", Active: true}
+	now := time.Now()
+	got := sendAmpWarning(context.Background(), target, "warning", func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || deadline.Sub(now) < 14*time.Second || deadline.Sub(now) > 16*time.Second {
+			t.Fatalf("deadline = %v, now = %v", deadline, now)
+		}
+		return nil, nil
+	})
+	if got.State != "sent" {
+		t.Fatalf("result = %#v", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	got = sendAmpWarning(ctx, target, "warning", func(context.Context, string, ...string) ([]byte, error) {
+		called = true
+		return nil, nil
+	})
+	if called || got.State != "failed" {
+		t.Fatalf("called = %v, result = %#v", called, got)
 	}
 }
 
@@ -97,6 +141,58 @@ func TestMacNotificationFailureIsSafe(t *testing.T) {
 	})
 	if got.State != "failed" || got.Error != "[warning omitted]: osascript failed" {
 		t.Fatalf("result = %#v, want one safe error line", got)
+	}
+}
+
+func TestMacNotificationRedactsIndividualWarningLines(t *testing.T) {
+	warning := "first private line\nmiddle private line\nlast private line"
+	for _, leaked := range []string{"first private line", "middle private line"} {
+		got := sendMacNotification(context.Background(), "owner/repo#42", warning, func(context.Context, string, ...string) ([]byte, error) {
+			return nil, fmt.Errorf("executor included %s in its error", leaked)
+		})
+		if got.State != "failed" || strings.Contains(got.Error, leaked) {
+			t.Fatalf("error %q produced %#v", leaked, got)
+		}
+	}
+}
+
+func TestMacNotificationDeadlinePreCanceledAndStartFailure(t *testing.T) {
+	now := time.Now()
+	got := sendMacNotification(context.Background(), "owner/repo#42", "warning", func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || deadline.Sub(now) < 4*time.Second || deadline.Sub(now) > 6*time.Second {
+			t.Fatalf("deadline = %v, now = %v", deadline, now)
+		}
+		return nil, nil
+	})
+	if got.State != "sent" {
+		t.Fatalf("result = %#v", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	got = sendMacNotification(ctx, "owner/repo#42", "warning", func(context.Context, string, ...string) ([]byte, error) {
+		called = true
+		return nil, nil
+	})
+	if called || got.State != "failed" {
+		t.Fatalf("called = %v, result = %#v", called, got)
+	}
+
+	pathErr := &os.PathError{Op: "fork/exec", Path: "/missing/osascript", Err: os.ErrNotExist}
+	got = sendMacNotification(context.Background(), "owner/repo#42", "warning", func(context.Context, string, ...string) ([]byte, error) {
+		return nil, pathErr
+	})
+	if got.State != "failed" || !strings.Contains(got.Error, "fork/exec") {
+		t.Fatalf("result = %#v", got)
+	}
+}
+
+func TestWTFSafeErrorNormalizesLinesAndBoundsRunes(t *testing.T) {
+	got := wtfSafeError(errors.New(strings.Repeat("界", 300) + "\rsecond line"))
+	if strings.ContainsAny(got, "\r\n") || len([]rune(got)) != 240 {
+		t.Fatalf("safe error has %d runes: %q", len([]rune(got)), got)
 	}
 }
 
