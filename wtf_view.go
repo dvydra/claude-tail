@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -158,8 +159,19 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		trailCanonical[trail.Key] = trail.CanonicalWorktree
 	}
 	sessionCwds := make(map[string]string, len(snapshot.Sessions))
+	sessionTrails := make(map[string][]string)
 	for _, session := range snapshot.Sessions {
 		sessionCwds[wtfSessionKey(session.Agent, session.ID)] = session.Cwd
+	}
+	for _, trail := range snapshot.Trails {
+		for _, association := range trail.Associations {
+			if association.SessionKey != "" {
+				sessionTrails[association.SessionKey] = append(sessionTrails[association.SessionKey], trail.Key)
+			}
+		}
+	}
+	for key := range sessionTrails {
+		sessionTrails[key] = sortedUnique(sessionTrails[key])
 	}
 	if len(findings) == 0 {
 		line(opts.theme.DimANSI + "  None" + reset)
@@ -212,7 +224,7 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 					lastRepo = repo
 				}
 				key := wtfSessionKey(session.Agent, session.ID)
-				for rowIndex, row := range wtfSessionLines(session, opts, reset) {
+				for rowIndex, row := range wtfSessionLines(session, sessionTrails[key], opts, reset) {
 					if rowIndex == 0 {
 						sessionLine(row, key)
 					} else {
@@ -235,6 +247,9 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	for _, trail := range wipTrails {
 		line(fmt.Sprintf("  %s  canonical %s", trail.trail.Key, firstNonEmpty(trail.trail.CanonicalWorktree, "unknown")))
 		line(fmt.Sprintf("    owner %s · active %d · dirty %s · unmerged %s · %s", firstNonEmpty(trail.trail.OwnerSession, "unknown"), trail.active, wtfCountLabel(trail.dirty, trail.dirtyKnown), wtfCountLabel(trail.unmerged, trail.unmergedKnown), strings.Join(trail.reasons, ", ")))
+		for _, worktree := range trail.worktrees {
+			line(fmt.Sprintf("    %s · dirty %s · unmerged %s · %s", worktree.path, wtfCountLabel(worktree.dirty, worktree.dirtyKnown), wtfCountLabel(worktree.unmerged, worktree.unmergedKnown), strings.Join(worktree.evidence, ", ")))
+		}
 	}
 	line("")
 	line(opts.theme.ClaudeANSI + "Recently stopped" + reset)
@@ -251,7 +266,7 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 				lastRepo = repo
 			}
 			key := wtfSessionKey(session.Agent, session.ID)
-			for rowIndex, row := range wtfSessionLines(session, opts, reset) {
+			for rowIndex, row := range wtfSessionLines(session, sessionTrails[key], opts, reset) {
 				if rowIndex == 0 {
 					sessionLine(row, key)
 				} else {
@@ -333,6 +348,14 @@ type wtfWIPTrail struct {
 	dirtyKnown              bool
 	unmergedKnown           bool
 	reasons                 []string
+	worktrees               []wtfWIPWorktree
+}
+
+type wtfWIPWorktree struct {
+	path                      string
+	dirty, unmerged           int
+	dirtyKnown, unmergedKnown bool
+	evidence                  []string
 }
 
 func wtfCountLabel(count int, known bool) string {
@@ -380,6 +403,15 @@ func selectWIPTrails(snapshot wtfSnapshot) []wtfWIPTrail {
 			if worktreeHasWIP(worktree) {
 				hasWorktreeWIP = true
 			}
+			if worktreeHasWIP(worktree) {
+				var evidence []string
+				for _, candidate := range trail.Associations {
+					if candidate.Worktree == association.Worktree {
+						evidence = append(evidence, candidate.Source+": "+candidate.Evidence)
+					}
+				}
+				item.worktrees = append(item.worktrees, wtfWIPWorktree{path: association.Worktree, dirty: worktree.DirtyFiles, unmerged: worktree.UnmergedCommits, dirtyKnown: wtfDirtyCountKnown(worktree), unmergedKnown: worktree.UnmergedCommits >= 0, evidence: sortedUnique(evidence)})
+			}
 			if !wtfDirtyCountKnown(worktree) {
 				item.dirtyKnown = false
 			} else {
@@ -405,6 +437,7 @@ func selectWIPTrails(snapshot wtfSnapshot) []wtfWIPTrail {
 		}
 		if item.active > 0 || hasWorktreeWIP {
 			item.reasons = sortedUnique(item.reasons)
+			sort.Slice(item.worktrees, func(i, j int) bool { return item.worktrees[i].path < item.worktrees[j].path })
 			out = append(out, item)
 		}
 	}
@@ -447,7 +480,7 @@ func wtfComposedRows(snapshot wtfSnapshot, top, end int) int {
 	return rows
 }
 
-func wtfSessionLines(session wtfSession, opts wtfRenderOpts, reset string) []string {
+func wtfSessionLines(session wtfSession, trails []string, opts wtfRenderOpts, reset string) []string {
 	mark := "  "
 	if opts.selected == wtfSessionKey(session.Agent, session.ID) {
 		mark = "▸ "
@@ -461,6 +494,9 @@ func wtfSessionLines(session wtfSession, opts wtfRenderOpts, reset string) []str
 	meta := strings.TrimSpace(strings.Join([]string{session.Branch, tildify(session.Cwd, opts.snapshotHome)}, "   "))
 	head := fmt.Sprintf("%s%s%s%s  %-13s %-6s %s", mark, color, agent, reset, name, state, meta)
 	lines := []string{head}
+	if len(trails) > 0 {
+		lines = append(lines, "   trails "+strings.Join(sortedUnique(trails), ", "))
+	}
 	if summary := strings.TrimSpace(session.Summary); summary != "" {
 		lines = append(lines, "   "+summary)
 	}
@@ -679,9 +715,10 @@ func readWTFKeyEvents(reader wtfReader, size func() (int, int), width, height in
 }
 
 func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
-	state, err := loadWTFState(home, time.Now().Unix())
-	if err != nil {
-		return nil, err
+	state, loadErr := loadWTFState(home, time.Now().Unix())
+	var recovery *wtfStateRecoveryError
+	if loadErr != nil && !errors.As(loadErr, &recovery) {
+		return nil, loadErr
 	}
 	cache := state.SummaryCache
 	deps := defaultWTFScanDeps()
@@ -689,6 +726,10 @@ func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
 		snapshot, next, _ := reconcileWTFDashboard(context.Background(), home, state, deps, func(next wtfState) error {
 			return saveWTFState(home, next)
 		})
+		if loadErr != nil {
+			snapshot.Errors = append(snapshot.Errors, loadErr.Error())
+			loadErr = nil
+		}
 		state = next
 		return snapshot, next.SummaryCache
 	}

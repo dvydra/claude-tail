@@ -15,6 +15,39 @@ import (
 	"time"
 )
 
+func scanFixtureDeps(now time.Time, transcript, first, source, metadata string) wtfScanDeps {
+	return wtfScanDeps{
+		Inventory: wtfInventoryDeps{
+			Today: func(string, int64, *time.Location) []handoverItem {
+				return []handoverItem{{Agent: AgentClaude, SessionID: "one", Repo: "acme/api", Cwd: first, Path: transcript, LastActivity: now.Unix()}}
+			},
+			Live: func(string) []liveSession {
+				return []liveSession{{Agent: AgentClaude, SessionID: "one", Cwd: first, Path: transcript, Status: "busy", UpdatedAt: now.UnixMilli()}}
+			},
+		},
+		Run: func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
+			if name == "entire" {
+				return []byte(metadata), nil
+			}
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.Contains(joined, "worktree list --porcelain"):
+				return []byte("worktree " + first + "\nHEAD a\nbranch refs/heads/feat/first\n\nworktree " + source + "\nHEAD b\nbranch refs/heads/feat/source\n"), nil
+			case strings.Contains(joined, "symbolic-ref"):
+				return []byte("refs/remotes/origin/main\n"), nil
+			case strings.Contains(joined, "rev-list --count"):
+				return []byte("0\n"), nil
+			default:
+				return nil, nil
+			}
+		},
+		Summarize: func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+			return wtfSummary{}, wtfSummaryCache{}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+}
+
 func TestParseGitWorktreePorcelain(t *testing.T) {
 	data := []byte("worktree /repo\nHEAD abc123\nbranch refs/heads/feat/x\n\nworktree /repo/wt\nHEAD def456\ndetached\n")
 	want := []gitWorktreeEntry{
@@ -439,7 +472,10 @@ func TestExtractTrailEvidenceRejectsOverflow(t *testing.T) {
 }
 
 func TestClaudeTrailEvents(t *testing.T) {
-	got := claudeTrailEvents(filepath.Join("testdata", "wtf", "claude-trails.jsonl"), 999)
+	got, err := claudeTrailEvents(filepath.Join("testdata", "wtf", "claude-trails.jsonl"), 999)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []trailTextEvent{
 		{At: 1790672400, Source: "user", Text: "user acme/api#1"},
 		{At: 1790672400, Source: "user", Text: "user block acme/api#10"},
@@ -467,6 +503,17 @@ func TestAmpTrailEvents(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("events:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestTranscriptTrailEventsReportsUnreadableSources(t *testing.T) {
+	for _, session := range []wtfSession{
+		{Agent: AgentClaude, ID: "c", Transcript: filepath.Join(t.TempDir(), "missing.jsonl")},
+		{Agent: AgentAmp, ID: "a", Transcript: filepath.Join(t.TempDir(), "missing.json")},
+	} {
+		if _, err := transcriptTrailEvents(session, t.TempDir(), 1); err == nil || !strings.Contains(err.Error(), string(session.Agent)+" transcript") {
+			t.Fatalf("%s error=%v", session.Agent, err)
+		}
 	}
 }
 
@@ -509,6 +556,56 @@ func TestReconcileTrailsClaimsRequireActiveLocalWorktree(t *testing.T) {
 	trail := got.Trails[e.Key]
 	if trail.OwnerSession != "claude:one" || trail.FirstClaim.Worktree != "/wt/shared" || len(trail.Associations) != 3 {
 		t.Fatalf("claims and associations: %#v", trail)
+	}
+}
+
+func TestRemoteAndMissingAssociationsAreRelatedButNeverClaims(t *testing.T) {
+	e := trailEvidence{Key: "acme/api#8", Owner: "acme", Repo: "api", Number: 8, Matched: "api#8", At: 1, Resolved: true}
+	sessions := []wtfSession{{Agent: AgentAmp, ID: "remote", Repo: "acme/api", Active: true}, {Agent: AgentClaude, ID: "missing", Repo: "acme/api", Cwd: "/missing", Active: true}}
+	state := reconcileTrails(wtfState{}, sessions, map[string][]trailEvidence{"amp:remote": {e}, "claude:missing": {e}}, map[string]wtfWorktree{"/missing": {Repo: "acme/api", Path: "/missing", Exists: false, GitError: "worktree path missing"}}, 2)
+	trail := state.Trails[e.Key]
+	if trail.FirstClaim != nil || trail.OwnerSession != "" || len(trail.Associations) != 2 || len(detectWTFFindings(state, 2)) != 0 {
+		t.Fatalf("remote/missing became claims: trail=%#v findings=%#v", trail, detectWTFFindings(state, 2))
+	}
+}
+
+func TestReconcileTrailsProducesStableAssociationJSON(t *testing.T) {
+	trail := wtfTrail{Key: "acme/api#9", Owner: "acme", Repo: "api", Number: 9, SourceBranch: "feat/9"}
+	makeState := func(reverse bool) []byte {
+		worktrees := map[string]wtfWorktree{}
+		items := []wtfWorktree{{Repo: "acme/api", Path: "/b", Branch: "feat/9", FirstSeen: 2}, {Repo: "acme/api", Path: "/a", GitEvidence: []wtfGitEvidence{{Source: "branch", Text: "acme/api#9"}}, FirstSeen: 1}}
+		if reverse {
+			items[0], items[1] = items[1], items[0]
+		}
+		for _, w := range items {
+			worktrees[w.Path] = w
+		}
+		got := reconcileTrails(wtfState{Trails: map[string]wtfTrail{trail.Key: trail}}, nil, nil, worktrees, 3)
+		data, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	if a, b := makeState(false), makeState(true); !reflect.DeepEqual(a, b) {
+		t.Fatalf("state differs:\n%s\n%s", a, b)
+	}
+}
+
+func TestScanWTFMetadataSelectsInitialCanonicalInSameScan(t *testing.T) {
+	home, first, source := t.TempDir(), t.TempDir(), t.TempDir()
+	transcript := filepath.Join(home, "c.jsonl")
+	if err := os.WriteFile(transcript, []byte(`{"type":"user","timestamp":"2026-09-29T09:00:00Z","message":{"content":"acme/api#44"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+	deps := scanFixtureDeps(now, transcript, first, source, `{"number":44,"branch":"feat/source"}`)
+	got, err := scanWTF(context.Background(), home, newWTFState(now.Unix()), deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Trails["acme/api#44"].CanonicalWorktree != source {
+		t.Fatalf("trail=%#v", got.Trails["acme/api#44"])
 	}
 }
 
@@ -759,6 +856,8 @@ func TestDetectWTFFindingsDuplicateActiveClaim(t *testing.T) {
 	state := findingState()
 	state.Sessions["claude:a"] = wtfSession{Active: true, Cwd: "/wt/a"}
 	state.Sessions["amp:b"] = wtfSession{Active: true, Cwd: "/wt/b"}
+	state.Worktrees["/wt/a"] = wtfWorktree{Path: "/wt/a", Exists: true}
+	state.Worktrees["/wt/b"] = wtfWorktree{Path: "/wt/b", Exists: true}
 	trail := state.Trails["acme/api#7"]
 	trail.Associations = []wtfAssociation{{SessionKey: "amp:b", Worktree: "/wt/b"}, {SessionKey: "claude:a", Worktree: "/wt/a"}, {SessionKey: "claude:a", Worktree: "/wt/a"}}
 	state.Trails[trail.Key] = trail
@@ -809,6 +908,8 @@ func TestDetectWTFFindingsExistingWIPElsewhere(t *testing.T) {
 func TestDetectWTFFindingsOutsideCanonical(t *testing.T) {
 	state := findingState()
 	state.Sessions["claude:owner"] = wtfSession{Active: true, Cwd: "/wt/moved"}
+	state.Worktrees["/wt/moved"] = wtfWorktree{Path: "/wt/moved", Exists: true}
+	state.Worktrees["/wt/canonical"] = wtfWorktree{Path: "/wt/canonical", Exists: true}
 	trail := state.Trails["acme/api#7"]
 	trail.OwnerSession = "claude:owner"
 	trail.Associations = []wtfAssociation{{SessionKey: "claude:owner", Worktree: "/wt/moved"}}
@@ -846,6 +947,7 @@ func TestDetectWTFFindingsDefaultBranch(t *testing.T) {
 func TestDetectWTFFindingsMissingCanonical(t *testing.T) {
 	state := findingState()
 	state.Sessions["claude:a"] = wtfSession{Active: true, Cwd: "/wt/a"}
+	state.Worktrees["/wt/a"] = wtfWorktree{Path: "/wt/a", Exists: true}
 	state.Worktrees["/wt/canonical"] = wtfWorktree{Path: "/wt/canonical", Exists: false}
 	trail := state.Trails["acme/api#7"]
 	trail.Associations = []wtfAssociation{{SessionKey: "claude:a", Worktree: "/wt/a"}}

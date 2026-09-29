@@ -419,6 +419,10 @@ func activeTrailAssociations(state wtfState, trail wtfTrail) []wtfAssociation {
 		if path == "" {
 			path = association.Worktree
 		}
+		worktree, local := state.Worktrees[path]
+		if !local || worktree.GitError == "worktree path missing" {
+			continue
+		}
 		bySession[association.SessionKey] = wtfAssociation{SessionKey: association.SessionKey, Worktree: path}
 	}
 	keys := sortedMapKeys(bySession)
@@ -553,12 +557,19 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 	}
 	knownRepos = sortedUnique(knownRepos)
 	evidence := make(map[string][]trailEvidence)
+	var degraded []error
+	transcriptFailures := make(map[string]bool)
 	for _, session := range sessions {
 		if !session.Active {
 			continue
 		}
 		key := wtfSessionKey(session.Agent, session.ID)
-		events := transcriptTrailEvents(session, home, session.LastActivity)
+		events, err := transcriptTrailEvents(session, home, session.LastActivity)
+		if err != nil {
+			degraded = append(degraded, err)
+			transcriptFailures[key] = true
+			continue
+		}
 		evidence[key] = extractTrailEvidence(events, trailContext{CurrentRepo: session.Repo, KnownRepos: knownRepos})
 	}
 
@@ -574,7 +585,7 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 		}
 	}
 	worktrees := make(map[string]wtfWorktree)
-	var degraded []error
+	localFailed := false
 	for _, repo := range sortedMapKeys(repoCandidates) {
 		var old []wtfWorktree
 		for _, worktree := range prior.Worktrees {
@@ -586,13 +597,14 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 		inspected, err := inspectRepoWorktrees(ctx, repo, cwd, nowUnix, old, deps.Run)
 		if err != nil {
 			degraded = append(degraded, fmt.Errorf("git worktrees for %s: %w", repo, err))
+			localFailed = true
 		}
 		for _, worktree := range inspected {
 			worktrees[worktree.Path] = worktree
 		}
 	}
 
-	state = reconcileTrails(state, sessions, evidence, worktrees, nowUnix)
+	state = reconcileTrailsInternal(state, sessions, evidence, worktrees, nowUnix, false)
 	state.Findings = mergeWTFFindings(prior.Findings, detectWTFFindings(state, nowUnix), nowUnix)
 	for _, key := range sortedMapKeys(state.Trails) {
 		trail := state.Trails[key]
@@ -611,6 +623,14 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 	for _, key := range sortedMapKeys(state.Sessions) {
 		session := state.Sessions[key]
 		old, existed := prior.Sessions[key]
+		if transcriptFailures[key] {
+			if existed {
+				session.Summary = old.Summary
+				session.NeedsUser = old.NeedsUser
+			}
+			state.Sessions[key] = session
+			continue
+		}
 		if existed && !wtfSessionChanged(old, session) {
 			session.Summary = old.Summary
 			session.NeedsUser = old.NeedsUser
@@ -633,8 +653,19 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 		}
 	}
 	state.UpdatedAt = nowUnix
-	return state, errors.Join(degraded...)
+	if len(degraded) > 0 {
+		return state, &wtfScanError{errors: degraded, localFailed: localFailed}
+	}
+	return state, nil
 }
+
+type wtfScanError struct {
+	errors      []error
+	localFailed bool
+}
+
+func (e *wtfScanError) Error() string   { return errors.Join(e.errors...).Error() }
+func (e *wtfScanError) Unwrap() []error { return e.errors }
 
 func deterministicRepoSeed(candidates []string) string {
 	paths := sortedUnique(candidates)
@@ -656,6 +687,10 @@ func wtfSessionChanged(old, current wtfSession) bool {
 }
 
 func reconcileTrails(prior wtfState, sessions []wtfSession, evidence map[string][]trailEvidence, worktrees map[string]wtfWorktree, now int64) wtfState {
+	return reconcileTrailsInternal(prior, sessions, evidence, worktrees, now, true)
+}
+
+func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map[string][]trailEvidence, worktrees map[string]wtfWorktree, now int64, chooseCanonical bool) wtfState {
 	state := prior
 	if state.Trails == nil {
 		state.Trails = make(map[string]wtfTrail)
@@ -703,7 +738,7 @@ func reconcileTrails(prior wtfState, sessions []wtfSession, evidence map[string]
 		trail.LastSeen = now
 		association := wtfAssociation{SessionKey: observation.SessionKey, Worktree: observation.Worktree, At: found.At, Evidence: found.Matched, Source: found.Source}
 		trail.Associations = addAssociation(trail.Associations, association)
-		if worktree, ok := worktrees[observation.Worktree]; ok && worktree.Repo == observation.Repo {
+		if worktree, ok := worktrees[observation.Worktree]; ok && worktree.GitError != "worktree path missing" && worktree.Repo == observation.Repo {
 			claim := wtfClaim{SessionKey: observation.SessionKey, Worktree: observation.Worktree, At: found.At, Evidence: found.Matched}
 			claims[trail.Key] = append(claims[trail.Key], claim)
 			if trail.FirstClaim == nil {
@@ -725,7 +760,8 @@ func reconcileTrails(prior wtfState, sessions []wtfSession, evidence map[string]
 	sort.Strings(trailKeys)
 	for _, key := range trailKeys {
 		trail := state.Trails[key]
-		for path, worktree := range worktrees {
+		for _, path := range sortedMapKeys(worktrees) {
+			worktree := worktrees[path]
 			if worktree.Repo != trail.Owner+"/"+trail.Repo {
 				continue
 			}
@@ -748,7 +784,7 @@ func reconcileTrails(prior wtfState, sessions []wtfSession, evidence map[string]
 				}
 			}
 		}
-		if trail.CanonicalWorktree == "" {
+		if chooseCanonical && trail.CanonicalWorktree == "" {
 			var canonicalClaims []wtfClaim
 			if trail.FirstClaim != nil {
 				canonicalClaims = append(canonicalClaims, *trail.FirstClaim)
@@ -762,6 +798,7 @@ func reconcileTrails(prior wtfState, sessions []wtfSession, evidence map[string]
 			}
 			trail.CanonicalWorktree = chooseInitialCanonical(trail, canonicalClaims, worktrees)
 		}
+		trail.Associations = sortedAssociations(trail.Associations)
 		state.Trails[key] = trail
 	}
 	state.Version = wtfStateVersion
@@ -799,7 +836,28 @@ func addAssociation(existing []wtfAssociation, next wtfAssociation) []wtfAssocia
 			return existing
 		}
 	}
-	return append(existing, next)
+	return sortedAssociations(append(existing, next))
+}
+
+func sortedAssociations(existing []wtfAssociation) []wtfAssociation {
+	out := append([]wtfAssociation(nil), existing...)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.At != b.At {
+			return a.At < b.At
+		}
+		if a.SessionKey != b.SessionKey {
+			return a.SessionKey < b.SessionKey
+		}
+		if a.Worktree != b.Worktree {
+			return a.Worktree < b.Worktree
+		}
+		if a.Source != b.Source {
+			return a.Source < b.Source
+		}
+		return a.Evidence < b.Evidence
+	})
+	return out
 }
 
 func associateWorktree(state *wtfState, path, sessionKey, trailKey string) {
@@ -983,10 +1041,10 @@ func splitRepo(value string) (string, string, bool) {
 	return parts[0], parts[1], true
 }
 
-func claudeTrailEvents(path string, observedAt int64) []trailTextEvent {
+func claudeTrailEvents(path string, observedAt int64) ([]trailTextEvent, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 	var events []trailTextEvent
@@ -1034,7 +1092,10 @@ func claudeTrailEvents(path string, observedAt int64) []trailTextEvent {
 			}
 		}
 	}
-	return events
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 func ampTrailEvents(export ampExport, observedAt int64) []trailTextEvent {
@@ -1057,10 +1118,14 @@ func ampTrailEvents(export ampExport, observedAt int64) []trailTextEvent {
 	return events
 }
 
-func transcriptTrailEvents(session wtfSession, home string, observedAt int64) []trailTextEvent {
+func transcriptTrailEvents(session wtfSession, home string, observedAt int64) ([]trailTextEvent, error) {
 	switch session.Agent {
 	case AgentClaude:
-		return claudeTrailEvents(session.Transcript, observedAt)
+		events, err := claudeTrailEvents(session.Transcript, observedAt)
+		if err != nil {
+			return nil, fmt.Errorf("claude transcript %s: %w", session.ID, err)
+		}
+		return events, nil
 	case AgentAmp:
 		path := session.Transcript
 		if path == "" {
@@ -1068,11 +1133,11 @@ func transcriptTrailEvents(session wtfSession, home string, observedAt int64) []
 		}
 		export, err := readAmpExport(filepath.Clean(path))
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("amp transcript %s: %w", session.ID, err)
 		}
-		return ampTrailEvents(export, observedAt)
+		return ampTrailEvents(export, observedAt), nil
 	default:
-		return nil
+		return nil, nil
 	}
 }
 

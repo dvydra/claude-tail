@@ -11,6 +11,17 @@ import (
 	"time"
 )
 
+func emptyWTFDeps(now time.Time) wtfScanDeps {
+	return wtfScanDeps{
+		Inventory: wtfInventoryDeps{Today: func(string, int64, *time.Location) []handoverItem { return nil }, Live: func(string) []liveSession { return nil }},
+		Run:       func(context.Context, string, string, ...string) ([]byte, error) { return nil, nil },
+		Summarize: func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+			return wtfSummary{}, wtfSummaryCache{}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+}
+
 func TestWTFStateMissingReturnsInitializedState(t *testing.T) {
 	home := t.TempDir()
 	state, err := loadWTFState(home, 1_700_000_000)
@@ -239,6 +250,56 @@ func TestReconcileWTFDashboardRendersDegradedStateWithoutSaving(t *testing.T) {
 	})
 	if err == nil || saved != 0 || len(snapshot.Errors) == 0 || !strings.Contains(renderWTFSnapshot(snapshot, 120, false), "degraded: git worktrees for acme/api") {
 		t.Fatalf("snapshot=%+v saved=%d err=%v", snapshot, saved, err)
+	}
+}
+
+func TestReconcileWTFDashboardSavesMetadataDegradationForRestart(t *testing.T) {
+	now := time.Date(2026, 9, 29, 14, 0, 0, 0, time.UTC)
+	prior := newWTFState(now.Unix())
+	prior.Trails["acme/api#1"] = wtfTrail{Key: "acme/api#1", Owner: "acme", Repo: "api", Number: 1}
+	attempts, saves := 0, 0
+	deps := emptyWTFDeps(now)
+	deps.Run = func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
+		if name == "entire" {
+			attempts++
+			return nil, errors.New("offline")
+		}
+		return nil, nil
+	}
+	_, next, err := reconcileWTFDashboard(context.Background(), t.TempDir(), prior, deps, func(wtfState) error { saves++; return nil })
+	if err == nil || saves != 1 || attempts != 1 || next.Trails["acme/api#1"].MetadataNextRetry <= now.Unix() {
+		t.Fatalf("attempts=%d saves=%d err=%v trail=%#v", attempts, saves, err, next.Trails["acme/api#1"])
+	}
+	deps.Now = func() time.Time { return now.Add(30 * time.Second) }
+	_, _, _ = reconcileWTFDashboard(context.Background(), t.TempDir(), next, deps, func(wtfState) error { return nil })
+	if attempts != 1 {
+		t.Fatalf("metadata retried before persisted backoff: %d", attempts)
+	}
+}
+
+func TestCorruptStateRecoveryScansWarnsAndSaves(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wtfStatePath(home), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, recovery := loadWTFState(home, 10)
+	if recovery == nil {
+		t.Fatal("expected recovery warning")
+	}
+	snapshot, next, err := reconcileWTFDashboard(context.Background(), home, state, emptyWTFDeps(time.Unix(10, 0)), func(s wtfState) error { return saveWTFState(home, s) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Errors = append(snapshot.Errors, recovery.Error())
+	if !strings.Contains(renderWTFSnapshot(snapshot, 120, false), "recovered corrupt wtf state") {
+		t.Fatalf("missing recovery warning: %#v", snapshot.Errors)
+	}
+	loaded, err := loadWTFState(home, 11)
+	if err != nil || loaded.Version != next.Version {
+		t.Fatalf("rebuilt state: %#v %v", loaded, err)
 	}
 }
 

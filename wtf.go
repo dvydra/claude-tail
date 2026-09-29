@@ -159,7 +159,7 @@ func loadWTFState(home string, now int64) (wtfState, error) {
 		if renameErr := os.Rename(wtfStatePath(home), corrupt); renameErr != nil {
 			return newWTFState(now), fmt.Errorf("recover corrupt wtf state: decode: %v; preserve: %w", err, renameErr)
 		}
-		return newWTFState(now), fmt.Errorf("recovered corrupt wtf state as %s: %w", corrupt, err)
+		return newWTFState(now), &wtfStateRecoveryError{path: corrupt, cause: err}
 	}
 	var header struct {
 		Version *int `json:"version"`
@@ -176,6 +176,16 @@ func loadWTFState(home string, now int64) (wtfState, error) {
 	initializeWTFStateMaps(&state)
 	return state, nil
 }
+
+type wtfStateRecoveryError struct {
+	path  string
+	cause error
+}
+
+func (e *wtfStateRecoveryError) Error() string {
+	return fmt.Sprintf("recovered corrupt wtf state as %s: %v", e.path, e.cause)
+}
+func (e *wtfStateRecoveryError) Unwrap() error { return e.cause }
 
 func nextWTFCorruptPath(home string, now int64) string {
 	dir := wtfDir(home)
@@ -396,14 +406,15 @@ func summarizeWTFSnapshot(snapshot wtfSnapshot, home string, cache map[string]wt
 func reconcileWTFDashboard(ctx context.Context, home string, prior wtfState, deps wtfScanDeps, save func(wtfState) error) (wtfSnapshot, wtfState, error) {
 	next, scanErr := scanWTF(ctx, home, prior, deps)
 	snapshot := snapshotFromWTFState(home, next, scanErr)
-	if scanErr != nil {
+	var classified *wtfScanError
+	if scanErr != nil && (!errors.As(scanErr, &classified) || classified.localFailed) {
 		return snapshot, next, scanErr
 	}
 	if err := save(next); err != nil {
 		snapshot.Errors = append(snapshot.Errors, "save state: "+err.Error())
 		return snapshot, next, err
 	}
-	return snapshot, next, nil
+	return snapshot, next, scanErr
 }
 
 func defaultWTFScanDeps() wtfScanDeps {

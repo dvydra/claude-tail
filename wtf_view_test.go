@@ -91,6 +91,24 @@ func TestRenderWTFWIPTrails(t *testing.T) {
 	}
 }
 
+func TestRenderWTFShowsEachWIPWorktreeAndAssociationEvidence(t *testing.T) {
+	snapshot := wtfSnapshot{Trails: []wtfTrail{{Key: "acme/api#7", Associations: []wtfAssociation{{Worktree: "/wt/a", Source: "user", Evidence: "api#7"}, {Worktree: "/wt/b", Source: "source branch", Evidence: "feat/7"}}}}, Worktrees: []wtfWorktree{{Path: "/wt/a", Exists: true, DirtyFiles: 2, UnmergedCommits: 0}, {Path: "/wt/b", Exists: true, DirtyFiles: 0, UnmergedCommits: 3}}}
+	got := renderWTFSnapshot(snapshot, 180, false)
+	for _, want := range []string{"/wt/a · dirty 2 · unmerged 0 · user: api#7", "/wt/b · dirty 0 · unmerged 3 · source branch: feat/7"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderWTFSessionRowsShowSortedTrailKeys(t *testing.T) {
+	snapshot := wtfSnapshot{Sessions: []wtfSession{{Agent: AgentClaude, ID: "one", Active: true}}, Trails: []wtfTrail{{Key: "acme/api#2", Associations: []wtfAssociation{{SessionKey: "claude:one"}}}, {Key: "acme/api#1", Associations: []wtfAssociation{{SessionKey: "claude:one"}}}}}
+	got := renderWTFSnapshot(snapshot, 120, false)
+	if !strings.Contains(got, "acme/api#1, acme/api#2") {
+		t.Fatalf("session trail keys missing or unsorted:\n%s", got)
+	}
+}
+
 func TestRenderWTFScrolledToEndedRetainsSectionHeadings(t *testing.T) {
 	snapshot := testWTFSnapshot()
 	got := composeWTF(snapshot, wtfRenderOpts{width: 120, top: 2})
