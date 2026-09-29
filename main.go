@@ -55,6 +55,11 @@ func main() {
 			die(err.Error())
 		}
 		return
+	case ActionWTF:
+		if err := runWTF(cfg); err != nil {
+			die(err.Error())
+		}
+		return
 	case ActionUninstallHooks:
 		if err := uninstallHooks(firstNonEmpty(os.Getenv("HOME"), mustHome())); err != nil {
 			die("uninstall-hooks: " + err.Error())
