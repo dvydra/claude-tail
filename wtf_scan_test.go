@@ -387,12 +387,17 @@ func TestExtractTrailEvidence(t *testing.T) {
 		wantResolved        bool
 	}{
 		{"url", "see https://entire.io/gh/acme/api/trails/12", "x/y", nil, "acme/api#12", true},
+		{"entire-hosted url", "see https://entire.io/et/acme/api/trails/22", "x/y", nil, "acme/api#22", true},
 		{"qualified", "acme/api#13", "x/y", nil, "acme/api#13", true},
 		{"repo shorthand current", "api#14", "acme/api", nil, "acme/api#14", true},
 		{"repo shorthand unique known", "api#15", "", []string{"acme/api"}, "acme/api#15", true},
 		{"repo shorthand ambiguous", "api#16", "", []string{"acme/api", "other/api"}, "", false},
 		{"bare current", "trail #17", "acme/api", nil, "acme/api#17", true},
 		{"bare no current", "trail 18", "", []string{"acme/api"}, "", false},
+		{"bare after sentence word", "we are on trail 23", "acme/api", nil, "acme/api#23", true},
+		{"bare named current repo", "api trail 24", "acme/api", nil, "acme/api#24", true},
+		{"bare named known repo", "web trail 25", "acme/api", []string{"acme/api", "other/web"}, "other/web#25", true},
+		{"bare named unknown repo", "company-knowledge trail 11", "acme/api", nil, "", false},
 		{"ordinary hash", "color #123", "acme/api", nil, "", false},
 		{"email boundary", "xapi#19@example.com", "acme/api", nil, "", false},
 		{"url boundary", "xhttps://entire.io/gh/acme/api/trails/20", "", nil, "", false},
@@ -404,7 +409,7 @@ func TestExtractTrailEvidence(t *testing.T) {
 			if tt.wantKey == "" && tt.wantResolved && len(got) == 0 {
 				t.Fatal("expected evidence")
 			}
-			if !tt.wantResolved && tt.wantKey == "" && tt.name != "repo shorthand ambiguous" && tt.name != "bare no current" {
+			if !tt.wantResolved && tt.wantKey == "" && tt.name != "repo shorthand ambiguous" && tt.name != "bare no current" && tt.name != "bare named unknown repo" {
 				if len(got) != 0 {
 					t.Fatalf("got false-positive evidence: %#v", got)
 				}
@@ -433,6 +438,20 @@ func TestExtractTrailEvidenceDeduplicatesByEarliestTimestamp(t *testing.T) {
 	}
 	if got[0].At != 100 || got[0].Source != "user" || got[0].Matched != "https://entire.io/gh/acme/api/trails/7" {
 		t.Fatalf("did not preserve earliest evidence: %#v", got[0])
+	}
+}
+
+// Reading a file that mentions a trail is not working on it: a memory index,
+// a spec or a grep hit names trails the session never touches, and counting
+// those as claims warned two read-only sessions off a trail neither had used.
+func TestExtractTrailEvidenceIgnoresToolText(t *testing.T) {
+	got := extractTrailEvidence([]trailTextEvent{
+		{At: 100, Source: "tool result", Text: "acme/api#7"},
+		{At: 101, Source: "tool input", Text: "acme/api#8"},
+		{At: 200, Source: "assistant", Text: "acme/api#7"},
+	}, trailContext{})
+	if len(got) != 1 || got[0].Key != "acme/api#7" || got[0].Source != "assistant" || got[0].At != 200 {
+		t.Fatalf("tool text counted as a claim: %#v", got)
 	}
 }
 

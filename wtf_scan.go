@@ -894,7 +894,7 @@ type trailPattern struct {
 }
 
 var trailPatterns = []trailPattern{
-	{"url", regexp.MustCompile(`(?i)https://entire\.io/gh/([a-z0-9_.-]+)/([a-z0-9_.-]+)/trails/([0-9]+)`)},
+	{"url", regexp.MustCompile(`(?i)https://entire\.io/(?:gh|et)/([a-z0-9_.-]+)/([a-z0-9_.-]+)/trails/([0-9]+)`)},
 	{"qualified", regexp.MustCompile(`(?i)([a-z0-9_.-]+)/([a-z0-9_.-]+)#([0-9]+)`)},
 	{"repo", regexp.MustCompile(`(?i)([a-z0-9_.-]+)#([0-9]+)`)},
 	{"bare", regexp.MustCompile(`(?i)trail[ ]+#?([0-9]+)`)},
@@ -905,11 +905,23 @@ type trailMatch struct {
 	kind       string
 	matched    string
 	parts      []string
+	// prefix is the word before a bare "trail N", which may name its repo.
+	prefix string
+}
+
+// trailClaimSource reports whether text from this source is the session's
+// own words. Tool text is what the session read or searched for (a memory
+// index, a spec, a grep hit), and naming a trail there is not working on it.
+func trailClaimSource(source string) bool {
+	return source != "tool input" && source != "tool result"
 }
 
 func extractTrailEvidence(events []trailTextEvent, ctx trailContext) []trailEvidence {
 	byIdentity := make(map[string]trailEvidence)
 	for _, event := range events {
+		if !trailClaimSource(event.Source) {
+			continue
+		}
 		for _, match := range trailMatches(event.Text) {
 			evidence := resolveTrailMatch(match, event, ctx)
 			identity := evidence.Key
@@ -952,6 +964,9 @@ func trailMatches(text string) []trailMatch {
 				}
 			}
 			candidate := trailMatch{start: start, end: end, kind: pattern.kind, matched: text[start:end], parts: parts}
+			if pattern.kind == "bare" {
+				candidate.prefix = wordBefore(text, start)
+			}
 			overlaps := false
 			for _, accepted := range matches {
 				if start < accepted.end && end > accepted.start {
@@ -966,6 +981,20 @@ func trailMatches(text string) []trailMatch {
 	}
 	sort.SliceStable(matches, func(i, j int) bool { return matches[i].start < matches[j].start })
 	return matches
+}
+
+// wordBefore returns the token ending just before at, across spaces, without
+// trailing punctuation: "company-knowledge trail 11" gives "company-knowledge".
+func wordBefore(text string, at int) string {
+	end := at
+	for end > 0 && text[end-1] == ' ' {
+		end--
+	}
+	start := end
+	for start > 0 && isTrailTokenByte(text[start-1]) {
+		start--
+	}
+	return strings.TrimRight(text[start:end], ".-")
 }
 
 func trailBoundaryBefore(text string, at int) bool {
@@ -1015,13 +1044,7 @@ func resolveTrailMatch(match trailMatch, event trailTextEvent, ctx trailContext)
 		}
 	case "bare":
 		numberText = match.parts[0]
-		var ok bool
-		owner, repo, ok = splitRepo(ctx.CurrentRepo)
-		if ok {
-			e.Resolution = "current repo"
-		} else {
-			e.Resolution = "bare trail without current repo"
-		}
+		owner, repo, e.Resolution = resolveBareTrailRepo(match.prefix, ctx)
 	}
 	number, err := strconv.Atoi(numberText)
 	if err != nil || number <= 0 {
@@ -1037,6 +1060,35 @@ func resolveTrailMatch(match trailMatch, event trailTextEvent, ctx trailContext)
 	e.URL = "https://entire.io/gh/" + e.Owner + "/" + e.Repo + "/trails/" + strconv.Itoa(e.Number)
 	e.Resolved = true
 	return e
+}
+
+// resolveBareTrailRepo picks the repo for a bare "trail N". The word before it
+// can name the repo ("company-knowledge trail 11"); binding that to the
+// current repo filed a mention of another repo's trail against this one.
+func resolveBareTrailRepo(prefix string, ctx trailContext) (owner, repo, resolution string) {
+	currentOwner, currentRepo, currentOK := splitRepo(ctx.CurrentRepo)
+	if prefix != "" && !(currentOK && strings.EqualFold(prefix, currentRepo)) {
+		var candidates [][2]string
+		for _, known := range ctx.KnownRepos {
+			o, r, valid := splitRepo(known)
+			if valid && strings.EqualFold(prefix, r) {
+				candidates = append(candidates, [2]string{o, r})
+			}
+		}
+		switch {
+		case len(candidates) == 1:
+			return candidates[0][0], candidates[0][1], "named known repo"
+		case len(candidates) > 1:
+			return "", "", "ambiguous named repo"
+		case strings.ContainsAny(prefix, "-_."):
+			// Shaped like a repo name, not a word of prose.
+			return "", "", "names an unknown repo"
+		}
+	}
+	if !currentOK {
+		return "", "", "bare trail without current repo"
+	}
+	return currentOwner, currentRepo, "current repo"
 }
 
 func splitRepo(value string) (string, string, bool) {
