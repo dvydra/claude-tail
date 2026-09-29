@@ -7,12 +7,98 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestSendAmpWarningExactCommand(t *testing.T) {
+	target := wtfSession{Agent: AgentAmp, ID: "T-123", Active: true}
+	warning := "stop now; don't retry\nsecond line"
+	var name string
+	var args []string
+	got := sendAmpWarning(context.Background(), target, warning, func(_ context.Context, command string, argv ...string) ([]byte, error) {
+		name, args = command, append([]string(nil), argv...)
+		return []byte("secret command output"), nil
+	})
+	if got.State != "sent" || got.Error != "" {
+		t.Fatalf("result = %#v, want sent", got)
+	}
+	if name != "amp" || !reflect.DeepEqual(args, []string{"threads", "continue", "T-123", "--execute", warning}) {
+		t.Fatalf("command = %q %#v", name, args)
+	}
+}
+
+func TestSendAmpWarningRejectsInvalidTargetsWithoutExec(t *testing.T) {
+	for _, target := range []wtfSession{
+		{Agent: AgentAmp, ID: "T-123"},
+		{Agent: AgentClaude, ID: "T-123", Active: true},
+		{Agent: AgentAmp, Active: true},
+		{Agent: AgentAmp, ID: "not-a-thread", Active: true},
+	} {
+		called := false
+		got := sendAmpWarning(context.Background(), target, "warning", func(context.Context, string, ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		})
+		if called || got.State != "failed" || got.Error == "" {
+			t.Fatalf("target %#v: called = %v, result = %#v", target, called, got)
+		}
+	}
+}
+
+func TestSendAmpWarningFailureMappings(t *testing.T) {
+	target := wtfSession{Agent: AgentAmp, ID: "T-123", Active: true}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"lookup", &exec.Error{Name: "amp", Err: exec.ErrNotFound}, "failed"},
+		{"command failure", errors.New("exit status 1\nwarning body must not leak"), "failed"},
+		{"timeout after invocation", context.DeadlineExceeded, "unknown"},
+		{"cancel after invocation", context.Canceled, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sendAmpWarning(context.Background(), target, "warning body must not leak", func(context.Context, string, ...string) ([]byte, error) {
+				return []byte("private output"), tc.err
+			})
+			if got.State != tc.want || strings.Contains(got.Error, "warning body") || strings.Contains(got.Error, "private output") || strings.Contains(got.Error, "\n") {
+				t.Fatalf("result = %#v, want safe %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMacNotificationExactCommand(t *testing.T) {
+	text := "quote \" slash \\ and\nnewline"
+	var name string
+	var args []string
+	got := sendMacNotification(context.Background(), "owner/repo#42", text, func(_ context.Context, command string, argv ...string) ([]byte, error) {
+		name, args = command, append([]string(nil), argv...)
+		return nil, nil
+	})
+	if got.State != "sent" || got.Error != "" {
+		t.Fatalf("result = %#v, want sent", got)
+	}
+	want := []string{"-e", "on run argv", "-e", `display notification (item 1 of argv) with title "entire wtf" subtitle (item 2 of argv)`, "-e", "end run", "--", text, "owner/repo#42"}
+	if name != "osascript" || !reflect.DeepEqual(args, want) {
+		t.Fatalf("command = %q %#v, want osascript %#v", name, args, want)
+	}
+}
+
+func TestMacNotificationFailureIsSafe(t *testing.T) {
+	got := sendMacNotification(context.Background(), "owner/repo#42", "private warning", func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("private output"), errors.New("private warning: osascript failed\nmore details")
+	})
+	if got.State != "failed" || got.Error != "[warning omitted]: osascript failed" {
+		t.Fatalf("result = %#v, want one safe error line", got)
+	}
+}
 
 func TestClaudeWarningFrame(t *testing.T) {
 	got := claudeWarningFrame("target-session-id", "fixed-uuid", "", "warning")

@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -245,6 +247,84 @@ type wtfDeliveryResult struct {
 	Channel   string
 	State     string
 	Error     string
+}
+
+type wtfExec func(ctx context.Context, name string, args ...string) ([]byte, error)
+
+const (
+	wtfAmpTimeout          = 15 * time.Second
+	wtfNotificationTimeout = 5 * time.Second
+)
+
+func sendAmpWarning(ctx context.Context, target wtfSession, text string, run wtfExec) wtfDeliveryResult {
+	if target.Agent != AgentAmp || !target.Active {
+		return wtfFailedDelivery(errors.New("target is not an active Amp session"), text)
+	}
+	if !strings.HasPrefix(target.ID, "T-") || len(target.ID) == 2 {
+		return wtfFailedDelivery(errors.New("target Amp thread id is invalid"), text)
+	}
+	if err := ctx.Err(); err != nil {
+		return wtfFailedDelivery(err, text)
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, wtfAmpTimeout)
+	defer cancel()
+	_, err := run(commandCtx, "amp", "threads", "continue", target.ID, "--execute", text)
+	if err == nil {
+		return wtfDeliveryResult{State: "sent"}
+	}
+	var lookupError *exec.Error
+	var startError *os.PathError
+	if errors.As(err, &lookupError) || errors.As(err, &startError) {
+		return wtfFailedDelivery(err, text)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || commandCtx.Err() != nil {
+		return wtfDeliveryResult{State: "unknown", Error: wtfSafeError(err, text)}
+	}
+	return wtfFailedDelivery(err, text)
+}
+
+func notificationArgs(trailKey, text string) []string {
+	return []string{
+		"-e", "on run argv",
+		"-e", `display notification (item 1 of argv) with title "entire wtf" subtitle (item 2 of argv)`,
+		"-e", "end run",
+		"--", text, trailKey,
+	}
+}
+
+func sendMacNotification(ctx context.Context, trailKey, text string, run wtfExec) wtfDeliveryResult {
+	commandCtx, cancel := context.WithTimeout(ctx, wtfNotificationTimeout)
+	defer cancel()
+	_, err := run(commandCtx, "osascript", notificationArgs(trailKey, text)...)
+	if err != nil {
+		return wtfFailedDelivery(err, text)
+	}
+	return wtfDeliveryResult{State: "sent"}
+}
+
+func wtfFailedDelivery(err error, sensitive ...string) wtfDeliveryResult {
+	return wtfDeliveryResult{State: "failed", Error: wtfSafeError(err, sensitive...)}
+}
+
+func wtfSafeError(err error, sensitive ...string) string {
+	if err == nil {
+		return ""
+	}
+	line := strings.TrimSpace(strings.SplitN(strings.ReplaceAll(err.Error(), "\r", ""), "\n", 2)[0])
+	for _, value := range sensitive {
+		if value != "" {
+			line = strings.ReplaceAll(line, value, "[warning omitted]")
+		}
+	}
+	if line == "" {
+		line = "command failed"
+	}
+	const limit = 240
+	runes := []rune(line)
+	if len(runes) > limit {
+		line = string(runes[:limit])
+	}
+	return line
 }
 
 func warningText(state wtfState, finding wtfFinding) string {
