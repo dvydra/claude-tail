@@ -236,17 +236,42 @@ func waitClaudeReceipt(ctx context.Context, listener net.Listener, messageID str
 }
 
 type wtfDelivery struct {
-	FindingID string
-	Channel   string
-	Target    string
-	Message   string
+	FindingID  string
+	Channel    string
+	Target     string
+	Message    string
+	Occurrence int
+	Attempt    int
 }
 
 type wtfDeliveryResult struct {
-	FindingID string
-	Channel   string
-	State     string
-	Error     string
+	FindingID  string
+	Channel    string
+	Occurrence int
+	Attempt    int
+	State      string
+	Error      string
+}
+
+type wtfNotifier func(context.Context, wtfState, wtfDelivery) wtfDeliveryResult
+
+func defaultWTFNotifier(ctx context.Context, state wtfState, delivery wtfDelivery) wtfDeliveryResult {
+	if delivery.Channel == "mac" {
+		finding := state.Findings[delivery.FindingID]
+		return sendMacNotification(ctx, finding.TrailKey, delivery.Message, defaultWTFExec)
+	}
+	target, ok := state.Sessions[delivery.Target]
+	if !ok {
+		return wtfFailedDelivery(errors.New("target session is missing"), delivery.Message)
+	}
+	switch target.Agent {
+	case AgentClaude:
+		return sendClaudeWarning(ctx, target, delivery.Message)
+	case AgentAmp:
+		return sendAmpWarning(ctx, target, delivery.Message, defaultWTFExec)
+	default:
+		return wtfFailedDelivery(errors.New("target agent cannot receive warnings"), delivery.Message)
+	}
 }
 
 type wtfExec func(ctx context.Context, name string, args ...string) ([]byte, error)
@@ -489,14 +514,24 @@ func markWTFDeliveryStarted(state *wtfState, delivery wtfDelivery, now int64) {
 	state.Findings[delivery.FindingID] = finding
 }
 
+func identifyWTFDelivery(state wtfState, delivery wtfDelivery) wtfDelivery {
+	finding, ok := state.Findings[delivery.FindingID]
+	if !ok {
+		return delivery
+	}
+	delivery.Occurrence = finding.Occurrence
+	delivery.Attempt = finding.Delivery[delivery.Channel].Attempts
+	return delivery
+}
+
 func applyWTFDeliveryResult(state *wtfState, result wtfDeliveryResult, now int64) {
 	_ = now
 	finding, ok := state.Findings[result.FindingID]
-	if !ok || finding.Delivery == nil {
+	if !ok || finding.Delivery == nil || finding.Occurrence != result.Occurrence {
 		return
 	}
 	status, ok := finding.Delivery[result.Channel]
-	if !ok || status.State != "sending" {
+	if !ok || status.State != "sending" || status.Attempts != result.Attempt {
 		return
 	}
 	status.State = result.State

@@ -745,14 +745,34 @@ func TestWTFDeliveryStateTransitions(t *testing.T) {
 	state, finding := notificationState()
 	delivery := pendingWTFDeliveries(state, 100)[0]
 	markWTFDeliveryStarted(&state, delivery, 100)
+	delivery = identifyWTFDelivery(state, delivery)
 	status := state.Findings[finding.ID].Delivery["mac"]
 	if status.State != "sending" || status.Attempts != 1 || status.LastAttempt != 100 {
 		t.Fatalf("started status = %#v", status)
 	}
-	applyWTFDeliveryResult(&state, wtfDeliveryResult{FindingID: finding.ID, Channel: "mac", State: "failed", Error: "offline"}, 101)
+	applyWTFDeliveryResult(&state, wtfDeliveryResult{FindingID: finding.ID, Channel: "mac", Occurrence: delivery.Occurrence, Attempt: delivery.Attempt, State: "failed", Error: "offline"}, 101)
 	status = state.Findings[finding.ID].Delivery["mac"]
 	if status.State != "failed" || status.Attempts != 1 || status.LastAttempt != 100 || status.LastError != "offline" {
 		t.Fatalf("failed status = %#v", status)
+	}
+}
+
+func TestWTFDeliveryResultCannotOverwriteRecurringOccurrence(t *testing.T) {
+	state, finding := notificationState()
+	old := pendingWTFDeliveries(state, 100)[0]
+	markWTFDeliveryStarted(&state, old, 100)
+	old = identifyWTFDelivery(state, old)
+
+	cleared := mergeWTFFindings(state.Findings, nil, 110)
+	state.Findings = mergeWTFFindings(cleared, map[string]wtfFinding{finding.ID: finding}, 120)
+	current := pendingWTFDeliveries(state, 120)[0]
+	markWTFDeliveryStarted(&state, current, 120)
+	current = identifyWTFDelivery(state, current)
+	applyWTFDeliveryResult(&state, wtfDeliveryResult{FindingID: old.FindingID, Channel: old.Channel, Occurrence: old.Occurrence, Attempt: old.Attempt, State: "sent"}, 121)
+
+	status := state.Findings[finding.ID].Delivery[current.Channel]
+	if status.State != "sending" || status.Attempts != current.Attempt {
+		t.Fatalf("stale result changed recurring delivery: %#v", status)
 	}
 }
 

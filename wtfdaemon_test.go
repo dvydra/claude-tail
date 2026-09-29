@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -641,5 +642,169 @@ func waitForScans(t *testing.T, scans *atomic.Int32, want int32) {
 	}
 	if scans.Load() != want {
 		t.Fatalf("scans = %d, want %d", scans.Load(), want)
+	}
+}
+
+func TestWTFDaemonDelivery(t *testing.T) {
+	home := t.TempDir()
+	withWTFProcessFakes(t, 708, func(pid int) bool { return pid == 708 }, func(int) string { return "entire-tail" })
+	ticks := make(chan time.Time, 4)
+	requests := make(chan time.Time)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	base, finding := notificationState()
+	var scanCount atomic.Int32
+	var saveCount atomic.Int32
+	var notifyCount atomic.Int32
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	notifyDone := make(chan wtfDelivery, 4)
+	deps := wtfDaemonDeps{
+		Load:         func(string, int64) (wtfState, error) { return newWTFState(1), nil },
+		Now:          func() time.Time { return time.Unix(100+int64(scanCount.Load()), 0) },
+		After:        func(time.Duration) <-chan time.Time { return ticks },
+		RequestAfter: func(time.Duration) <-chan time.Time { return requests },
+		Scan: func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) {
+			n := scanCount.Add(1)
+			switch n {
+			case 1, 2:
+				return base, nil
+			case 3:
+				base.Findings = mergeWTFFindings(base.Findings, nil, 102)
+				return base, nil
+			default:
+				base.Findings = mergeWTFFindings(base.Findings, map[string]wtfFinding{finding.ID: finding}, 103)
+				return base, nil
+			}
+		},
+		Save: func(_ string, state wtfState) error {
+			saveCount.Add(1)
+			return nil
+		},
+		Notify: func(_ context.Context, state wtfState, delivery wtfDelivery) wtfDeliveryResult {
+			if state.Findings[delivery.FindingID].Delivery[delivery.Channel].State != "sending" || saveCount.Load() < 2 {
+				t.Errorf("notifier ran before sending state was saved: saves=%d state=%#v", saveCount.Load(), state.Findings[delivery.FindingID].Delivery[delivery.Channel])
+			}
+			n := notifyCount.Add(1)
+			if n == 1 {
+				close(firstStarted)
+				<-releaseFirst
+			}
+			notifyDone <- delivery
+			return wtfDeliveryResult{State: "sent"}
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- runWTFDaemon(ctx, home, deps) }()
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first delivery did not start")
+	}
+
+	// A blocked notifier must not delay the next 2-second scan.
+	ticks <- time.Now()
+	waitForScans(t, &scanCount, 2)
+	close(releaseFirst)
+	waitForDeliveries(t, &notifyCount, 2)
+	ticks <- time.Now()
+	waitForScans(t, &scanCount, 3)
+	ticks <- time.Now()
+	waitForScans(t, &scanCount, 4)
+	waitForDeliveries(t, &notifyCount, 4)
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not stop")
+	}
+	seen := map[int]map[string]int{}
+	for range 4 {
+		delivery := <-notifyDone
+		if seen[delivery.Occurrence] == nil {
+			seen[delivery.Occurrence] = map[string]int{}
+		}
+		seen[delivery.Occurrence][delivery.Channel]++
+	}
+	for _, occurrence := range []int{1, 2} {
+		if seen[occurrence]["mac"] != 1 || seen[occurrence]["session:"+finding.Challenger] != 1 {
+			t.Fatalf("occurrence %d deliveries = %#v", occurrence, seen[occurrence])
+		}
+	}
+}
+
+func waitForDeliveries(t *testing.T, deliveries *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for deliveries.Load() < want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if deliveries.Load() != want {
+		t.Fatalf("deliveries = %d, want %d", deliveries.Load(), want)
+	}
+}
+
+func TestWTFDaemonDeliveryBoundsWorkersAndLeavesQueueFullPending(t *testing.T) {
+	home := t.TempDir()
+	withWTFProcessFakes(t, 709, func(pid int) bool { return pid == 709 }, func(int) string { return "entire-tail" })
+	state, template := notificationState()
+	state.Findings = make(map[string]wtfFinding)
+	for i := range 6 {
+		finding := template
+		finding.ID = fmt.Sprintf("finding-%d", i)
+		state.Findings[finding.ID] = finding
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var active, maximum, started atomic.Int32
+	var saved wtfState
+	deps := wtfDaemonDeps{
+		Load:         func(string, int64) (wtfState, error) { return newWTFState(1), nil },
+		Save:         func(_ string, got wtfState) error { saved = got; return nil },
+		Now:          func() time.Time { return time.Unix(100, 0) },
+		After:        func(time.Duration) <-chan time.Time { return make(chan time.Time) },
+		RequestAfter: func(time.Duration) <-chan time.Time { return make(chan time.Time) },
+		Scan:         func(context.Context, string, wtfState, wtfScanDeps) (wtfState, error) { return state, nil },
+		Notify: func(ctx context.Context, _ wtfState, _ wtfDelivery) wtfDeliveryResult {
+			current := active.Add(1)
+			for current > maximum.Load() && !maximum.CompareAndSwap(maximum.Load(), current) {
+			}
+			started.Add(1)
+			<-ctx.Done()
+			active.Add(-1)
+			return wtfDeliveryResult{State: "unknown"}
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- runWTFDaemon(ctx, home, deps) }()
+	waitForDeliveries(t, &started, 4)
+	if maximum.Load() > 4 {
+		t.Fatalf("maximum concurrent notifiers = %d", maximum.Load())
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not cancel delivery workers")
+	}
+	sending, pending := 0, 0
+	for _, finding := range saved.Findings {
+		for _, channel := range []string{"mac", "session:" + finding.Challenger} {
+			if finding.Delivery[channel].State == "sending" {
+				sending++
+			} else {
+				pending++
+			}
+		}
+	}
+	if sending != 4 || pending != 8 {
+		t.Fatalf("delivery states after full queue: sending=%d pending=%d", sending, pending)
 	}
 }

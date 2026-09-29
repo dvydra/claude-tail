@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -37,6 +38,7 @@ type wtfDaemonDeps struct {
 	Now          func() time.Time
 	After        func(time.Duration) <-chan time.Time
 	RequestAfter func(time.Duration) <-chan time.Time
+	Notify       wtfNotifier
 }
 
 var (
@@ -357,6 +359,46 @@ func runWTFDaemon(ctx context.Context, home string, deps wtfDaemonDeps) error {
 	if deps.RequestAfter == nil {
 		deps.RequestAfter = time.After
 	}
+	if deps.Notify == nil {
+		deps.Notify = defaultWTFNotifier
+	}
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
+	type deliveryJob struct {
+		state    wtfState
+		delivery wtfDelivery
+	}
+	jobs := make(chan deliveryJob, 4)
+	results := make(chan wtfDeliveryResult, 4)
+	slots := make(chan struct{}, 4)
+	var workers sync.WaitGroup
+	for range 4 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-workerCtx.Done():
+					return
+				case job := <-jobs:
+					result := deps.Notify(workerCtx, job.state, job.delivery)
+					result.FindingID = job.delivery.FindingID
+					result.Channel = job.delivery.Channel
+					result.Occurrence = job.delivery.Occurrence
+					result.Attempt = job.delivery.Attempt
+					select {
+					case results <- result:
+					case <-workerCtx.Done():
+						return
+					}
+				}
+			}
+		}()
+	}
+	defer func() {
+		cancelWorkers()
+		workers.Wait()
+	}()
 
 	started := deps.Now()
 	health := wtfHealth{PID: wtfCurrentPID(), Version: version, StartedAt: started.Unix()}
@@ -368,6 +410,28 @@ func runWTFDaemon(ctx context.Context, home string, deps wtfDaemonDeps) error {
 		return err
 	}
 
+	queuePending := func() error {
+		for _, delivery := range pendingWTFDeliveries(state, deps.Now().Unix()) {
+			select {
+			case slots <- struct{}{}:
+			default:
+				continue
+			}
+			markWTFDeliveryStarted(&state, delivery, deps.Now().Unix())
+			delivery = identifyWTFDelivery(state, delivery)
+			if err := deps.Save(home, state); err != nil {
+				<-slots
+				return err
+			}
+			snapshot, err := cloneWTFState(state)
+			if err != nil {
+				<-slots
+				return err
+			}
+			jobs <- deliveryJob{state: snapshot, delivery: delivery}
+		}
+		return nil
+	}
 	scan := func() error {
 		now := deps.Now().Unix()
 		health.LastAttemptedScan = now
@@ -386,6 +450,11 @@ func runWTFDaemon(ctx context.Context, home string, deps wtfDaemonDeps) error {
 		if err := writeWTFHealth(home, health); err != nil {
 			return err
 		}
+		if saveErr == nil {
+			if err := queuePending(); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	if err := scan(); err != nil {
@@ -397,6 +466,12 @@ func runWTFDaemon(ctx context.Context, home string, deps wtfDaemonDeps) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case result := <-results:
+			<-slots
+			applyWTFDeliveryResult(&state, result, deps.Now().Unix())
+			if err := deps.Save(home, state); err != nil {
+				return err
+			}
 		case <-periodic:
 			if err := scan(); err != nil {
 				return err
@@ -413,4 +488,16 @@ func runWTFDaemon(ctx context.Context, home string, deps wtfDaemonDeps) error {
 			requestPoll = deps.RequestAfter(wtfRequestPollInterval)
 		}
 	}
+}
+
+func cloneWTFState(state wtfState) (wtfState, error) {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return wtfState{}, err
+	}
+	var clone wtfState
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return wtfState{}, err
+	}
+	return clone, nil
 }
