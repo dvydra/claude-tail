@@ -1,11 +1,175 @@
 package main
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
+
+// These peer-messaging fields and receipt shapes were reverse-engineered and
+// tested against Claude Code 2.1.278. Protocol documentation:
+// https://code.claude.com/docs/en/cross-session-messaging
+type claudePeerFrame struct {
+	MessageVersion int               `json:"msgV"`
+	MessageID      string            `json:"msg_id"`
+	Type           string            `json:"type"`
+	Message        claudePeerMessage `json:"message"`
+	Priority       string            `json:"priority"`
+	SessionID      string            `json:"session_id"`
+	From           string            `json:"from,omitempty"`
+}
+
+type claudePeerMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type claudePeerReceipt struct {
+	Type          string `json:"type"`
+	Action        string `json:"action"`
+	Status        string `json:"status"`
+	OriginalMsgID string `json:"orig_msg_id"`
+	Reason        string `json:"reason"`
+}
+
+func claudeWarningFrame(sessionID, messageID, from, text string) []byte {
+	frame := claudePeerFrame{
+		MessageVersion: 1,
+		MessageID:      messageID,
+		Type:           "user",
+		Message:        claudePeerMessage{Role: "user", Content: text},
+		Priority:       "next",
+		SessionID:      sessionID,
+		From:           from,
+	}
+	b, _ := json.Marshal(frame)
+	return append(b, '\n')
+}
+
+func sendClaudeWarning(ctx context.Context, target wtfSession, text string) wtfDeliveryResult {
+	failed := func(err error) wtfDeliveryResult {
+		return wtfDeliveryResult{State: "failed", Error: err.Error()}
+	}
+	if target.Agent != AgentClaude || !target.Active {
+		return failed(fmt.Errorf("target is not an active Claude session"))
+	}
+	if target.ID == "" {
+		return failed(fmt.Errorf("target session id is empty"))
+	}
+	if target.SocketPath == "" {
+		return failed(fmt.Errorf("target socket path is empty"))
+	}
+	if err := validateClaudeSocket(target.SocketPath); err != nil {
+		return failed(err)
+	}
+
+	receiptPath := filepath.Join(filepath.Dir(target.SocketPath), fmt.Sprintf(".r-%d-%s.sock", os.Getpid(), newSessionID()[:8]))
+	receipts, err := net.Listen("unix", receiptPath)
+	if err != nil {
+		return failed(fmt.Errorf("create receipt socket: %w", err))
+	}
+	defer func() {
+		receipts.Close()
+		os.Remove(receiptPath)
+	}()
+	if err := os.Chmod(receiptPath, 0o600); err != nil {
+		return failed(fmt.Errorf("secure receipt socket: %w", err))
+	}
+
+	messageID := newSessionID()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", target.SocketPath)
+	if err != nil {
+		return failed(fmt.Errorf("dial Claude socket: %w", err))
+	}
+	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetWriteDeadline(deadline)
+	}
+	if _, err := conn.Write(claudeWarningFrame(target.ID, messageID, "uds:"+receiptPath, text)); err != nil {
+		return failed(fmt.Errorf("write Claude warning: %w", err))
+	}
+	if unix, ok := conn.(*net.UnixConn); ok {
+		if err := unix.CloseWrite(); err != nil {
+			return failed(fmt.Errorf("close Claude warning write: %w", err))
+		}
+	}
+
+	return waitClaudeReceipt(ctx, receipts, messageID)
+}
+
+func validateClaudeSocket(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("stat Claude socket: %w", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("Claude socket path is not a socket")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Getuid() {
+		return fmt.Errorf("Claude socket is not owned by current user")
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("stat Claude socket parent: %w", err)
+	}
+	if parent.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("Claude socket parent is group or world writable")
+	}
+	return nil
+}
+
+func waitClaudeReceipt(ctx context.Context, listener net.Listener, messageID string) wtfDeliveryResult {
+	deadline := time.Now().Add(2 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	for {
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			return wtfDeliveryResult{State: "sent"}
+		}
+		acceptDeadline := time.Now().Add(50 * time.Millisecond)
+		if deadline.Before(acceptDeadline) {
+			acceptDeadline = deadline
+		}
+		if unix, ok := listener.(*net.UnixListener); ok {
+			unix.SetDeadline(acceptDeadline)
+		}
+		conn, err := listener.Accept()
+		if err != nil {
+			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+				continue
+			}
+			return wtfDeliveryResult{State: "sent"}
+		}
+		conn.SetReadDeadline(deadline)
+		line, readErr := bufio.NewReader(conn).ReadBytes('\n')
+		conn.Close()
+		if readErr != nil {
+			continue
+		}
+		var receipt claudePeerReceipt
+		if json.Unmarshal(line, &receipt) != nil || receipt.Type != "control" || receipt.Action != "peer_message_status" || receipt.OriginalMsgID != messageID {
+			continue
+		}
+		switch receipt.Status {
+		case "held":
+			return wtfDeliveryResult{State: "held"}
+		case "delivered":
+			return wtfDeliveryResult{State: "sent"}
+		case "denied":
+			return wtfDeliveryResult{State: "refused"}
+		}
+	}
+}
 
 type wtfDelivery struct {
 	FindingID string

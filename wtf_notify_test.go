@@ -1,10 +1,163 @@
 package main
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestClaudeWarningFrame(t *testing.T) {
+	got := claudeWarningFrame("target-session-id", "fixed-uuid", "", "warning")
+	if len(got) == 0 || got[len(got)-1] != '\n' || strings.Count(string(got), "\n") != 1 {
+		t.Fatalf("frame is not one newline-terminated object: %q", got)
+	}
+	var frame claudePeerFrame
+	if err := json.Unmarshal(got, &frame); err != nil {
+		t.Fatal(err)
+	}
+	want := claudePeerFrame{MessageVersion: 1, MessageID: "fixed-uuid", Type: "user", Message: claudePeerMessage{Role: "user", Content: "warning"}, Priority: "next", SessionID: "target-session-id"}
+	if frame != want {
+		t.Fatalf("frame = %#v, want %#v", frame, want)
+	}
+}
+
+func TestSendClaudeWarningReceiptMappings(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   string
+	}{{"held", "held"}, {"delivered", "sent"}, {"denied", "refused"}} {
+		t.Run(tc.status, func(t *testing.T) {
+			target, stop := fakeClaudeSocket(t, func(frame claudePeerFrame) {
+				sendClaudeReceipt(t, frame.From, `{"type":"control","action":"peer_message_status","status":"`+tc.status+`","orig_msg_id":"wrong-id"}`)
+				sendClaudeReceipt(t, frame.From, `{"type":"control","action":"peer_message_status","status":"`+tc.status+`","orig_msg_id":"`+frame.MessageID+`","reason":"crossSessionInbound hold"}`)
+			})
+			defer stop()
+			got := sendClaudeWarning(context.Background(), target, "warning")
+			if got.State != tc.want || got.Error != "" {
+				t.Fatalf("result = %#v, want state %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSendClaudeWarningWriteSuccessWithoutReceiptIsSent(t *testing.T) {
+	target, stop := fakeClaudeSocket(t, func(claudePeerFrame) {})
+	defer stop()
+	if got := sendClaudeWarning(context.Background(), target, "warning"); got.State != "sent" || got.Error != "" {
+		t.Fatalf("result = %#v, want sent", got)
+	}
+}
+
+func TestSendClaudeWarningDeadlineAfterWriteIsSent(t *testing.T) {
+	target, stop := fakeClaudeSocket(t, func(claudePeerFrame) {})
+	defer stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if got := sendClaudeWarning(ctx, target, "warning"); got.State != "sent" || got.Error != "" {
+		t.Fatalf("result = %#v, want sent", got)
+	}
+}
+
+func TestSendClaudeWarningRejectsInvalidTargets(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.sock")
+	for _, tc := range []struct {
+		name   string
+		target wtfSession
+	}{
+		{"inactive", wtfSession{Agent: AgentClaude, ID: "session", SocketPath: missing}},
+		{"wrong agent", wtfSession{Agent: AgentAmp, ID: "session", SocketPath: missing, Active: true}},
+		{"empty session", wtfSession{Agent: AgentClaude, SocketPath: missing, Active: true}},
+		{"empty socket", wtfSession{Agent: AgentClaude, ID: "session", Active: true}},
+		{"missing socket", wtfSession{Agent: AgentClaude, ID: "session", SocketPath: missing, Active: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sendClaudeWarning(context.Background(), tc.target, "warning"); got.State != "failed" || got.Error == "" {
+				t.Fatalf("result = %#v, want failed with error", got)
+			}
+		})
+	}
+}
+
+func TestSendClaudeWarningRejectsWritableSocketParent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	target, stop := fakeClaudeSocketAt(t, shortTempSocketPath(t, dir), func(claudePeerFrame) {})
+	defer stop()
+	if got := sendClaudeWarning(context.Background(), target, "warning"); got.State != "failed" {
+		t.Fatalf("result = %#v, want failed", got)
+	}
+}
+
+func fakeClaudeSocket(t *testing.T, reply func(claudePeerFrame)) (wtfSession, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return fakeClaudeSocketAt(t, shortTempSocketPath(t, dir), reply)
+}
+
+func shortTempSocketPath(t *testing.T, dir string) string {
+	t.Helper()
+	alias := filepath.Join("/tmp", "et-"+newSessionID()[:8])
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(alias) })
+	return filepath.Join(alias, "c.sock")
+}
+
+func fakeClaudeSocketAt(t *testing.T, path string, reply func(claudePeerFrame)) (wtfSession, func()) {
+	t.Helper()
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, err := bufio.NewReader(conn).ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		var frame claudePeerFrame
+		if json.Unmarshal(line, &frame) == nil {
+			reply(frame)
+		}
+	}()
+	return wtfSession{Agent: AgentClaude, ID: "target-session-id", SocketPath: path, Active: true}, func() {
+		listener.Close()
+		<-done
+	}
+}
+
+func sendClaudeReceipt(t *testing.T, from, receipt string) {
+	t.Helper()
+	path := strings.TrimPrefix(from, "uds:")
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Errorf("dial receipt socket: %v", err)
+		return
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte(receipt + "\n")); err != nil {
+		t.Errorf("write receipt: %v", err)
+	}
+}
 
 func TestWarningTextDuplicateClaim(t *testing.T) {
 	at := time.Date(2026, 9, 29, 10, 14, 0, 0, time.Local).Unix()
