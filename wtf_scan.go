@@ -131,12 +131,12 @@ func parseGitWorktreePorcelain(data []byte) []gitWorktreeEntry {
 	return entries
 }
 
-func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prior []wtfWorktree, run wtfCommandRunner) []wtfWorktree {
+func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prior []wtfWorktree, run wtfCommandRunner) ([]wtfWorktree, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	data, err := run(ctx, cwd, "git", "-C", cwd, "worktree", "list", "--porcelain")
 	if err != nil {
-		return nil
+		return append([]wtfWorktree(nil), prior...), err
 	}
 	entries := parseGitWorktreePorcelain(data)
 	priorByPath := make(map[string]wtfWorktree, len(prior))
@@ -178,7 +178,7 @@ func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prio
 		worktrees = append(worktrees, worktree)
 		delete(priorByPath, old.Path)
 	}
-	return worktrees
+	return worktrees, nil
 }
 
 func resolveRemoteDefault(ctx context.Context, cwd string, run wtfCommandRunner) string {
@@ -562,32 +562,30 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 		evidence[key] = extractTrailEvidence(events, trailContext{CurrentRepo: session.Repo, KnownRepos: knownRepos})
 	}
 
-	repoCwds := make(map[string]string)
+	repoCandidates := make(map[string][]string)
 	for _, session := range sessions {
 		if session.Repo != "" && session.Cwd != "" {
-			repoCwds[session.Repo] = session.Cwd
+			repoCandidates[session.Repo] = append(repoCandidates[session.Repo], session.Cwd)
 		}
 	}
 	for _, worktree := range prior.Worktrees {
 		if worktree.Repo != "" && worktree.Path != "" {
-			if _, exists := repoCwds[worktree.Repo]; !exists {
-				repoCwds[worktree.Repo] = worktree.Path
-			}
+			repoCandidates[worktree.Repo] = append(repoCandidates[worktree.Repo], worktree.Path)
 		}
 	}
 	worktrees := make(map[string]wtfWorktree)
 	var degraded []error
-	for _, repo := range sortedMapKeys(repoCwds) {
+	for _, repo := range sortedMapKeys(repoCandidates) {
 		var old []wtfWorktree
 		for _, worktree := range prior.Worktrees {
 			if worktree.Repo == repo {
 				old = append(old, worktree)
 			}
 		}
-		inspected := inspectRepoWorktrees(ctx, repo, repoCwds[repo], nowUnix, old, deps.Run)
-		if len(inspected) == 0 && len(old) > 0 {
-			degraded = append(degraded, fmt.Errorf("git worktrees for %s: unavailable", repo))
-			inspected = old
+		cwd := deterministicRepoSeed(repoCandidates[repo])
+		inspected, err := inspectRepoWorktrees(ctx, repo, cwd, nowUnix, old, deps.Run)
+		if err != nil {
+			degraded = append(degraded, fmt.Errorf("git worktrees for %s: %w", repo, err))
 		}
 		for _, worktree := range inspected {
 			worktrees[worktree.Path] = worktree
@@ -636,6 +634,19 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 	}
 	state.UpdatedAt = nowUnix
 	return state, errors.Join(degraded...)
+}
+
+func deterministicRepoSeed(candidates []string) string {
+	paths := sortedUnique(candidates)
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return path
+		}
+	}
+	if len(paths) > 0 {
+		return paths[0]
+	}
+	return ""
 }
 
 func wtfSessionChanged(old, current wtfSession) bool {

@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -140,7 +142,10 @@ func TestInspectRepoWorktreesPreservesPriorRecordsMissingFromPorcelain(t *testin
 		"diff --no-ext-diff --unified=0 HEAD --":             "",
 	})
 
-	got := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, run)
+	got, err := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, run)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 {
 		t.Fatalf("worktrees=%d, want 2: %#v", len(got), got)
 	}
@@ -179,7 +184,10 @@ func TestInspectRepoWorktreesDistinguishesUnlistedAndMissingPriorPaths(t *testin
 		"diff --no-ext-diff --unified=0 HEAD --":             "",
 	})
 
-	got := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, run)
+	got, err := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, run)
+	if err != nil {
+		t.Fatal(err)
+	}
 	byPath := make(map[string]wtfWorktree, len(got))
 	for _, worktree := range got {
 		byPath[worktree.Path] = worktree
@@ -225,7 +233,10 @@ func TestInspectWorktreeRealRepositoryDistinguishesDirtyAndUnmerged(t *testing.T
 		cmd.Dir = dir
 		return cmd.Output()
 	}
-	got := inspectRepoWorktrees(context.Background(), "acme/repo", repo, 42, nil, run)
+	got, err := inspectRepoWorktrees(context.Background(), "acme/repo", repo, 42, nil, run)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var found *wtfWorktree
 	for i := range got {
 		if got[i].Branch == "feat/test" {
@@ -658,8 +669,15 @@ func TestScanWTFIntegration(t *testing.T) {
 	if trail.OwnerSession != "claude:old" || trail.FirstClaim == nil || trail.FirstClaim.SessionKey != "claude:old" || trail.CanonicalWorktree != oldWorktree {
 		t.Fatalf("persisted ownership changed: %#v", trail)
 	}
-	if findingOfKind(got.Findings, "existing-wip-elsewhere") == nil || findingOfKind(got.Findings, "outside-canonical") == nil {
-		t.Fatalf("findings: %#v", got.Findings)
+	var activeKinds []string
+	for _, finding := range got.Findings {
+		if finding.Active {
+			activeKinds = append(activeKinds, finding.Kind)
+		}
+	}
+	sort.Strings(activeKinds)
+	if want := []string{"existing-wip-elsewhere", "outside-canonical"}; !reflect.DeepEqual(activeKinds, want) {
+		t.Fatalf("active findings=%v, want %v; all findings: %#v", activeKinds, want, got.Findings)
 	}
 	if summaryCalls != 1 {
 		t.Fatalf("summary calls=%d, want 1", summaryCalls)
@@ -668,6 +686,72 @@ func TestScanWTFIntegration(t *testing.T) {
 		if strings.Contains(command, "trail list") {
 			t.Fatalf("global trail listing invoked: %s", command)
 		}
+	}
+}
+
+func TestScanWTFChoosesExistingPriorRepoSeedDeterministically(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	existing := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "missing")
+	orders := [][]string{{missing, existing}, {existing, missing}}
+	for i, order := range orders {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			prior := newWTFState(now.Unix())
+			for _, path := range order {
+				prior.Worktrees[path] = wtfWorktree{Repo: "acme/api", Path: path}
+			}
+			var dirs []string
+			deps := wtfScanDeps{
+				Inventory: wtfInventoryDeps{Today: func(string, int64, *time.Location) []handoverItem { return nil }, Live: func(string) []liveSession { return nil }},
+				Run: func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
+					if name == "git" && strings.Contains(strings.Join(args, " "), "worktree list --porcelain") {
+						dirs = append(dirs, dir)
+						return []byte("worktree " + existing + "\nHEAD abc\nbranch refs/heads/main\n"), nil
+					}
+					return nil, exec.ErrNotFound
+				},
+				Summarize: func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+					return wtfSummary{}, wtfSummaryCache{}, nil
+				},
+				Now: func() time.Time { return now },
+			}
+			if _, err := scanWTF(context.Background(), t.TempDir(), prior, deps); err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{existing}; !reflect.DeepEqual(dirs, want) {
+				t.Fatalf("worktree-list dirs=%v, want deterministic existing seed %v", dirs, want)
+			}
+		})
+	}
+}
+
+func TestScanWTFReportsNewRepoWorktreeListFailureAndKeepsSession(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	cwd := t.TempDir()
+	deps := wtfScanDeps{
+		Inventory: wtfInventoryDeps{
+			Today: func(string, int64, *time.Location) []handoverItem {
+				return []handoverItem{{Agent: AgentAmp, SessionID: "T-new", Repo: "acme/new", Cwd: cwd, LastActivity: now.Unix()}}
+			},
+			Live: func(string) []liveSession {
+				return []liveSession{{Agent: AgentAmp, SessionID: "T-new", Cwd: cwd, Status: "busy"}}
+			},
+		},
+		Run: func(context.Context, string, string, ...string) ([]byte, error) {
+			return nil, errors.New("git unavailable")
+		},
+		Summarize: func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+			return wtfSummary{}, wtfSummaryCache{}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+
+	got, err := scanWTF(context.Background(), t.TempDir(), newWTFState(now.Unix()), deps)
+	if err == nil || !strings.Contains(err.Error(), "git worktrees for acme/new") || !strings.Contains(err.Error(), "git unavailable") {
+		t.Fatalf("error=%v, want repo/source-named git worktree failure", err)
+	}
+	if session, ok := got.Sessions["amp:T-new"]; !ok || !session.Active || session.Cwd != cwd {
+		t.Fatalf("partial session state: %#v", got.Sessions)
 	}
 }
 
