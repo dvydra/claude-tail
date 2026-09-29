@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -64,6 +66,105 @@ func TestSendClaudeWarningDeadlineAfterWriteIsSent(t *testing.T) {
 	}
 }
 
+func TestWriteClaudeFrameFullWriteMakesCloseFailureSent(t *testing.T) {
+	conn := &fakeClaudeWriteConn{closeErr: errors.New("forced close failure")}
+	written, err := writeClaudeFrame(context.Background(), conn, []byte("frame\n"))
+	if !written || err == nil || !strings.Contains(err.Error(), "forced close failure") {
+		t.Fatalf("written = %v, err = %v", written, err)
+	}
+}
+
+func TestWriteClaudeFrameIncompleteWriteIsFailed(t *testing.T) {
+	conn := &fakeClaudeWriteConn{writeN: 3, writeErr: errors.New("forced write failure")}
+	written, err := writeClaudeFrame(context.Background(), conn, []byte("frame\n"))
+	if written || err == nil || conn.closeWrites != 0 {
+		t.Fatalf("written = %v, err = %v, close writes = %d", written, err, conn.closeWrites)
+	}
+}
+
+func TestWriteClaudeFrameFullWriteWithErrorIsSent(t *testing.T) {
+	conn := &fakeClaudeWriteConn{writeN: len("frame\n"), writeErr: errors.New("error reported with full write")}
+	written, err := writeClaudeFrame(context.Background(), conn, []byte("frame\n"))
+	if !written || err == nil || conn.closeWrites != 0 {
+		t.Fatalf("written = %v, err = %v, close writes = %d", written, err, conn.closeWrites)
+	}
+}
+
+func TestWriteClaudeFrameCancellationInterruptsBlockedWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	conn := newBlockingClaudeWriteConn()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		written, err := writeClaudeFrame(ctx, conn, []byte("frame\n"))
+		if written || err == nil {
+			t.Errorf("written = %v, err = %v", written, err)
+		}
+	}()
+	<-conn.started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("blocked write did not stop after cancellation")
+	}
+	if got := conn.deadlineCalls(); got < 2 {
+		t.Fatalf("write deadline calls = %d, want bounded deadline plus cancellation", got)
+	}
+}
+
+type fakeClaudeWriteConn struct {
+	writeN, closeWrites int
+	writeErr            error
+	closeErr            error
+}
+
+func (c *fakeClaudeWriteConn) Write(p []byte) (int, error) {
+	if c.writeN == 0 && c.writeErr == nil {
+		return len(p), nil
+	}
+	return c.writeN, c.writeErr
+}
+func (c *fakeClaudeWriteConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *fakeClaudeWriteConn) CloseWrite() error {
+	c.closeWrites++
+	return c.closeErr
+}
+
+type blockingClaudeWriteConn struct {
+	started chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	calls   int
+	woken   bool
+	wake    chan struct{}
+}
+
+func newBlockingClaudeWriteConn() *blockingClaudeWriteConn {
+	return &blockingClaudeWriteConn{started: make(chan struct{}), wake: make(chan struct{})}
+}
+func (c *blockingClaudeWriteConn) Write([]byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	<-c.wake
+	return 0, os.ErrDeadlineExceeded
+}
+func (c *blockingClaudeWriteConn) SetWriteDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if !c.woken && !deadline.After(time.Now()) {
+		c.woken = true
+		close(c.wake)
+	}
+	return nil
+}
+func (c *blockingClaudeWriteConn) CloseWrite() error { return nil }
+func (c *blockingClaudeWriteConn) deadlineCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
 func TestSendClaudeWarningRejectsInvalidTargets(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.sock")
@@ -94,6 +195,51 @@ func TestSendClaudeWarningRejectsWritableSocketParent(t *testing.T) {
 	defer stop()
 	if got := sendClaudeWarning(context.Background(), target, "warning"); got.State != "failed" {
 		t.Fatalf("result = %#v, want failed", got)
+	}
+}
+
+func TestSendClaudeWarningRejectsRegularFileSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-socket")
+	if err := os.WriteFile(path, []byte("ordinary file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := wtfSession{Agent: AgentClaude, ID: "session", SocketPath: path, Active: true}
+	if got := sendClaudeWarning(context.Background(), target, "warning"); got.State != "failed" || !strings.Contains(got.Error, "not a socket") {
+		t.Fatalf("result = %#v, want regular-file rejection", got)
+	}
+}
+
+func TestSendClaudeWarningReceiptSocketUsesPrivateDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	checked := make(chan string, 1)
+	target, stop := fakeClaudeSocketAt(t, shortTempSocketPath(t, dir), func(frame claudePeerFrame) {
+		path := strings.TrimPrefix(frame.From, "uds:")
+		info, err := os.Stat(filepath.Dir(path))
+		if err != nil {
+			t.Errorf("stat receipt directory: %v", err)
+			return
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Errorf("receipt directory mode = %o, want 700", got)
+		}
+		if info, err = os.Stat(path); err != nil {
+			t.Errorf("stat receipt socket: %v", err)
+		} else if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("receipt socket mode = %o, want 600", got)
+		}
+		checked <- filepath.Dir(path)
+	})
+	got := sendClaudeWarning(context.Background(), target, "warning")
+	stop()
+	if got.State != "sent" {
+		t.Fatalf("result = %#v, want sent", got)
+	}
+	receiptDir := <-checked
+	if _, err := os.Stat(receiptDir); !os.IsNotExist(err) {
+		t.Fatalf("receipt directory remains after send: %v", err)
 	}
 }
 
@@ -136,6 +282,9 @@ func fakeClaudeSocketAt(t *testing.T, path string, reply func(claudePeerFrame)) 
 		}
 		var frame claudePeerFrame
 		if json.Unmarshal(line, &frame) == nil {
+			if frame.SessionID != "target-session-id" {
+				t.Errorf("frame session id = %q, want target-session-id", frame.SessionID)
+			}
 			reply(frame)
 		}
 	}()

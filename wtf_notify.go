@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -71,14 +72,22 @@ func sendClaudeWarning(ctx context.Context, target wtfSession, text string) wtfD
 		return failed(err)
 	}
 
-	receiptPath := filepath.Join(filepath.Dir(target.SocketPath), fmt.Sprintf(".r-%d-%s.sock", os.Getpid(), newSessionID()[:8]))
+	receiptDir, err := os.MkdirTemp(filepath.Dir(target.SocketPath), ".entire-tail-receipt-")
+	if err != nil {
+		return failed(fmt.Errorf("create receipt directory: %w", err))
+	}
+	defer os.RemoveAll(receiptDir)
+	if err := os.Chmod(receiptDir, 0o700); err != nil {
+		return failed(fmt.Errorf("secure receipt directory: %w", err))
+	}
+	receiptPath := filepath.Join(receiptDir, "r.sock")
 	receipts, err := net.Listen("unix", receiptPath)
 	if err != nil {
 		return failed(fmt.Errorf("create receipt socket: %w", err))
 	}
 	defer func() {
 		receipts.Close()
-		os.Remove(receiptPath)
+		_ = os.Remove(receiptPath)
 	}()
 	if err := os.Chmod(receiptPath, 0o600); err != nil {
 		return failed(fmt.Errorf("secure receipt socket: %w", err))
@@ -90,19 +99,72 @@ func sendClaudeWarning(ctx context.Context, target wtfSession, text string) wtfD
 		return failed(fmt.Errorf("dial Claude socket: %w", err))
 	}
 	defer conn.Close()
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetWriteDeadline(deadline)
+	unix, ok := conn.(*net.UnixConn)
+	if !ok {
+		return failed(fmt.Errorf("Claude socket connection is not Unix"))
 	}
-	if _, err := conn.Write(claudeWarningFrame(target.ID, messageID, "uds:"+receiptPath, text)); err != nil {
-		return failed(fmt.Errorf("write Claude warning: %w", err))
+	written, writeErr := writeClaudeFrame(ctx, unix, claudeWarningFrame(target.ID, messageID, "uds:"+receiptPath, text))
+	if !written {
+		return failed(fmt.Errorf("write Claude warning: %w", writeErr))
 	}
-	if unix, ok := conn.(*net.UnixConn); ok {
-		if err := unix.CloseWrite(); err != nil {
-			return failed(fmt.Errorf("close Claude warning write: %w", err))
-		}
+	if writeErr != nil {
+		return wtfDeliveryResult{State: "sent"}
 	}
 
 	return waitClaudeReceipt(ctx, receipts, messageID)
+}
+
+const claudeWriteTimeout = 2 * time.Second
+
+type claudeWriteConn interface {
+	Write([]byte) (int, error)
+	SetWriteDeadline(time.Time) error
+	CloseWrite() error
+}
+
+// writeClaudeFrame reports written only after every byte, including the frame's
+// trailing newline, has reached the socket. From that point onward the delivery
+// is non-retryable even when the half-close fails.
+func writeClaudeFrame(ctx context.Context, conn claudeWriteConn, frame []byte) (written bool, err error) {
+	deadline := time.Now().Add(claudeWriteTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return false, err
+	}
+	stopWatcher := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-ctx.Done():
+			_ = conn.SetWriteDeadline(time.Now())
+		case <-stopWatcher:
+		}
+	}()
+	defer func() {
+		close(stopWatcher)
+		<-watcherDone
+	}()
+
+	for offset := 0; offset < len(frame); {
+		n, writeErr := conn.Write(frame[offset:])
+		offset += n
+		if offset == len(frame) && writeErr != nil {
+			return true, writeErr
+		}
+		if writeErr != nil {
+			return false, writeErr
+		}
+		if n == 0 {
+			return false, io.ErrNoProgress
+		}
+	}
+	if err := conn.CloseWrite(); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func validateClaudeSocket(path string) error {
