@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -290,7 +291,9 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 			status += " · degraded: " + snapshot.Errors[0]
 		}
 		footer = append(footer, wtfComposedRow{text: clip(opts.theme.DimANSI + status + reset)})
-		footer = append(footer, wtfComposedRow{text: clip(opts.theme.DimANSI + "↑↓ move · ⏎ tail · r refresh · q quit" + reset)})
+		if opts.height == 0 || opts.height >= 4 {
+			footer = append(footer, wtfComposedRow{text: clip(opts.theme.DimANSI + "↑↓ move · ⏎ tail · r refresh · q quit" + reset)})
+		}
 	}
 	bodyHeight := opts.height
 	if bodyHeight > 0 {
@@ -652,6 +655,8 @@ type wtfDashboardCollector struct {
 	refreshPending  bool
 	refreshBaseline int64
 	durableUpdated  int64
+	refreshErr      error
+	refreshQueued   atomic.Bool
 }
 
 func newWTFDashboardCollector(home string, deps wtfDashboardDeps) *wtfDashboardCollector {
@@ -677,6 +682,7 @@ func (c *wtfDashboardCollector) readHealth() bool {
 
 func (c *wtfDashboardCollector) Collect(_ map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
 	now := c.deps.Now()
+	refreshRequested := c.refreshQueued.Swap(false)
 	running := c.readHealth()
 	if running {
 		next, err := c.deps.ReadState(c.home, now.Unix())
@@ -687,6 +693,17 @@ func (c *wtfDashboardCollector) Collect(_ map[string]wtfSummaryCache) (wtfSnapsh
 			c.stateErr = err
 		}
 		c.fallbackCurrent = false
+		if refreshRequested {
+			c.refreshBaseline = c.durableUpdated
+			c.refreshPending = true
+			c.refreshErr = nil
+			if c.deps.Request != nil {
+				if err := c.deps.Request(c.home); err != nil {
+					c.refreshPending = false
+					c.refreshErr = err
+				}
+			}
+		}
 	} else if c.monitoring || !c.fallbackCurrent {
 		next, scanErr := c.deps.Scan(context.Background(), c.home, c.state, c.deps.ScanDeps)
 		c.state = next
@@ -695,11 +712,16 @@ func (c *wtfDashboardCollector) Collect(_ map[string]wtfSummaryCache) (wtfSnapsh
 		}
 		c.fallbackCurrent = true
 	}
-	if c.refreshPending && (!running || c.durableUpdated > c.refreshBaseline) {
+	if !running {
+		c.refreshPending = false
+	} else if !refreshRequested && c.refreshPending && c.durableUpdated > c.refreshBaseline {
 		c.refreshPending = false
 	}
 	c.monitoring = running
 	snapshot := snapshotFromWTFState(c.home, c.state, c.stateErr)
+	if c.refreshErr != nil {
+		snapshot.Errors = append(snapshot.Errors, "request refresh: "+c.refreshErr.Error())
+	}
 	snapshot.Monitoring = running
 	snapshot.Health = c.health
 	if c.healthErr != nil {
@@ -711,26 +733,7 @@ func (c *wtfDashboardCollector) Collect(_ map[string]wtfSummaryCache) (wtfSnapsh
 }
 
 func (c *wtfDashboardCollector) RequestRefresh() error {
-	health, err := c.deps.ReadHealth(c.home)
-	if err != nil {
-		c.healthErr = err
-		c.refreshPending = false
-		return nil
-	}
-	c.health, c.healthErr = health, nil
-	if !c.deps.Running(health) {
-		c.refreshPending = false
-		return nil
-	}
-	c.refreshBaseline = c.durableUpdated
-	c.refreshPending = true
-	if c.deps.Request == nil {
-		return nil
-	}
-	if err := c.deps.Request(c.home); err != nil {
-		c.refreshPending = false
-		return err
-	}
+	c.refreshQueued.Store(true)
 	return nil
 }
 

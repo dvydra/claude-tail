@@ -495,6 +495,7 @@ func TestWTFDashboardCollectorRefreshUsesLiveHealthAndRealMarker(t *testing.T) {
 	if err := collector.RequestRefresh(); err != nil {
 		t.Fatal(err)
 	}
+	collector.Collect(nil)
 	if _, err := os.Stat(wtfScanRequestPath(home)); !os.IsNotExist(err) {
 		t.Fatalf("off refresh marker: %v", err)
 	}
@@ -502,10 +503,13 @@ func TestWTFDashboardCollectorRefreshUsesLiveHealthAndRealMarker(t *testing.T) {
 	if err := collector.RequestRefresh(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(wtfScanRequestPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("refresh wrote marker before collection: %v", err)
+	}
+	snapshot, _ := collector.Collect(nil)
 	if _, err := os.Stat(wtfScanRequestPath(home)); err != nil {
 		t.Fatalf("running refresh marker: %v", err)
 	}
-	snapshot, _ := collector.Collect(nil)
 	if !snapshot.RefreshPending {
 		t.Fatal("refresh stopped polling before state advanced")
 	}
@@ -519,8 +523,104 @@ func TestWTFDashboardCollectorRefreshUsesLiveHealthAndRealMarker(t *testing.T) {
 	if err := collector.RequestRefresh(); err != nil {
 		t.Fatal(err)
 	}
+	collector.Collect(nil)
 	if _, err := os.Stat(filepath.Join(wtfDir(home), "scan-request")); !os.IsNotExist(err) {
 		t.Fatalf("stale marker written: %v", err)
+	}
+}
+
+func TestWTFDashboardCollectorRequestRefreshDoesNotBlockBehindCollect(t *testing.T) {
+	home := t.TempDir()
+	state := newWTFState(10)
+	blocked := false
+	readStarted := make(chan struct{})
+	releaseRead := make(chan struct{})
+	collector := newWTFDashboardCollector(home, wtfDashboardDeps{
+		ReadState: func(string, int64) (wtfState, error) {
+			if blocked {
+				close(readStarted)
+				<-releaseRead
+			}
+			return state, nil
+		},
+		ReadHealth: func(string) (wtfHealth, error) { return wtfHealth{PID: 1}, nil },
+		Running:    func(wtfHealth) bool { return true },
+		Scan:       func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) { return state, nil },
+		Request:    requestWTFScan,
+		Now:        time.Now,
+	})
+	blocked = true
+	collected := make(chan wtfSnapshot, 1)
+	go func() {
+		snapshot, _ := collector.Collect(nil)
+		collected <- snapshot
+	}()
+	<-readStarted
+	returned := make(chan error, 1)
+	go func() { returned <- collector.RequestRefresh() }()
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("RequestRefresh blocked behind Collect")
+	}
+	close(releaseRead)
+	<-collected
+	blocked = false
+	if snapshot, _ := collector.Collect(nil); !snapshot.RefreshPending {
+		t.Fatal("consumed refresh was not pending")
+	}
+	if _, err := os.Stat(wtfScanRequestPath(home)); err != nil {
+		t.Fatalf("consumed refresh marker: %v", err)
+	}
+}
+
+func TestWTFDashboardCollectorRefreshRequestFailureClearsPendingAndReportsError(t *testing.T) {
+	collector := newWTFDashboardCollector(t.TempDir(), wtfDashboardDeps{
+		ReadState:  func(string, int64) (wtfState, error) { return newWTFState(10), nil },
+		ReadHealth: func(string) (wtfHealth, error) { return wtfHealth{PID: 1}, nil },
+		Running:    func(wtfHealth) bool { return true },
+		Scan:       func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) { return state, nil },
+		Request:    func(string) error { return errors.New("marker denied") },
+		Now:        time.Now,
+	})
+	if err := collector.RequestRefresh(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ := collector.Collect(nil)
+	if snapshot.RefreshPending || len(snapshot.Errors) == 0 || !strings.Contains(snapshot.Errors[len(snapshot.Errors)-1], "marker denied") {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+}
+
+func TestWTFDashboardCollectorRefreshBaselinesStateAtConsumption(t *testing.T) {
+	state := newWTFState(10)
+	collector := newWTFDashboardCollector(t.TempDir(), wtfDashboardDeps{
+		ReadState:  func(string, int64) (wtfState, error) { return state, nil },
+		ReadHealth: func(string) (wtfHealth, error) { return wtfHealth{PID: 1}, nil },
+		Running:    func(wtfHealth) bool { return true },
+		Scan:       func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) { return state, nil },
+		Request:    func(string) error { return nil },
+		Now:        time.Now,
+	})
+	if err := collector.RequestRefresh(); err != nil {
+		t.Fatal(err)
+	}
+	state.UpdatedAt = 11
+	first, _ := collector.Collect(nil)
+	if !first.RefreshPending {
+		t.Fatal("state advancement before request consumption satisfied refresh")
+	}
+	second, _ := collector.Collect(nil)
+	if !second.RefreshPending {
+		t.Fatal("unchanged state satisfied refresh")
+	}
+	state.UpdatedAt = 12
+	third, _ := collector.Collect(nil)
+	if third.RefreshPending {
+		t.Fatal("later state advancement did not satisfy refresh")
 	}
 }
 
@@ -539,6 +639,10 @@ func TestRenderWTFFixedFooterKeepsHealthAndFirstDegradation(t *testing.T) {
 		if height == 2 && !strings.Contains(got, "▸ A  amp-idle") {
 			t.Fatalf("height %d hid selected row:\n%s", height, got)
 		}
+	}
+	got = renderWTF(wtfUI{Snapshot: snapshot, Cursor: 1, Top: 1, Width: 80, Height: 3}, Theme{})
+	if !strings.Contains(got, "▸ A  amp-idle") || !strings.Contains(got, "monitoring off") {
+		t.Fatalf("height 3 must show selected body row and status footer:\n%s", got)
 	}
 }
 
