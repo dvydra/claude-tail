@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,179 @@ import (
 	"strings"
 	"time"
 )
+
+type wtfCommandRunner func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
+
+type gitWorktreeEntry struct {
+	Path     string
+	Head     string
+	Branch   string
+	Detached bool
+}
+
+const (
+	wtfDirtySummaryLimit = 10
+	wtfSubjectLimit      = 50
+	wtfDiffLimit         = 128 * 1024
+)
+
+func parseGitWorktreePorcelain(data []byte) []gitWorktreeEntry {
+	var entries []gitWorktreeEntry
+	var current *gitWorktreeEntry
+	flush := func() {
+		if current != nil && current.Path != "" {
+			entries = append(entries, *current)
+		}
+		current = nil
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			flush()
+			continue
+		}
+		key, value, _ := strings.Cut(line, " ")
+		switch key {
+		case "worktree":
+			flush()
+			current = &gitWorktreeEntry{Path: value}
+		case "HEAD":
+			if current != nil {
+				current.Head = value
+			}
+		case "branch":
+			if current != nil {
+				current.Branch = strings.TrimPrefix(value, "refs/heads/")
+			}
+		case "detached":
+			if current != nil {
+				current.Detached = true
+			}
+		}
+	}
+	flush()
+	return entries
+}
+
+func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, run wtfCommandRunner) []wtfWorktree {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	data, err := run(ctx, cwd, "git", "-C", cwd, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil
+	}
+	entries := parseGitWorktreePorcelain(data)
+	worktrees := make([]wtfWorktree, 0, len(entries))
+	for _, entry := range entries {
+		worktrees = append(worktrees, inspectWorktree(ctx, repo, entry, now, run))
+	}
+	return worktrees
+}
+
+func resolveRemoteDefault(ctx context.Context, cwd string, run wtfCommandRunner) string {
+	if data, err := run(ctx, cwd, "git", "-C", cwd, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); err == nil {
+		ref := strings.TrimSpace(string(data))
+		if strings.HasPrefix(ref, "refs/remotes/origin/") {
+			return strings.TrimPrefix(ref, "refs/remotes/")
+		}
+	}
+	for _, branch := range []string{"main", "master"} {
+		ref := "refs/remotes/origin/" + branch
+		if _, err := run(ctx, cwd, "git", "-C", cwd, "show-ref", "--verify", "--quiet", ref); err == nil {
+			return "origin/" + branch
+		}
+	}
+	return ""
+}
+
+func inspectWorktree(ctx context.Context, repo string, entry gitWorktreeEntry, now int64, run wtfCommandRunner) (w wtfWorktree) {
+	w = wtfWorktree{
+		Repo:            repo,
+		Path:            entry.Path,
+		Branch:          entry.Branch,
+		Head:            entry.Head,
+		UnmergedCommits: -1,
+		FirstSeen:       now,
+		LastSeen:        now,
+	}
+	defer func() {
+		if worktreeHasWIP(w) {
+			w.LastWIPAt = now
+		}
+	}()
+	if entry.Branch != "" {
+		w.GitEvidence = append(w.GitEvidence, wtfGitEvidence{Source: "branch", Text: entry.Branch})
+	}
+	if info, err := os.Stat(entry.Path); err != nil || !info.IsDir() {
+		w.GitError = "worktree path missing"
+		return w
+	}
+	w.Exists = true
+	status, err := run(ctx, entry.Path, "git", "-C", entry.Path, "status", "--porcelain")
+	if err != nil {
+		w.GitError = "git status failed"
+	} else {
+		lines := nonemptyLines(status)
+		w.DirtyFiles = len(lines)
+		w.DirtySummary = boundedLines(lines, wtfDirtySummaryLimit)
+	}
+	w.DefaultBranch = resolveRemoteDefault(ctx, entry.Path, run)
+	if w.DefaultBranch == "" {
+		if w.GitError == "" {
+			w.GitError = "remote default unknown"
+		}
+		return w
+	}
+	rangeArg := w.DefaultBranch + "..HEAD"
+	count, err := run(ctx, entry.Path, "git", "-C", entry.Path, "rev-list", "--count", rangeArg)
+	if err != nil {
+		w.GitError = "git rev-list failed"
+		return w
+	}
+	w.UnmergedCommits, err = strconv.Atoi(strings.TrimSpace(string(count)))
+	if err != nil {
+		w.UnmergedCommits = -1
+		w.GitError = "invalid rev-list count"
+		return w
+	}
+	if subjects, err := run(ctx, entry.Path, "git", "-C", entry.Path, "log", "--format=%s", rangeArg); err == nil {
+		if lines := boundedLines(nonemptyLines(subjects), wtfSubjectLimit); len(lines) > 0 {
+			w.GitEvidence = append(w.GitEvidence, wtfGitEvidence{Source: "unmerged subjects", Text: strings.Join(lines, "\n")})
+		}
+	}
+	if diff, err := run(ctx, entry.Path, "git", "-C", entry.Path, "diff", "--no-ext-diff", "--unified=0", "HEAD", "--"); err == nil && len(diff) > 0 {
+		if len(diff) > wtfDiffLimit {
+			diff = diff[:wtfDiffLimit]
+		}
+		w.GitEvidence = append(w.GitEvidence, wtfGitEvidence{Source: "diff", Text: string(diff)})
+	}
+	return w
+}
+
+func worktreeHasWIP(w wtfWorktree) bool {
+	return !w.Exists || w.GitError != "" || w.UnmergedCommits < 0 || w.DirtyFiles > 0 || w.UnmergedCommits > 0
+}
+
+func nonemptyLines(data []byte) []string {
+	text := strings.TrimSuffix(string(data), "\n")
+	if text == "" {
+		return nil
+	}
+	lines := strings.Split(text, "\n")
+	out := lines[:0]
+	for _, line := range lines {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func boundedLines(lines []string, limit int) []string {
+	if len(lines) > limit {
+		lines = lines[:limit]
+	}
+	return append([]string(nil), lines...)
+}
 
 type trailTextEvent struct {
 	At     int64

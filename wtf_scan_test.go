@@ -1,11 +1,170 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestParseGitWorktreePorcelain(t *testing.T) {
+	data := []byte("worktree /repo\nHEAD abc123\nbranch refs/heads/feat/x\n\nworktree /repo/wt\nHEAD def456\ndetached\n")
+	want := []gitWorktreeEntry{
+		{Path: "/repo", Head: "abc123", Branch: "feat/x"},
+		{Path: "/repo/wt", Head: "def456", Detached: true},
+	}
+	if got := parseGitWorktreePorcelain(data); !reflect.DeepEqual(got, want) {
+		t.Fatalf("entries:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestResolveRemoteDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		run  wtfCommandRunner
+		want string
+	}{
+		{"symbolic ref", gitOutputRunner(map[string]string{"symbolic-ref --quiet refs/remotes/origin/HEAD": "refs/remotes/origin/main\n"}), "origin/main"},
+		{"main fallback", gitOutputRunner(map[string]string{"show-ref --verify --quiet refs/remotes/origin/main": ""}), "origin/main"},
+		{"master fallback", gitOutputRunner(map[string]string{"show-ref --verify --quiet refs/remotes/origin/master": ""}), "origin/master"},
+		{"unknown", gitOutputRunner(nil), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveRemoteDefault(context.Background(), "/repo", tt.run); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInspectWorktreeCapturesBoundedEvidence(t *testing.T) {
+	dir := t.TempDir()
+	dirty := make([]string, 12)
+	for i := range dirty {
+		dirty[i] = "?? file" + string(rune('a'+i))
+	}
+	subjects := make([]string, 55)
+	for i := range subjects {
+		subjects[i] = "subject"
+	}
+	run := gitOutputRunner(map[string]string{
+		"status --porcelain":                            strings.Join(dirty, "\n") + "\n",
+		"symbolic-ref --quiet refs/remotes/origin/HEAD": "refs/remotes/origin/main\n",
+		"rev-list --count origin/main..HEAD":            "55\n",
+		"log --format=%s origin/main..HEAD":             strings.Join(subjects, "\n") + "\n",
+		"diff --no-ext-diff --unified=0 HEAD --":        strings.Repeat("x", 140*1024),
+	})
+	got := inspectWorktree(context.Background(), "acme/repo", gitWorktreeEntry{Path: dir, Head: "abc", Branch: "feat/x"}, 42, run)
+	if !got.Exists || got.DirtyFiles != 12 || len(got.DirtySummary) != 10 || got.DefaultBranch != "origin/main" || got.UnmergedCommits != 55 {
+		t.Fatalf("inspection fields: %#v", got)
+	}
+	if len(got.GitEvidence) != 3 || got.GitEvidence[0] != (wtfGitEvidence{Source: "branch", Text: "feat/x"}) {
+		t.Fatalf("evidence sources: %#v", got.GitEvidence)
+	}
+	if got.GitEvidence[1].Source != "unmerged subjects" || strings.Count(got.GitEvidence[1].Text, "subject") != 50 {
+		t.Fatalf("subjects not bounded: %#v", got.GitEvidence[1])
+	}
+	if got.GitEvidence[2].Source != "diff" || len(got.GitEvidence[2].Text) != 128*1024 {
+		t.Fatalf("diff not bounded: source=%q bytes=%d", got.GitEvidence[2].Source, len(got.GitEvidence[2].Text))
+	}
+}
+
+func TestInspectWorktreeUnknownAndMissingAreWIP(t *testing.T) {
+	dir := t.TempDir()
+	unknown := inspectWorktree(context.Background(), "acme/repo", gitWorktreeEntry{Path: dir}, 42, gitOutputRunner(nil))
+	if unknown.DefaultBranch != "" || unknown.UnmergedCommits != -1 || !worktreeHasWIP(unknown) {
+		t.Fatalf("unknown state treated as clean: %#v", unknown)
+	}
+
+	missing := inspectWorktree(context.Background(), "acme/repo", gitWorktreeEntry{Path: filepath.Join(dir, "gone"), Head: "old", Branch: "feat/old"}, 43, gitOutputRunner(nil))
+	if missing.Exists || missing.GitError != "worktree path missing" || missing.Head != "old" || missing.Branch != "feat/old" || !worktreeHasWIP(missing) {
+		t.Fatalf("missing worktree record: %#v", missing)
+	}
+}
+
+func TestInspectWorktreeCountsPorcelainLines(t *testing.T) {
+	dir := t.TempDir()
+	run := gitOutputRunner(map[string]string{
+		"status --porcelain": " M tracked\n?? untracked\n",
+		"show-ref --verify --quiet refs/remotes/origin/main": "",
+		"rev-list --count origin/main..HEAD":                 "0\n",
+		"log --format=%s origin/main..HEAD":                  "",
+		"diff --no-ext-diff --unified=0 HEAD --":             "",
+	})
+	if got := inspectWorktree(context.Background(), "acme/repo", gitWorktreeEntry{Path: dir}, 42, run); got.DirtyFiles != 2 {
+		t.Fatalf("dirty files=%d, want 2", got.DirtyFiles)
+	}
+}
+
+func TestInspectWorktreeRealRepositoryDistinguishesDirtyAndUnmerged(t *testing.T) {
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	repo := filepath.Join(root, "repo")
+	worktree := filepath.Join(root, "worktree")
+	gitRun(t, root, "init", "--bare", origin)
+	gitRun(t, root, "clone", origin, repo)
+	gitRun(t, repo, "config", "user.email", "test@example.com")
+	gitRun(t, repo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "initial"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "initial")
+	gitRun(t, repo, "commit", "-m", "initial")
+	gitRun(t, repo, "branch", "-M", "main")
+	gitRun(t, repo, "push", "-u", "origin", "main")
+	gitRun(t, repo, "worktree", "add", "-b", "feat/test", worktree)
+	if err := os.WriteFile(filepath.Join(worktree, "committed"), []byte("commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, worktree, "add", "committed")
+	gitRun(t, worktree, "commit", "-m", "one ahead")
+	if err := os.WriteFile(filepath.Join(worktree, "dirty"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.Dir = dir
+		return cmd.Output()
+	}
+	got := inspectRepoWorktrees(context.Background(), "acme/repo", repo, 42, run)
+	var found *wtfWorktree
+	for i := range got {
+		if got[i].Branch == "feat/test" {
+			found = &got[i]
+		}
+	}
+	if found == nil || found.DirtyFiles != 1 || found.UnmergedCommits != 1 {
+		t.Fatalf("linked worktree: %#v", found)
+	}
+}
+
+func gitOutputRunner(outputs map[string]string) wtfCommandRunner {
+	return func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+		if len(args) >= 2 && args[0] == "-C" {
+			args = args[2:]
+		}
+		key := strings.Join(args, " ")
+		if output, ok := outputs[key]; ok {
+			return []byte(output), nil
+		}
+		return nil, exec.ErrNotFound
+	}
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
 
 func TestExtractTrailEvidence(t *testing.T) {
 	tests := []struct {
