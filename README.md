@@ -90,6 +90,11 @@ entire tail --no-wrap                      # don't wrap prose; let the terminal 
 entire tail --list                         # static ls-style dump of every session
 entire tail --list --days 3                # ...only sessions from the last 3 days
 entire tail --live                         # only the sessions running right now
+entire wtf                                 # active sessions plus sessions seen today
+entire wtf install                         # install and load the monitoring LaunchAgent
+entire wtf status                          # report monitoring health
+entire wtf uninstall                       # unload monitoring; preserve registry history
+entire-tail wtf                            # same dashboard, standalone
 entire tail --list-themes                  # see what's available
 entire tail --help                         # full options
 ```
@@ -100,6 +105,26 @@ All flags also have env-var equivalents (`ENTIRE_TAIL_AGENT`,
 `ENTIRE_TAIL_CLAUDE_BIN`, `ENTIRE_TAIL_NO_WRAP`, `GLOW_STYLE`) for shell-rc
 convenience — flags override env vars when both are set. The legacy
 `CLAUDE_TAIL_*` variants are still honored.
+
+### Today's dashboard (`entire wtf`)
+
+`entire wtf`, or `entire-tail wtf` when run standalone, shows **Badness**, **Now**, **WIP trails**, and **Recently stopped**, in that order. Sessions remain selectable; findings and trail rows are informational. The registry at `~/Library/Application Support/entire-tail/wtf/state.json` keeps trail and worktree history indefinitely, while ended session rows expire after local midnight.
+
+Each row gets a concise summary from Apple's on-device Foundation Models CLI when it is available. If `fm` is missing, fails, or returns unusable output, the dashboard keeps the row and uses a deterministic session title or id instead. Claude pending-question and permission markers add a `needsUser` note without relying on the model.
+
+Trail references may be a full `https://entire.io/gh/<owner>/<repo>/trails/<id>` URL, `<owner>/<repo>#<id>`, `<repo>#<id>`, `trail <id>`, or `trail #<id>`. Repo-qualified shorthand must resolve unambiguously; bare trail numbers resolve only against the session's current repo. The first timestamped valid session/worktree mention owns the trail and survives restarts. The canonical worktree is selected once: a source-branch match wins, otherwise the first valid claim wins.
+
+A trail is WIP while an associated session is active, an associated worktree is dirty, or it has commits absent from the local remote-default ref. Clean merged history is hidden. Missing and unknown worktree state are never treated as clean, and old dirty or unmerged associations remain visible regardless of age.
+
+Badness reports five finding kinds: duplicate active claims, existing WIP elsewhere, work outside the canonical worktree, work on the default branch, and a missing canonical worktree with active or unfinished work elsewhere. Each finding shows its owner, challenger, canonical and actual paths, deterministic evidence, and delivery state.
+
+Use `↑`/`↓` to select a session, `Enter` to open it, `r` to refresh, and `q` or Escape to quit. With monitoring installed, the LaunchAgent scans every two seconds and `r` requests its next scan. Without monitoring, opening the dashboard and each `r` perform one read-only fallback scan; the foreground never writes state or a scan-request marker. The daemon saves conservative partial state after a degraded scan and records the error in `health.json`. Facts from unavailable or errored worktrees remain unknown, so they cannot support clean-state claims or trigger unsafe findings.
+
+`entire wtf install` installs and loads the `io.entire.entire-tail.wtf` LaunchAgent. `entire wtf status` reports its current health, and `entire wtf uninstall` unloads it. The plist is `~/Library/LaunchAgents/io.entire.entire-tail.wtf.plist`, health is `~/Library/Application Support/entire-tail/wtf/health.json`, and daemon output is `~/Library/Application Support/entire-tail/wtf/daemon.log`. Uninstall removes the plist and health file but preserves `state.json` and its registry history.
+
+For each new finding occurrence, monitoring allows at most one successful or unknown delivery per channel. Claude receipts are recorded as `held`, `sent`, or `refused`; no receipt after the bounded wait is treated as sent because the complete frame reached Claude's socket. An Amp command that times out after starting is `unknown` and is not retried, because delivery may have happened. Failed attempts retry independently per channel with backoff. Restart converts an interrupted `sending` delivery to `unknown`, preventing a duplicate. Warnings tell the challenger to **stop and check with Daniel**.
+
+Monitoring is advisory. It never cleans a worktree, reassigns a trail, switches a branch, mutates a trail, or performs any other automatic cleanup or repair.
 
 ### It picks its own mode (iTerm2, macOS)
 

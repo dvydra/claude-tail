@@ -55,6 +55,11 @@ func main() {
 			die(err.Error())
 		}
 		return
+	case ActionWTF:
+		if err := runWTF(cfg); err != nil {
+			die(err.Error())
+		}
+		return
 	case ActionUninstallHooks:
 		if err := uninstallHooks(firstNonEmpty(os.Getenv("HOME"), mustHome())); err != nil {
 			die("uninstall-hooks: " + err.Error())
@@ -1355,8 +1360,32 @@ USAGE:
   entire-tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]
   entire tail [OPTIONS] [SESSION_FILE | SEARCH WORDS...]   # as an entire plugin
   entire-tail handover                                     # write today's handover docs
+  entire-tail wtf                                          # active and today’s sessions
+  entire-tail wtf install|status|uninstall                 # monitoring lifecycle
+  entire wtf install|status|uninstall                      # plugin equivalent
 
 SUBCOMMANDS:
+  wtf                       Show active and today’s sessions in a dashboard.
+                            Ended sessions are retained since local midnight.
+                            Summaries use Apple Foundation Models when available
+                            and fall back to deterministic session labels.
+                            ↑/↓ select, Enter opens a session, r refreshes, and
+                            q/Escape quits. Monitoring scans every 2s; r requests
+                            its next scan. With monitoring off, r runs one read-only
+                            fallback scan and writes no state or request marker.
+                              entire wtf install            entire-tail wtf install
+                              entire wtf status             entire-tail wtf status
+                              entire wtf uninstall          entire-tail wtf uninstall
+                            LaunchAgent: io.entire.entire-tail.wtf
+                            plist: ~/Library/LaunchAgents/io.entire.entire-tail.wtf.plist
+                            state: ~/Library/Application Support/entire-tail/wtf/state.json
+                            health: ~/Library/Application Support/entire-tail/wtf/health.json
+                            log: ~/Library/Application Support/entire-tail/wtf/daemon.log
+                            Per occurrence and channel, delivery stops after one
+                            success or unknown; failures retry with backoff. Restart
+                            changes sending to unknown. Warnings say "stop and check with Daniel."
+                            Monitoring never cleans worktrees, reassigns
+                            trails, switches branches, mutates trails, or repairs state.
   handover                  Enumerate today's Claude and Amp sessions, group them in a
                             picker (1-9 group · x separate · - skip · ⏎ write),
                             then launch an interactive agent that enriches each

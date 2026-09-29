@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -20,6 +21,17 @@ func TestParseCLIDefaults(t *testing.T) {
 	if c.Agent != "auto" || c.Theme != "tokyo-night" || c.Backfill != "all" ||
 		c.ToolStyle != "dots" || c.Collapse != "5" || c.Pick != "auto" {
 		t.Errorf("unexpected defaults: %+v", c)
+	}
+}
+
+func TestParseCLIWTF(t *testing.T) {
+	cfg, action, err := parseCLI([]string{"wtf"}, func(string) string { return "" }, savedPrefs{})
+	if err != nil || action != ActionWTF || len(cfg.WTFArgs) != 0 {
+		t.Fatalf("parseCLI(wtf) = action %v args %v err %v", action, cfg.WTFArgs, err)
+	}
+	cfg, action, err = parseCLI([]string{"wtf", "status"}, func(string) string { return "" }, savedPrefs{})
+	if err != nil || action != ActionWTF || !reflect.DeepEqual(cfg.WTFArgs, []string{"status"}) {
+		t.Fatalf("parseCLI(wtf status) = action %v args %v err %v", action, cfg.WTFArgs, err)
 	}
 }
 

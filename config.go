@@ -36,6 +36,7 @@ type Config struct {
 	NoWrap           bool   // --no-wrap: don't wrap bodies; let the terminal soft-wrap (clean drag-select copy)
 	TapArgs          []string
 	LinkArgs         []string
+	WTFArgs          []string
 }
 
 // The workspace panes and `handover` launch an agent; which binary that is is a
@@ -73,6 +74,7 @@ const (
 	ActionUninstallHooks // `entire-tail uninstall-hooks`
 	ActionTap            // `entire-tail tap <start|status|stop|install|uninstall>`
 	ActionLink           // `entire-tail link <start|install|uninstall|stop|status>`
+	ActionWTF            // `entire-tail wtf`: today's session dashboard
 )
 
 // envTrue reports whether an env var holds a truthy value (1/true/yes/on),
@@ -182,6 +184,10 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 	if len(args) > 0 && args[0] == "link" {
 		c.LinkArgs = args[1:]
 		return c, ActionLink, nil
+	}
+	if len(args) > 0 && args[0] == "wtf" {
+		c.WTFArgs = append([]string(nil), args[1:]...)
+		return c, ActionWTF, nil
 	}
 	if len(args) > 0 && args[0] == "install-hooks" {
 		return c, ActionInstallHooks, nil

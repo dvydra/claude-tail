@@ -1,0 +1,426 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func emptyWTFDeps(now time.Time) wtfScanDeps {
+	return wtfScanDeps{
+		Inventory: wtfInventoryDeps{Today: func(string, int64, *time.Location) []handoverItem { return nil }, Live: func(string) []liveSession { return nil }},
+		Run:       func(context.Context, string, string, ...string) ([]byte, error) { return nil, nil },
+		Summarize: func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+			return wtfSummary{}, wtfSummaryCache{}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+}
+
+func TestWTFStateMissingReturnsInitializedState(t *testing.T) {
+	home := t.TempDir()
+	state, err := loadWTFState(home, 1_700_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != wtfStateVersion || state.UpdatedAt != 1_700_000_000 {
+		t.Fatalf("state metadata = %+v", state)
+	}
+	if state.Sessions == nil || state.Trails == nil || state.Worktrees == nil || state.Findings == nil || state.SummaryCache == nil {
+		t.Fatalf("state maps are not initialized: %+v", state)
+	}
+}
+
+func TestWTFStateRoundTripKeepsHistoryAndUsesAtomicModes(t *testing.T) {
+	home := t.TempDir()
+	state := newWTFState(1_700_000_000)
+	state.Trails["o/r#7"] = wtfTrail{Key: "o/r#7", Owner: "o", Repo: "r", Number: 7, FirstSeen: 10, LastSeen: 20}
+	state.Worktrees["/gone"] = wtfWorktree{Repo: "o/r", Path: "/gone", Exists: false, FirstSeen: 11, LastSeen: 21}
+	state.SummaryCache["claude:s1"] = wtfSummaryCache{InputHash: "abc", Value: wtfSummary{Summary: "cached"}}
+
+	if err := saveWTFState(home, state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadWTFState(home, 1_700_000_001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Trails["o/r#7"].FirstSeen != 10 || loaded.Worktrees["/gone"].Exists || loaded.SummaryCache["claude:s1"].Value.Summary != "cached" {
+		t.Fatalf("round trip = %+v", loaded)
+	}
+	if matches, err := filepath.Glob(filepath.Join(wtfDir(home), "*.tmp")); err != nil || len(matches) != 0 {
+		t.Fatalf("temporary files = %v, err = %v", matches, err)
+	}
+	if info, err := os.Stat(wtfDir(home)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("state directory mode = %v, err = %v", infoMode(info), err)
+	}
+	if info, err := os.Stat(wtfStatePath(home)); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("state file mode = %v, err = %v", infoMode(info), err)
+	}
+}
+
+func TestWTFStateCorruptFileIsPreserved(t *testing.T) {
+	home := t.TempDir()
+	now := int64(1_700_000_123)
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bad := []byte(`{"version":`)
+	if err := os.WriteFile(wtfStatePath(home), bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := loadWTFState(home, now)
+	if err == nil || !strings.Contains(err.Error(), "recovered corrupt wtf state") {
+		t.Fatalf("load error = %v", err)
+	}
+	var syntaxErr *os.PathError
+	if errors.As(err, &syntaxErr) {
+		t.Fatalf("wanted explicit recovery error, got path error: %v", err)
+	}
+	if state.Version != wtfStateVersion || state.Sessions == nil || state.Trails == nil {
+		t.Fatalf("recovered state = %+v", state)
+	}
+	corrupt := filepath.Join(wtfDir(home), "state.corrupt-1700000123.json")
+	if got, readErr := os.ReadFile(corrupt); readErr != nil || string(got) != string(bad) {
+		t.Fatalf("corrupt copy = %q, err = %v", got, readErr)
+	}
+	if _, statErr := os.Stat(wtfStatePath(home)); !os.IsNotExist(statErr) {
+		t.Fatalf("state path still exists: %v", statErr)
+	}
+}
+
+func TestRunWTFDaemonAwareMalformedReadLeavesStateUntouched(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bad := []byte(`{"version":`)
+	if err := os.WriteFile(wtfStatePath(home), bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := readWTFState(home, 123)
+	if err == nil || state.Version != wtfStateVersion {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	got, readErr := os.ReadFile(wtfStatePath(home))
+	if readErr != nil || string(got) != string(bad) {
+		t.Fatalf("durable state changed: %q, %v", got, readErr)
+	}
+	if copies, _ := filepath.Glob(filepath.Join(wtfDir(home), "state.corrupt-*.json")); len(copies) != 0 {
+		t.Fatalf("foreground created recovery copies: %v", copies)
+	}
+}
+
+func TestWTFStateCorruptRecoveryDoesNotOverwriteExistingCopy(t *testing.T) {
+	home := t.TempDir()
+	now := int64(1_700_000_123)
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := []byte("first corrupt state")
+	existing := filepath.Join(wtfDir(home), "state.corrupt-1700000123.json")
+	if err := os.WriteFile(existing, first, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second := []byte(`{"version":`)
+	if err := os.WriteFile(wtfStatePath(home), second, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadWTFState(home, now)
+	if err == nil || !strings.Contains(err.Error(), "recovered corrupt wtf state") {
+		t.Fatalf("load error = %v", err)
+	}
+	if got, readErr := os.ReadFile(existing); readErr != nil || string(got) != string(first) {
+		t.Fatalf("first corrupt copy = %q, err = %v", got, readErr)
+	}
+	next := filepath.Join(wtfDir(home), "state.corrupt-1700000123-1.json")
+	if got, readErr := os.ReadFile(next); readErr != nil || string(got) != string(second) {
+		t.Fatalf("second corrupt copy = %q, err = %v", got, readErr)
+	}
+}
+
+func TestWTFStateRejectsUnsupportedVersionsWithoutMovingFile(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		json string
+		want string
+	}{
+		{name: "missing", json: `{}`, want: "missing version"},
+		{name: "older", json: "{\"version\":0}", want: "unsupported version 0"},
+		{name: "newer", json: "{\"version\":2}", want: "unsupported version 2"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(wtfStatePath(home), []byte(test.json), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			state, err := loadWTFState(home, 123)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("load error = %v, want %q", err, test.want)
+			}
+			if state.Version != wtfStateVersion || state.Sessions == nil {
+				t.Fatalf("replacement state = %+v", state)
+			}
+			if got, readErr := os.ReadFile(wtfStatePath(home)); readErr != nil || string(got) != test.json {
+				t.Fatalf("state file = %q, err = %v", got, readErr)
+			}
+			if copies, globErr := filepath.Glob(filepath.Join(wtfDir(home), "state.corrupt-*.json")); globErr != nil || len(copies) != 0 {
+				t.Fatalf("corrupt copies = %v, err = %v", copies, globErr)
+			}
+		})
+	}
+}
+
+func TestExpireWTFSessionsKeepsAssociations(t *testing.T) {
+	state := newWTFState(200)
+	state.Sessions["claude:old"] = wtfSession{Agent: AgentClaude, ID: "old", State: "ended", LastActivity: 99}
+	state.Sessions["claude:active"] = wtfSession{Agent: AgentClaude, ID: "active", State: "busy", Active: true, LastActivity: 50}
+	state.Sessions["amp:today"] = wtfSession{Agent: AgentAmp, ID: "today", State: "ended", LastActivity: 100}
+	state.Trails["o/r#1"] = wtfTrail{
+		Key:          "o/r#1",
+		FirstClaim:   &wtfClaim{SessionKey: "claude:old", At: 60},
+		Associations: []wtfAssociation{{SessionKey: "claude:old", At: 70, Source: "transcript"}},
+	}
+
+	expireWTFSessions(&state, 100)
+	if _, ok := state.Sessions["claude:old"]; ok {
+		t.Fatal("yesterday's ended session was not expired")
+	}
+	if _, ok := state.Sessions["claude:active"]; !ok {
+		t.Fatal("active session was expired")
+	}
+	if _, ok := state.Sessions["amp:today"]; !ok {
+		t.Fatal("session ending at midnight was expired")
+	}
+	trail := state.Trails["o/r#1"]
+	if trail.FirstClaim == nil || trail.FirstClaim.SessionKey != "claude:old" || len(trail.Associations) != 1 || trail.Associations[0].SessionKey != "claude:old" {
+		t.Fatalf("trail history changed: %+v", trail)
+	}
+}
+
+func infoMode(info os.FileInfo) os.FileMode {
+	if info == nil {
+		return 0
+	}
+	return info.Mode().Perm()
+}
+
+func TestRunWTFDispatchesLifecycleCommand(t *testing.T) {
+	old := wtfCommandRun
+	defer func() { wtfCommandRun = old }()
+	var got []string
+	wtfCommandRun = func(args []string, _ string, _ io.Writer) error { got = append([]string(nil), args...); return nil }
+	if err := runWTF(Config{WTFArgs: []string{"status"}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, " ") != "status" {
+		t.Fatalf("args = %v", got)
+	}
+}
+
+func TestReconcileWTFDashboardSavesOnlySuccessfulCompleteScan(t *testing.T) {
+	now := time.Date(2026, 9, 29, 14, 37, 8, 0, time.UTC)
+	prior := newWTFState(now.Add(-time.Hour).Unix())
+	prior.Trails["acme/api#1"] = wtfTrail{Key: "acme/api#1", Owner: "acme", Repo: "api", Number: 1, MetadataNextRetry: now.Add(time.Hour).Unix()}
+	deps := wtfScanDeps{
+		Inventory: wtfInventoryDeps{
+			Today: func(string, int64, *time.Location) []handoverItem { return nil },
+			Live:  func(string) []liveSession { return nil },
+		},
+		Run: func(context.Context, string, string, ...string) ([]byte, error) { return nil, nil },
+		Summarize: func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+			return wtfSummary{}, wtfSummaryCache{}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+	saved := 0
+	snapshot, next, err := reconcileWTFDashboard(context.Background(), t.TempDir(), prior, deps, func(wtfState) error {
+		saved++
+		return nil
+	})
+	if err != nil || saved != 1 || next.UpdatedAt != now.Unix() || snapshot.GeneratedAt != now.Unix() {
+		t.Fatalf("snapshot=%+v state.updated=%d saved=%d err=%v", snapshot, next.UpdatedAt, saved, err)
+	}
+}
+
+func TestReconcileWTFDashboardRendersDegradedStateWithoutSaving(t *testing.T) {
+	now := time.Date(2026, 9, 29, 14, 37, 8, 0, time.UTC)
+	prior := newWTFState(now.Add(-time.Hour).Unix())
+	prior.Worktrees["/missing"] = wtfWorktree{Repo: "acme/api", Path: "/missing"}
+	deps := wtfScanDeps{
+		Inventory: wtfInventoryDeps{
+			Today: func(string, int64, *time.Location) []handoverItem { return nil },
+			Live:  func(string) []liveSession { return nil },
+		},
+		Run: func(context.Context, string, string, ...string) ([]byte, error) {
+			return nil, errors.New("git unavailable")
+		},
+		Summarize: func(wtfSession, string, wtfSummaryCache) (wtfSummary, wtfSummaryCache, error) {
+			return wtfSummary{}, wtfSummaryCache{}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+	saved := 0
+	snapshot, _, err := reconcileWTFDashboard(context.Background(), t.TempDir(), prior, deps, func(wtfState) error {
+		saved++
+		return nil
+	})
+	if err == nil || saved != 0 || len(snapshot.Errors) == 0 || !strings.Contains(renderWTFSnapshot(snapshot, 120, false), "degraded: git worktrees for acme/api") {
+		t.Fatalf("snapshot=%+v saved=%d err=%v", snapshot, saved, err)
+	}
+}
+
+func TestReconcileWTFDashboardSavesMetadataDegradationForRestart(t *testing.T) {
+	now := time.Date(2026, 9, 29, 14, 0, 0, 0, time.UTC)
+	prior := newWTFState(now.Unix())
+	prior.Trails["acme/api#1"] = wtfTrail{Key: "acme/api#1", Owner: "acme", Repo: "api", Number: 1}
+	attempts, saves := 0, 0
+	deps := emptyWTFDeps(now)
+	deps.Run = func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
+		if name == "entire" {
+			attempts++
+			return nil, errors.New("offline")
+		}
+		return nil, nil
+	}
+	_, next, err := reconcileWTFDashboard(context.Background(), t.TempDir(), prior, deps, func(wtfState) error { saves++; return nil })
+	if err == nil || saves != 1 || attempts != 1 || next.Trails["acme/api#1"].MetadataNextRetry <= now.Unix() {
+		t.Fatalf("attempts=%d saves=%d err=%v trail=%#v", attempts, saves, err, next.Trails["acme/api#1"])
+	}
+	deps.Now = func() time.Time { return now.Add(30 * time.Second) }
+	_, _, _ = reconcileWTFDashboard(context.Background(), t.TempDir(), next, deps, func(wtfState) error { return nil })
+	if attempts != 1 {
+		t.Fatalf("metadata retried before persisted backoff: %d", attempts)
+	}
+}
+
+func TestCorruptStateRecoveryScansWarnsAndSaves(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wtfStatePath(home), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, recovery := loadWTFState(home, 10)
+	if recovery == nil {
+		t.Fatal("expected recovery warning")
+	}
+	snapshot, next, err := reconcileWTFDashboard(context.Background(), home, state, emptyWTFDeps(time.Unix(10, 0)), func(s wtfState) error { return saveWTFState(home, s) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Errors = append(snapshot.Errors, recovery.Error())
+	if !strings.Contains(renderWTFSnapshot(snapshot, 120, false), "recovered corrupt wtf state") {
+		t.Fatalf("missing recovery warning: %#v", snapshot.Errors)
+	}
+	loaded, err := loadWTFState(home, 11)
+	if err != nil || loaded.Version != next.Version {
+		t.Fatalf("rebuilt state: %#v %v", loaded, err)
+	}
+}
+
+func TestFallbackWTFSummaryUsesStableSessionMetadata(t *testing.T) {
+	if got := fallbackWTFSummary(wtfSession{Name: "  Add dashboard  ", ID: "abc"}); got != "Add dashboard" {
+		t.Fatalf("named fallback = %q", got)
+	}
+	if got := fallbackWTFSummary(wtfSession{ID: "abc"}); got != "Session abc" {
+		t.Fatalf("id fallback = %q", got)
+	}
+}
+
+func TestCollectWTFSessionsMergesExactLiveState(t *testing.T) {
+	today := []handoverItem{
+		{Agent: AgentClaude, SessionID: "c1", Repo: "o/r", Cwd: "/old", Branch: "old", Title: "old title", LastActivity: 100, Path: "/t/c1.jsonl"},
+		{Agent: AgentClaude, SessionID: "c2", Repo: "o/r", Cwd: "/ended", Title: "done", LastActivity: 90, Path: "/t/c2.jsonl"},
+		{Agent: AgentAmp, SessionID: "T-a", Repo: "o/a", Cwd: "/amp", Title: "amp", LastActivity: 80, Path: "/t/a.jsonl"},
+	}
+	live := []liveSession{
+		{Agent: AgentClaude, SessionID: "c1", Cwd: "/new", Branch: "feat/x", Name: "api-work", Status: "busy", SocketPath: "/tmp/c1.sock", StartedAt: 10_000, UpdatedAt: 120_000, Path: "/t/c1.jsonl"},
+		{Agent: AgentAmp, SessionID: "T-a", Cwd: "/amp", Branch: "feat/a", Name: "amp", Status: "idle", UpdatedAt: 110_000, Path: "/t/a.jsonl"},
+		{Agent: AgentAmp, SessionID: "T-remote", Name: "remote", Status: "busy", UpdatedAt: 130_000, Path: "/t/remote.jsonl"},
+	}
+	deps := wtfInventoryDeps{
+		Today: func(string, int64, *time.Location) []handoverItem { return today },
+		Live:  func(string) []liveSession { return live },
+	}
+
+	got := collectWTFSessions("/h", 200, time.UTC, deps)
+	if len(got) != 4 || got[0].ID != "T-remote" || got[1].ID != "c1" || got[2].ID != "T-a" || got[3].ID != "c2" {
+		t.Fatalf("sessions = %+v", got)
+	}
+	if got[0].Cwd != "" || got[0].Repo != "" || !got[0].Active || got[0].State != "busy" || got[0].LastActivity != 130 {
+		t.Fatalf("remote amp = %+v", got[0])
+	}
+	if got[1].Cwd != "/new" || got[1].Branch != "feat/x" || got[1].Name != "api-work" || got[1].State != "busy" || got[1].SocketPath != "/tmp/c1.sock" || got[1].StartedAt != 10 || got[1].LastActivity != 120 {
+		t.Fatalf("live overlay = %+v", got[1])
+	}
+	if got[2].Repo != "o/a" || got[2].State != "idle" || !got[2].Active {
+		t.Fatalf("amp overlay = %+v", got[2])
+	}
+	if got[3].State != "ended" || got[3].Active || got[3].LastActivity != 90 {
+		t.Fatalf("ended session = %+v", got[3])
+	}
+}
+
+func TestCollectWTFSessionsKeepsSameIDForDifferentAgents(t *testing.T) {
+	deps := wtfInventoryDeps{
+		Today: func(string, int64, *time.Location) []handoverItem {
+			return []handoverItem{
+				{Agent: AgentClaude, SessionID: "same", Title: "Claude"},
+				{Agent: AgentAmp, SessionID: "same", Title: "Amp"},
+			}
+		},
+		Live: func(string) []liveSession { return nil },
+	}
+
+	got := collectWTFSessions(t.TempDir(), 1, time.UTC, deps)
+	if len(got) != 2 || wtfSessionKey(got[0].Agent, got[0].ID) == wtfSessionKey(got[1].Agent, got[1].ID) {
+		t.Fatalf("sessions = %+v, want distinct Claude and Amp rows", got)
+	}
+}
+
+func TestCollectWTFSessionsDefaultsEmptyLiveStatusAndResolvesRepo(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init"}, {"remote", "add", "origin", "git@github.com:org/project.git"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	deps := wtfInventoryDeps{
+		Today: func(string, int64, *time.Location) []handoverItem { return nil },
+		Live: func(string) []liveSession {
+			return []liveSession{{Agent: AgentClaude, SessionID: "live-only", Cwd: repo}}
+		},
+	}
+
+	got := collectWTFSessions(home, 1, time.UTC, deps)
+	if len(got) != 1 || got[0].State != "active" || got[0].Repo != "org/project" {
+		t.Fatalf("live-only session = %+v", got)
+	}
+}
+
+func TestWTFTreeChoiceUsesExistingTailResolverShape(t *testing.T) {
+	got := wtfTreeChoice(wtfSession{Agent: AgentAmp, ID: "T-one", Transcript: "/tmp/one.jsonl", Cwd: "/repo", Repo: "o/r"})
+	if got.Result != treeChosen || got.Agent != AgentAmp || got.ID != "T-one" || got.Path != "/tmp/one.jsonl" || got.Cwd != "/repo" || got.Repo != "o/r" {
+		t.Fatalf("choice = %+v", got)
+	}
+}
