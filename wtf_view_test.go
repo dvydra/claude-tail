@@ -595,6 +595,53 @@ func TestWTFDashboardCollectorRefreshRequestFailureClearsPendingAndReportsError(
 	}
 }
 
+func TestWTFDashboardCollectorRefreshRequiresSuccessfulBaselineRead(t *testing.T) {
+	state := newWTFState(10)
+	baselineErr := errors.New("durable state unavailable")
+	failRead := false
+	requests := 0
+	collector := newWTFDashboardCollector(t.TempDir(), wtfDashboardDeps{
+		ReadState: func(string, int64) (wtfState, error) {
+			if failRead {
+				return wtfState{}, baselineErr
+			}
+			return state, nil
+		},
+		ReadHealth: func(string) (wtfHealth, error) { return wtfHealth{PID: 1}, nil },
+		Running:    func(wtfHealth) bool { return true },
+		Scan:       func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) { return state, nil },
+		Request:    func(string) error { requests++; return nil },
+		Now:        time.Now,
+	})
+
+	failRead = true
+	if err := collector.RequestRefresh(); err != nil {
+		t.Fatal(err)
+	}
+	failed, _ := collector.Collect(nil)
+	if requests != 0 || failed.RefreshPending {
+		t.Fatalf("requests=%d pending=%v", requests, failed.RefreshPending)
+	}
+	if len(failed.Errors) < 2 || !strings.Contains(failed.Errors[0], baselineErr.Error()) ||
+		!strings.Contains(failed.Errors[len(failed.Errors)-1], "establish refresh baseline: "+baselineErr.Error()) {
+		t.Fatalf("errors=%q", failed.Errors)
+	}
+
+	failRead = false
+	if err := collector.RequestRefresh(); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := collector.Collect(nil)
+	if requests != 1 || !pending.RefreshPending {
+		t.Fatalf("requests=%d pending=%v errors=%q", requests, pending.RefreshPending, pending.Errors)
+	}
+	state.UpdatedAt = 11
+	complete, _ := collector.Collect(nil)
+	if complete.RefreshPending {
+		t.Fatal("refresh remained pending after durable state advanced")
+	}
+}
+
 func TestWTFDashboardCollectorRefreshBaselinesStateAtConsumption(t *testing.T) {
 	state := newWTFState(10)
 	collector := newWTFDashboardCollector(t.TempDir(), wtfDashboardDeps{

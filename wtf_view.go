@@ -686,6 +686,7 @@ func (c *wtfDashboardCollector) Collect(_ map[string]wtfSummaryCache) (wtfSnapsh
 	running := c.readHealth()
 	if running {
 		next, err := c.deps.ReadState(c.home, now.Unix())
+		durableReadOK := err == nil
 		if err == nil {
 			c.state, c.stateErr = next, nil
 			c.durableUpdated = next.UpdatedAt
@@ -694,13 +695,18 @@ func (c *wtfDashboardCollector) Collect(_ map[string]wtfSummaryCache) (wtfSnapsh
 		}
 		c.fallbackCurrent = false
 		if refreshRequested {
-			c.refreshBaseline = c.durableUpdated
-			c.refreshPending = true
-			c.refreshErr = nil
-			if c.deps.Request != nil {
-				if err := c.deps.Request(c.home); err != nil {
-					c.refreshPending = false
-					c.refreshErr = err
+			c.refreshPending = false
+			if !durableReadOK {
+				c.refreshErr = fmt.Errorf("establish refresh baseline: %w", err)
+			} else {
+				c.refreshBaseline = c.durableUpdated
+				c.refreshPending = true
+				c.refreshErr = nil
+				if c.deps.Request != nil {
+					if err := c.deps.Request(c.home); err != nil {
+						c.refreshPending = false
+						c.refreshErr = err
+					}
 				}
 			}
 		}

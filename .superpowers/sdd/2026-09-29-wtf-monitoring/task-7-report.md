@@ -59,3 +59,23 @@ Verification:
 - `git diff --check`
 
 All passed.
+
+## Round 3
+
+Fixed refresh marker ordering when the durable baseline cannot be read.
+
+- A consumed refresh now writes its marker only after that collection successfully reads durable state and records its `UpdatedAt` baseline.
+- A failed baseline read writes no marker, leaves refresh pending false, preserves the state read error, and reports `establish refresh baseline` with the underlying error.
+- A later, separately queued refresh retries baseline establishment. A successful read writes the marker and restores normal pending-until-advance behavior.
+- The regression test proves both the failed attempt and the later successful attempt without filesystem or daemon effects.
+
+Verification:
+
+- Focused refresh tests, repeated ten times
+- Focused refresh and blocked-collection tests under `go test -race`, repeated five times
+- `go test ./...`
+- `go test -race ./...`
+- `go vet ./...`
+- `git diff --check`
+
+All passed.
