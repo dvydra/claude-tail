@@ -686,6 +686,22 @@ func TestDetectWTFFindingsMissingCanonical(t *testing.T) {
 	}
 }
 
+func TestDetectWTFFindingsMissingCanonicalAfterActiveSessionMoves(t *testing.T) {
+	state := findingState()
+	state.Sessions["claude:a"] = wtfSession{Active: true, Cwd: "/wt/new"}
+	state.Worktrees["/wt/canonical"] = wtfWorktree{Path: "/wt/canonical", Exists: false}
+	state.Worktrees["/wt/old"] = wtfWorktree{Path: "/wt/old", Exists: true}
+	state.Worktrees["/wt/new"] = wtfWorktree{Path: "/wt/new", Exists: true}
+	trail := state.Trails["acme/api#7"]
+	trail.Associations = []wtfAssociation{{SessionKey: "claude:a", Worktree: "/wt/old"}}
+	state.Trails[trail.Key] = trail
+
+	finding := onlyFinding(t, detectWTFFindings(state, 100), "missing-canonical")
+	if !containsString(finding.Worktrees, "/wt/new") || !strings.Contains(finding.Explanation, "/wt/new") {
+		t.Fatalf("moved active worktree missing from finding: %#v", finding)
+	}
+}
+
 func TestMergeWTFFindingsClearRecurrenceAndContinuousDelivery(t *testing.T) {
 	current := map[string]wtfFinding{"f": {ID: "f", Kind: "default-branch", Active: true, FirstSeen: 10, LastSeen: 10, Occurrence: 1}}
 	first := mergeWTFFindings(nil, current, 10)

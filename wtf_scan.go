@@ -332,15 +332,21 @@ func detectWTFFindings(state wtfState, now int64) map[string]wtfFinding {
 		canonical, canonicalKnown := state.Worktrees[trail.CanonicalWorktree]
 		canonicalMissing := trail.CanonicalWorktree != "" && (!canonicalKnown || !canonical.Exists)
 		var supportingWorktrees []string
+		for _, path := range activeWorktrees {
+			if path != trail.CanonicalWorktree {
+				supportingWorktrees = append(supportingWorktrees, path)
+			}
+		}
 		for _, path := range associatedWorktrees(trail) {
 			if path == trail.CanonicalWorktree {
 				continue
 			}
 			worktree := state.Worktrees[path]
-			if containsString(activeWorktrees, path) || worktree.DirtyFiles > 0 || worktree.UnmergedCommits > 0 {
+			if worktree.DirtyFiles > 0 || worktree.UnmergedCommits > 0 {
 				supportingWorktrees = append(supportingWorktrees, path)
 			}
 		}
+		supportingWorktrees = sortedUnique(supportingWorktrees)
 		if canonicalMissing && len(supportingWorktrees) > 0 {
 			addWTFFinding(findings, now, "missing-canonical", 1, trail, activeSessions, append(supportingWorktrees, trail.CanonicalWorktree),
 				fmt.Sprintf("Canonical worktree %s is missing while associated worktrees remain active or have WIP: %s.", trail.CanonicalWorktree, strings.Join(supportingWorktrees, ", ")),
