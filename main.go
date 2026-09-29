@@ -18,7 +18,7 @@ import (
 const version = "0.26.0"
 
 func main() {
-	cfg, action, err := parseCLI(os.Args[1:], os.Getenv, loadPrefs(homeDir()))
+	cfg, action, err := parseCLI(commandArgs(os.Args[0], os.Args[1:]), os.Getenv, loadPrefs(homeDir()))
 	if err != nil {
 		die(err.Error())
 	}
@@ -69,6 +69,13 @@ func main() {
 	}
 
 	run(cfg)
+}
+
+func commandArgs(argv0 string, args []string) []string {
+	if filepath.Base(argv0) != "entire-wtf" {
+		return args
+	}
+	return append([]string{"wtf"}, args...)
 }
 
 func run(cfg Config) {

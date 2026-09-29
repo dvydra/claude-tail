@@ -2,10 +2,10 @@
 # Install entire-tail.
 #
 # Builds the Go binary in place, then:
-#   1. If the `entire` CLI is on $PATH, registers the binary as a plugin via
-#      `entire plugin install` — this makes it invokable as `entire tail`.
-#   2. Always also drops a symlink in ~/.local/bin so the standalone command
-#      `entire-tail` works regardless of whether the user has the entire CLI.
+#   1. If the `entire` CLI is on $PATH, registers the binary as both `entire
+#      tail` and `entire wtf` plugins.
+#   2. Always also drops `entire-tail` and `entire-wtf` symlinks in
+#      ~/.local/bin. The latter selects the dashboard from argv[0].
 #
 # The binary embeds its themes (go:embed), so it is self-contained — the
 # symlink works from anywhere and editing themes/ requires a rebuild.
@@ -29,13 +29,15 @@ LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$LOCAL_BIN"
 ln -sf "$BIN" "$LOCAL_BIN/entire-tail"
 echo "Linked: $LOCAL_BIN/entire-tail -> $BIN"
+ln -sf "$BIN" "$LOCAL_BIN/entire-wtf"
+echo "Linked: $LOCAL_BIN/entire-wtf -> $BIN"
 
 # ── entire plugin install (best-effort) ──────────────────────────────────────
 if command -v entire >/dev/null 2>&1; then
-  # --force so a re-install replaces the existing 'tail' plugin entry instead of
-  # erroring out ("plugin already installed").
-  if entire plugin install "$BIN" --force 2>&1; then
-    echo "Registered as entire plugin: invoke with 'entire tail'."
+  # --force so a re-install replaces existing entries instead of erroring.
+  if entire plugin install "$LOCAL_BIN/entire-tail" --force 2>&1 &&
+     entire plugin install "$LOCAL_BIN/entire-wtf" --force 2>&1; then
+    echo "Registered as entire plugins: invoke with 'entire tail' or 'entire wtf'."
   else
     echo "warn: 'entire plugin install' failed — falling back to the ~/.local/bin symlink." >&2
   fi
