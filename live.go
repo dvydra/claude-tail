@@ -665,6 +665,14 @@ func buildLiveSessionsWithAmp(home string, active []ampActiveThread, ampAvailabl
 	return sessions, haveRegistry
 }
 
+func currentLiveSessions(home string) []liveSession {
+	watcher := startAmpTop()
+	defer watcher.close()
+	active, available := watcher.wait(ampFocusRefreshTimeout)
+	sessions, _ := buildLiveSessionsWithAmp(home, active, available)
+	return sessions
+}
+
 func mergeLiveAmpSessions(home string, local []liveSession, active []ampActiveThread) []liveSession {
 	byID := make(map[string]int, len(local))
 	for i := range local {
