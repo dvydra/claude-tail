@@ -157,6 +157,10 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	for _, trail := range snapshot.Trails {
 		trailCanonical[trail.Key] = trail.CanonicalWorktree
 	}
+	sessionCwds := make(map[string]string, len(snapshot.Sessions))
+	for _, session := range snapshot.Sessions {
+		sessionCwds[wtfSessionKey(session.Agent, session.ID)] = session.Cwd
+	}
 	if len(findings) == 0 {
 		line(opts.theme.DimANSI + "  None" + reset)
 	}
@@ -171,6 +175,12 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 				actual = append(actual, path)
 			}
 		}
+		if len(actual) == 0 {
+			actual = append(actual, finding.Worktrees...)
+		}
+		if len(actual) == 0 && finding.Challenger != "" && sessionCwds[finding.Challenger] != "" {
+			actual = append(actual, sessionCwds[finding.Challenger])
+		}
 		line(fmt.Sprintf("  S%d %s  %s", finding.Severity, finding.Kind, finding.TrailKey))
 		line(fmt.Sprintf("    owner %s · challenger %s · delivery %s", firstNonEmpty(finding.Owner, "unknown"), firstNonEmpty(finding.Challenger, "none"), wtfDeliveryLabel(finding)))
 		line(fmt.Sprintf("    canonical %s · actual %s", firstNonEmpty(canonical, "unknown"), firstNonEmpty(strings.Join(actual, ", "), "none")))
@@ -182,24 +192,12 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		}
 	}
 
+	line("")
+	line(opts.theme.ClaudeANSI + "Now" + reset)
 	if len(sessions) == 0 {
-		line("")
-		line(opts.theme.ClaudeANSI + "Now" + reset)
 		line("  No sessions active or seen today.")
 	} else {
-		renderSection := func(title string, wantActive bool) {
-			rendered := false
-			for i, session := range sessions {
-				if session.Active == wantActive && i >= opts.top {
-					rendered = true
-					break
-				}
-			}
-			if !rendered {
-				return
-			}
-			line("")
-			line(opts.theme.ClaudeANSI + title + reset)
+		renderSection := func(wantActive bool) {
 			lastRepo := "\x00"
 			for i, session := range sessions {
 				if session.Active != wantActive {
@@ -224,10 +222,8 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 			}
 		}
 		if active > 0 {
-			renderSection("Now", true)
+			renderSection(true)
 		} else {
-			line("")
-			line(opts.theme.ClaudeANSI + "Now" + reset)
 			line("  No active sessions.")
 		}
 	}
@@ -238,7 +234,7 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	}
 	for _, trail := range wipTrails {
 		line(fmt.Sprintf("  %s  canonical %s", trail.trail.Key, firstNonEmpty(trail.trail.CanonicalWorktree, "unknown")))
-		line(fmt.Sprintf("    owner %s · active %d · dirty %d · unmerged %d · %s", firstNonEmpty(trail.trail.OwnerSession, "unknown"), trail.active, trail.dirty, trail.unmerged, strings.Join(trail.reasons, ", ")))
+		line(fmt.Sprintf("    owner %s · active %d · dirty %s · unmerged %s · %s", firstNonEmpty(trail.trail.OwnerSession, "unknown"), trail.active, wtfCountLabel(trail.dirty, trail.dirtyKnown), wtfCountLabel(trail.unmerged, trail.unmergedKnown), strings.Join(trail.reasons, ", ")))
 	}
 	line("")
 	line(opts.theme.ClaudeANSI + "Recently stopped" + reset)
@@ -334,7 +330,23 @@ func wtfDeliveryLabel(finding wtfFinding) string {
 type wtfWIPTrail struct {
 	trail                   wtfTrail
 	active, dirty, unmerged int
+	dirtyKnown              bool
+	unmergedKnown           bool
 	reasons                 []string
+}
+
+func wtfCountLabel(count int, known bool) string {
+	if !known {
+		return "unknown"
+	}
+	return fmt.Sprint(count)
+}
+
+func wtfDirtyCountKnown(worktree wtfWorktree) bool {
+	if worktree.DirtyFiles < 0 || !worktree.Exists {
+		return false
+	}
+	return worktree.GitError != "git status failed" && worktree.GitError != "worktree not listed by git" && worktree.GitError != "worktree record missing"
 }
 
 func selectWIPTrails(snapshot wtfSnapshot) []wtfWIPTrail {
@@ -348,9 +360,10 @@ func selectWIPTrails(snapshot wtfSnapshot) []wtfWIPTrail {
 	}
 	var out []wtfWIPTrail
 	for _, trail := range snapshot.Trails {
-		item := wtfWIPTrail{trail: trail}
+		item := wtfWIPTrail{trail: trail, dirtyKnown: true, unmergedKnown: true}
 		seenPaths := map[string]bool{}
 		seenSessions := map[string]bool{}
+		hasWorktreeWIP := false
 		for _, association := range trail.Associations {
 			if !seenSessions[association.SessionKey] && sessions[association.SessionKey].Active {
 				item.active++
@@ -360,9 +373,26 @@ func selectWIPTrails(snapshot wtfSnapshot) []wtfWIPTrail {
 				continue
 			}
 			seenPaths[association.Worktree] = true
-			worktree := worktrees[association.Worktree]
-			item.dirty += max(0, worktree.DirtyFiles)
-			item.unmerged += max(0, worktree.UnmergedCommits)
+			worktree, ok := worktrees[association.Worktree]
+			if !ok {
+				worktree = wtfWorktree{Path: association.Worktree, DirtyFiles: -1, UnmergedCommits: -1, GitError: "worktree record missing"}
+			}
+			if worktreeHasWIP(worktree) {
+				hasWorktreeWIP = true
+			}
+			if !wtfDirtyCountKnown(worktree) {
+				item.dirtyKnown = false
+			} else {
+				item.dirty += worktree.DirtyFiles
+			}
+			if worktree.UnmergedCommits < 0 {
+				item.unmergedKnown = false
+			} else {
+				item.unmerged += worktree.UnmergedCommits
+			}
+			if worktree.GitError != "" {
+				item.reasons = append(item.reasons, worktree.GitError)
+			}
 		}
 		if item.active > 0 {
 			item.reasons = append(item.reasons, "active session")
@@ -373,7 +403,8 @@ func selectWIPTrails(snapshot wtfSnapshot) []wtfWIPTrail {
 		if item.unmerged > 0 {
 			item.reasons = append(item.reasons, "unmerged commits")
 		}
-		if len(item.reasons) > 0 {
+		if item.active > 0 || hasWorktreeWIP {
+			item.reasons = sortedUnique(item.reasons)
 			out = append(out, item)
 		}
 	}

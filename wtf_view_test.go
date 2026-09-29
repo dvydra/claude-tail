@@ -21,16 +21,25 @@ func testWTFSnapshot() wtfSnapshot {
 func TestRenderWTFBadness(t *testing.T) {
 	snapshot := wtfSnapshot{
 		GeneratedAt: 1_700_000_000,
+		Sessions: []wtfSession{
+			{Agent: AgentAmp, ID: "cwd-only", Cwd: "/challenger/cwd"},
+		},
 		Findings: []wtfFinding{
 			{ID: "later", Kind: "outside-canonical", Severity: 2, TrailKey: "acme/api#2", Owner: "claude:owner", Challenger: "amp:challenger", Worktrees: []string{"/canonical/two", "/actual/two"}, Explanation: "second finding", Evidence: []string{"session evidence", "git evidence"}, FirstSeen: 20, Active: true},
-			{ID: "highest", Kind: "default-branch", Severity: 3, TrailKey: "acme/api#3", Owner: "claude:owner3", Challenger: "amp:challenger3", Worktrees: []string{"/canonical/three", "/actual/three"}, Explanation: "highest finding", Evidence: []string{"default evidence"}, FirstSeen: 30, Active: true},
+			{ID: "highest", Kind: "default-branch", Severity: 3, TrailKey: "acme/api#3", Owner: "claude:owner3", Challenger: "amp:challenger3", Worktrees: []string{"/canonical/three"}, Explanation: "highest finding", Evidence: []string{"default evidence"}, FirstSeen: 30, Active: true},
 			{ID: "earlier", Kind: "existing-wip-elsewhere", Severity: 2, TrailKey: "acme/api#1", Owner: "claude:owner1", Challenger: "amp:challenger1", Worktrees: []string{"/canonical/one", "/actual/one"}, Explanation: "first finding", Evidence: []string{"earlier evidence"}, FirstSeen: 10, Active: true},
+			{ID: "cwd", Kind: "outside-canonical", Severity: 1, TrailKey: "acme/api#5", Challenger: "amp:cwd-only", Active: true},
 			{ID: "cleared", Kind: "missing-canonical", Severity: 9, TrailKey: "acme/api#9", Active: false},
+		},
+		Trails: []wtfTrail{
+			{Key: "acme/api#2", CanonicalWorktree: "/canonical/two"},
+			{Key: "acme/api#3", CanonicalWorktree: "/canonical/three"},
+			{Key: "acme/api#5", CanonicalWorktree: "/canonical/five"},
 		},
 	}
 
 	got := renderWTFSnapshot(snapshot, 160, false)
-	for _, want := range []string{"Badness", "default-branch", "owner claude:owner3", "challenger amp:challenger3", "canonical /canonical/three", "actual /actual/three", "default evidence", "delivery not attempted"} {
+	for _, want := range []string{"Badness", "default-branch", "owner claude:owner3", "challenger amp:challenger3", "canonical /canonical/three · actual /canonical/three", "canonical /canonical/two · actual /actual/two", "canonical /canonical/five · actual /challenger/cwd", "default evidence", "delivery not attempted"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
@@ -53,17 +62,21 @@ func TestRenderWTFWIPTrails(t *testing.T) {
 			{Key: "acme/api#2", OwnerSession: "amp:owner", CanonicalWorktree: "/wt/dirty", Associations: []wtfAssociation{{Worktree: "/wt/dirty"}}},
 			{Key: "acme/api#3", OwnerSession: "claude:owner3", CanonicalWorktree: "/wt/unmerged", Associations: []wtfAssociation{{Worktree: "/wt/unmerged"}}},
 			{Key: "acme/api#4", OwnerSession: "claude:old", CanonicalWorktree: "/wt/clean", Associations: []wtfAssociation{{Worktree: "/wt/clean"}}},
+			{Key: "acme/api#5", OwnerSession: "claude:missing", CanonicalWorktree: "/wt/missing", Associations: []wtfAssociation{{Worktree: "/wt/missing"}}},
+			{Key: "acme/api#6", OwnerSession: "claude:error", CanonicalWorktree: "/wt/error", Associations: []wtfAssociation{{Worktree: "/wt/error"}}},
 		},
 		Worktrees: []wtfWorktree{
-			{Path: "/wt/active", DirtyFiles: 0, UnmergedCommits: 0},
-			{Path: "/wt/dirty", DirtyFiles: 2, UnmergedCommits: 0},
-			{Path: "/wt/unmerged", DirtyFiles: 0, UnmergedCommits: 3},
-			{Path: "/wt/clean", DirtyFiles: 0, UnmergedCommits: 0},
+			{Path: "/wt/active", Exists: true, DirtyFiles: 0, UnmergedCommits: 0},
+			{Path: "/wt/dirty", Exists: true, DirtyFiles: 2, UnmergedCommits: 0},
+			{Path: "/wt/unmerged", Exists: true, DirtyFiles: 0, UnmergedCommits: 3},
+			{Path: "/wt/clean", Exists: true, DirtyFiles: 0, UnmergedCommits: 0},
+			{Path: "/wt/missing", Exists: false, DirtyFiles: 0, UnmergedCommits: -1, GitError: "worktree path missing"},
+			{Path: "/wt/error", Exists: true, DirtyFiles: 0, UnmergedCommits: -1, GitError: "git status failed"},
 		},
 	}
 
 	got := renderWTFSnapshot(snapshot, 160, false)
-	for _, want := range []string{"WTF  1 active · 0 ended today · 3 WIP trails · 0 findings", "WIP trails", "acme/api#1", "canonical /wt/active", "owner claude:owner", "active 1", "dirty 0", "unmerged 0", "active session", "acme/api#2", "dirty worktree", "acme/api#3", "unmerged commits"} {
+	for _, want := range []string{"WTF  1 active · 0 ended today · 5 WIP trails · 0 findings", "WIP trails", "acme/api#1", "canonical /wt/active", "owner claude:owner", "active 1", "dirty 0", "unmerged 0", "active session", "acme/api#2", "dirty worktree", "acme/api#3", "unmerged commits", "acme/api#5", "canonical /wt/missing", "dirty unknown", "unmerged unknown", "worktree path missing", "acme/api#6", "git status failed"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
@@ -75,6 +88,19 @@ func TestRenderWTFWIPTrails(t *testing.T) {
 		if strings.Index(got, pair[0]) >= strings.Index(got, pair[1]) {
 			t.Errorf("section %q should precede %q:\n%s", pair[0], pair[1], got)
 		}
+	}
+}
+
+func TestRenderWTFScrolledToEndedRetainsSectionHeadings(t *testing.T) {
+	snapshot := testWTFSnapshot()
+	got := composeWTF(snapshot, wtfRenderOpts{width: 120, top: 2})
+	for _, pair := range [][2]string{{"\nBadness\n", "\nNow\n"}, {"\nNow\n", "\nWIP trails\n"}, {"\nWIP trails\n", "\nRecently stopped\n"}} {
+		if strings.Index(got, pair[0]) < 0 || strings.Index(got, pair[0]) >= strings.Index(got, pair[1]) {
+			t.Errorf("section %q should precede %q:\n%s", pair[0], pair[1], got)
+		}
+	}
+	if strings.Contains(got, "▸ Now") || strings.Contains(got, "▸ WIP trails") {
+		t.Fatalf("section heading became selectable:\n%s", got)
 	}
 }
 
