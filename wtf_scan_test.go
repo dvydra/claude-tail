@@ -551,3 +551,31 @@ func TestChooseInitialCanonical(t *testing.T) {
 		t.Fatalf("persisted canonical moved: %#v", got.Trails["acme/api#12"])
 	}
 }
+
+func TestReconcileTrailsCanonicalFallbackUsesClaimsOnly(t *testing.T) {
+	const key = "acme/api#13"
+	claimEvidence := trailEvidence{Key: key, Owner: "acme", Repo: "api", Number: 13, Matched: "api#13", Source: "user", At: 100, Resolved: true}
+	session := wtfSession{Agent: AgentClaude, ID: "claim", Repo: "acme/api", Cwd: "/wt/claim", Active: true}
+
+	for _, test := range []struct {
+		name         string
+		sourceBranch string
+		want         string
+	}{
+		{name: "unmatched association cannot beat claim", sourceBranch: "feat/source", want: "/wt/claim"},
+		{name: "source matching association wins", sourceBranch: "feat/git", want: "/wt/git"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prior := wtfState{Trails: map[string]wtfTrail{key: {Key: key, Owner: "acme", Repo: "api", Number: 13, SourceBranch: test.sourceBranch}}}
+			worktrees := map[string]wtfWorktree{
+				"/wt/git":   {Repo: "acme/api", Path: "/wt/git", Branch: "feat/git", FirstSeen: 50, GitEvidence: []wtfGitEvidence{{Source: "unmerged subjects", Text: key}}},
+				"/wt/claim": {Repo: "acme/api", Path: "/wt/claim", Branch: "feat/claim", FirstSeen: 90},
+			}
+
+			got := reconcileTrails(prior, []wtfSession{session}, map[string][]trailEvidence{"claude:claim": {claimEvidence}}, worktrees, 200)
+			if trail := got.Trails[key]; trail.CanonicalWorktree != test.want {
+				t.Fatalf("canonical worktree=%q, want %q: %#v", trail.CanonicalWorktree, test.want, trail)
+			}
+		})
+	}
+}

@@ -411,12 +411,14 @@ func reconcileTrails(prior wtfState, sessions []wtfSession, evidence map[string]
 			}
 		}
 		if trail.CanonicalWorktree == "" {
-			canonicalClaims := append([]wtfClaim(nil), claims[key]...)
+			var canonicalClaims []wtfClaim
 			if trail.FirstClaim != nil {
 				canonicalClaims = append(canonicalClaims, *trail.FirstClaim)
+			} else {
+				canonicalClaims = append(canonicalClaims, claims[key]...)
 			}
 			for _, association := range trail.Associations {
-				if association.Worktree != "" {
+				if association.Worktree != "" && trail.SourceBranch != "" && worktrees[association.Worktree].Branch == trail.SourceBranch {
 					canonicalClaims = append(canonicalClaims, wtfClaim{SessionKey: association.SessionKey, Worktree: association.Worktree, At: association.At, Evidence: association.Evidence})
 				}
 			}
