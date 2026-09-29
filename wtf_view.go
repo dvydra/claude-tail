@@ -129,6 +129,7 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	}
 	var header []wtfComposedRow
 	var rows []wtfComposedRow
+	var footer *wtfComposedRow
 	line := func(text string) { rows = append(rows, wtfComposedRow{text: clip(text)}) }
 	sessionLine := func(text, key string) {
 		rows = append(rows, wtfComposedRow{text: clip(text), sessionKey: key})
@@ -280,13 +281,16 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	for _, sourceErr := range snapshot.Errors {
 		line("  degraded: " + sourceErr)
 	}
-	if opts.clear {
-		line("")
-		line(opts.theme.DimANSI + "↑↓ move · ⏎ tail · r refresh · q quit" + reset)
+	if opts.clear && (opts.height == 0 || opts.height > 2) {
+		row := wtfComposedRow{text: clip(opts.theme.DimANSI + wtfHealthFooter(snapshot) + " · ↑↓ move · ⏎ tail · r refresh · q quit" + reset)}
+		footer = &row
 	}
 	bodyHeight := opts.height
 	if bodyHeight > 0 {
-		bodyHeight--
+		bodyHeight-- // fixed header
+		if footer != nil {
+			bodyHeight--
+		}
 	}
 	if bodyHeight >= 0 && opts.height > 0 && len(rows) > bodyHeight {
 		start := 0
@@ -304,11 +308,45 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	for _, row := range append(header, rows...) {
 		b.WriteString(row.text + "\n")
 	}
+	if footer != nil {
+		b.WriteString(footer.text + "\n")
+	}
 	result := b.String()
 	if opts.clear {
 		result = "\x1b[H\x1b[2J" + result
 	}
 	return result
+}
+
+func wtfHealthFooter(snapshot wtfSnapshot) string {
+	if !snapshot.Monitoring {
+		return "monitoring off · run entire wtf install"
+	}
+	last := snapshot.Health.LastSuccessfulScan
+	age := "never"
+	if last > 0 {
+		now := snapshot.Now
+		if now == 0 {
+			now = time.Now().Unix()
+		}
+		age = formatAge(max(int64(0), now-last)) + " ago"
+	}
+	footer := "monitoring on · last successful scan " + age
+	if snapshot.Health.LastError != "" {
+		footer += " · error: " + snapshot.Health.LastError
+	}
+	return footer
+}
+
+func formatAge(seconds int64) string {
+	switch {
+	case seconds < 60:
+		return fmt.Sprintf("%ds", seconds)
+	case seconds < 3600:
+		return fmt.Sprintf("%dm", seconds/60)
+	default:
+		return fmt.Sprintf("%dh", seconds/3600)
+	}
 }
 
 func activeWTFFindings(findings []wtfFinding) []wtfFinding {
@@ -585,10 +623,14 @@ type wtfCollectResult struct {
 }
 
 func runWTFDashboardLoop(ui wtfUI, initialCache map[string]wtfSummaryCache, collect func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache), keys <-chan wtfKeyEvent, render func(wtfUI) error) (*wtfSession, error) {
-	return runWTFDashboardLoopWithWorkerExit(ui, initialCache, collect, keys, render, nil)
+	return runWTFDashboardLoopWithRefresh(ui, initialCache, collect, keys, render, nil, nil)
 }
 
 func runWTFDashboardLoopWithWorkerExit(ui wtfUI, initialCache map[string]wtfSummaryCache, collect func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache), keys <-chan wtfKeyEvent, render func(wtfUI) error, workerExited chan<- struct{}) (*wtfSession, error) {
+	return runWTFDashboardLoopWithRefresh(ui, initialCache, collect, keys, render, nil, workerExited)
+}
+
+func runWTFDashboardLoopWithRefresh(ui wtfUI, initialCache map[string]wtfSummaryCache, collect func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache), keys <-chan wtfKeyEvent, render func(wtfUI) error, requestScan func() error, workerExited chan<- struct{}) (*wtfSession, error) {
 	requests := make(chan map[string]wtfSummaryCache)
 	results := make(chan wtfCollectResult)
 	done := make(chan struct{})
@@ -661,6 +703,11 @@ func runWTFDashboardLoopWithWorkerExit(ui wtfUI, initialCache map[string]wtfSumm
 			ui = updateWTF(ui, event.key, event.r)
 			if ui.Refresh {
 				ui.Refresh = false
+				if requestScan != nil {
+					if err := requestScan(); err != nil {
+						ui.Snapshot.Errors = append(ui.Snapshot.Errors, "request scan: "+err.Error())
+					}
+				}
 				requestRefresh()
 			}
 			if ui.Quit {
@@ -715,23 +762,46 @@ func readWTFKeyEvents(reader wtfReader, size func() (int, int), width, height in
 }
 
 func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
-	state, loadErr := loadWTFState(home, time.Now().Unix())
-	var recovery *wtfStateRecoveryError
-	if loadErr != nil && !errors.As(loadErr, &recovery) {
-		return nil, loadErr
-	}
+	now := time.Now()
+	state, loadErr := readWTFState(home, now.Unix())
+	health, monitoring := readWTFHealth(home)
+	monitoring = monitoring && wtfDaemonRunning(health)
 	cache := state.SummaryCache
 	deps := defaultWTFScanDeps()
+	first := true
+	var stateMod time.Time
+	if info, err := os.Stat(wtfStatePath(home)); err == nil {
+		stateMod = info.ModTime()
+	}
 	collect := func(_ map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
-		snapshot, next, _ := reconcileWTFDashboard(context.Background(), home, state, deps, func(next wtfState) error {
-			return saveWTFState(home, next)
-		})
-		if loadErr != nil {
-			snapshot.Errors = append(snapshot.Errors, loadErr.Error())
-			loadErr = nil
+		if monitoring {
+			var readErr error
+			if info, err := os.Stat(wtfStatePath(home)); err != nil {
+				readErr = err
+			} else if info.ModTime() != stateMod {
+				next, err := readWTFState(home, time.Now().Unix())
+				readErr = err
+				if err == nil {
+					state = next
+					stateMod = info.ModTime()
+				}
+			}
+			snapshot := snapshotFromWTFState(home, state, readErr)
+			health, _ = readWTFHealth(home)
+			snapshot.Monitoring, snapshot.Health, snapshot.Now = true, health, time.Now().Unix()
+			return snapshot, state.SummaryCache
 		}
-		state = next
-		return snapshot, next.SummaryCache
+		if first {
+			first = false
+			next, scanErr := scanWTF(context.Background(), home, state, deps)
+			state = next
+			snapshot := snapshotFromWTFState(home, next, errors.Join(loadErr, scanErr))
+			snapshot.Now = time.Now().Unix()
+			return snapshot, next.SummaryCache
+		}
+		snapshot := snapshotFromWTFState(home, state, loadErr)
+		snapshot.Now = time.Now().Unix()
+		return snapshot, state.SummaryCache
 	}
 	if !isCharDevice(os.Stdout) {
 		snapshot, _ := collect(cache)
@@ -766,7 +836,11 @@ func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
 		_, err := io.WriteString(tty, renderWTF(ui, theme))
 		return err
 	}
-	return runWTFDashboardLoop(wtfUI{Width: width, Height: height}, cache, collect, keys, render)
+	var requestScan func() error
+	if monitoring {
+		requestScan = func() error { return requestWTFScan(home) }
+	}
+	return runWTFDashboardLoopWithRefresh(wtfUI{Width: width, Height: height}, cache, collect, keys, render, requestScan, nil)
 }
 
 func loadWTFDashboardCache(home string, now int64) (map[string]wtfSummaryCache, error) {

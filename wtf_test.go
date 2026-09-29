@@ -96,6 +96,28 @@ func TestWTFStateCorruptFileIsPreserved(t *testing.T) {
 	}
 }
 
+func TestRunWTFDaemonAwareMalformedReadLeavesStateUntouched(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bad := []byte(`{"version":`)
+	if err := os.WriteFile(wtfStatePath(home), bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := readWTFState(home, 123)
+	if err == nil || state.Version != wtfStateVersion {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	got, readErr := os.ReadFile(wtfStatePath(home))
+	if readErr != nil || string(got) != string(bad) {
+		t.Fatalf("durable state changed: %q, %v", got, readErr)
+	}
+	if copies, _ := filepath.Glob(filepath.Join(wtfDir(home), "state.corrupt-*.json")); len(copies) != 0 {
+		t.Fatalf("foreground created recovery copies: %v", copies)
+	}
+}
+
 func TestWTFStateCorruptRecoveryDoesNotOverwriteExistingCopy(t *testing.T) {
 	home := t.TempDir()
 	now := int64(1_700_000_123)

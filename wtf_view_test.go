@@ -347,6 +347,41 @@ func TestApplyWTFSnapshotPreservesSelectedIdentityAcrossReorder(t *testing.T) {
 	}
 }
 
+func TestRenderWTFHealth(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		snapshot wtfSnapshot
+		want     string
+	}{
+		{name: "absent", snapshot: wtfSnapshot{}, want: "monitoring off · run entire wtf install"},
+		{name: "running", snapshot: wtfSnapshot{Monitoring: true, Now: 200, Health: wtfHealth{LastSuccessfulScan: 195}}, want: "monitoring on · last successful scan 5s ago"},
+		{name: "stale error", snapshot: wtfSnapshot{Monitoring: true, Now: 500, Health: wtfHealth{LastSuccessfulScan: 200, LastError: "git unavailable"}}, want: "last successful scan 5m ago · error: git unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := renderWTF(wtfUI{Snapshot: test.snapshot, Width: 160, Height: 40}, Theme{})
+			if !strings.Contains(got, test.want) {
+				t.Fatalf("render missing %q:\n%s", test.want, got)
+			}
+		})
+	}
+}
+
+func TestRunWTFDaemonAwareRefreshWritesRequestAndKeepsSelection(t *testing.T) {
+	keys := make(chan wtfKeyEvent, 2)
+	keys <- wtfKeyEvent{key: kRune, r: 'r'}
+	keys <- wtfKeyEvent{key: kEnter}
+	requests := 0
+	snapshot := wtfSnapshot{Sessions: []wtfSession{{Agent: AgentClaude, ID: "selected", Active: true}}}
+	chosen, err := runWTFDashboardLoopWithRefresh(wtfUI{Snapshot: snapshot, Width: 100, Height: 20}, nil,
+		func(cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
+			return snapshot, cache
+		}, keys,
+		func(wtfUI) error { return nil }, func() error { requests++; return nil }, nil)
+	if err != nil || requests != 1 || chosen == nil || chosen.ID != "selected" {
+		t.Fatalf("chosen=%+v requests=%d err=%v", chosen, requests, err)
+	}
+}
+
 func TestWTFDashboardLoopHandlesKeysWhileCollectionBlocked(t *testing.T) {
 	keys := make(chan wtfKeyEvent, 2)
 	renders := make(chan wtfUI, 3)

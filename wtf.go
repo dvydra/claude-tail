@@ -146,6 +146,26 @@ func initializeWTFStateMaps(state *wtfState) {
 }
 
 func loadWTFState(home string, now int64) (wtfState, error) {
+	state, err := readWTFState(home, now)
+	if err == nil {
+		recoverWTFDeliveries(&state)
+		return state, nil
+	}
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &syntaxErr) && !errors.As(err, &typeErr) {
+		return state, err
+	}
+	corrupt := nextWTFCorruptPath(home, now)
+	if renameErr := os.Rename(wtfStatePath(home), corrupt); renameErr != nil {
+		return newWTFState(now), fmt.Errorf("recover corrupt wtf state: decode: %v; preserve: %w", err, renameErr)
+	}
+	return newWTFState(now), &wtfStateRecoveryError{path: corrupt, cause: err}
+}
+
+// readWTFState is the dashboard's non-mutating durable-state reader. Recovery
+// and replacement belong to the daemon-only loadWTFState path.
+func readWTFState(home string, now int64) (wtfState, error) {
 	fresh := newWTFState(now)
 	data, err := os.ReadFile(wtfStatePath(home))
 	if errors.Is(err, os.ErrNotExist) {
@@ -156,11 +176,7 @@ func loadWTFState(home string, now int64) (wtfState, error) {
 	}
 	var state wtfState
 	if err := json.Unmarshal(data, &state); err != nil {
-		corrupt := nextWTFCorruptPath(home, now)
-		if renameErr := os.Rename(wtfStatePath(home), corrupt); renameErr != nil {
-			return newWTFState(now), fmt.Errorf("recover corrupt wtf state: decode: %v; preserve: %w", err, renameErr)
-		}
-		return newWTFState(now), &wtfStateRecoveryError{path: corrupt, cause: err}
+		return fresh, fmt.Errorf("read wtf state: %w", err)
 	}
 	var header struct {
 		Version *int `json:"version"`
@@ -175,7 +191,6 @@ func loadWTFState(home string, now int64) (wtfState, error) {
 		return fresh, fmt.Errorf("wtf state: unsupported version %d, expected %d", state.Version, wtfStateVersion)
 	}
 	initializeWTFStateMaps(&state)
-	recoverWTFDeliveries(&state)
 	return state, nil
 }
 
@@ -288,6 +303,9 @@ type wtfSnapshot struct {
 	Worktrees   []wtfWorktree
 	Findings    []wtfFinding
 	Errors      []string
+	Monitoring  bool
+	Health      wtfHealth
+	Now         int64
 }
 
 func snapshotFromWTFState(home string, state wtfState, scanErr error) wtfSnapshot {
