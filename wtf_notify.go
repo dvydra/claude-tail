@@ -76,10 +76,16 @@ func pendingWTFDeliveries(state wtfState, now int64) []wtfDelivery {
 		if !finding.Active {
 			continue
 		}
+		trail := state.Trails[finding.TrailKey]
+		ownerKey := firstNonEmpty(finding.Owner, trail.OwnerSession)
+		challenger, ok := state.Sessions[finding.Challenger]
+		if finding.Challenger == "" || !ok || !challenger.Active || finding.Challenger == ownerKey {
+			continue
+		}
 		message := warningText(state, finding)
-		channels := []wtfDelivery{{FindingID: id, Channel: "mac", Message: message}}
-		if challenger, ok := state.Sessions[finding.Challenger]; finding.Challenger != "" && ok && challenger.Active {
-			channels = append(channels, wtfDelivery{FindingID: id, Channel: "session:" + finding.Challenger, Target: finding.Challenger, Message: message})
+		channels := []wtfDelivery{
+			{FindingID: id, Channel: "mac", Message: message},
+			{FindingID: id, Channel: "session:" + finding.Challenger, Target: finding.Challenger, Message: message},
 		}
 		for _, delivery := range channels {
 			if wtfDeliveryDue(finding.Delivery[delivery.Channel], now) {

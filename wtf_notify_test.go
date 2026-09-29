@@ -42,6 +42,19 @@ func TestWarningTextFallbackLabelsAndSafetyInstruction(t *testing.T) {
 	}
 }
 
+func TestWarningTextClaudeFallbackLabel(t *testing.T) {
+	state := newWTFState(1)
+	state.Sessions["claude:abcdefghijk"] = wtfSession{Cwd: "/tmp/owner"}
+	state.Sessions["amp:challenger"] = wtfSession{Agent: AgentAmp, ID: "challenger", Cwd: "/tmp/challenger"}
+	state.Trails["o/r#1"] = wtfTrail{Key: "o/r#1", OwnerSession: "claude:abcdefghijk", CanonicalWorktree: "/tmp/owner", FirstClaim: &wtfClaim{At: 1}}
+	state.Worktrees["/tmp/owner"] = wtfWorktree{DefaultBranch: "origin/main"}
+
+	got := warningText(state, wtfFinding{TrailKey: "o/r#1", Challenger: "amp:challenger"})
+	if !strings.Contains(got, "Claude abcdefgh") {
+		t.Fatalf("warning %q does not contain Claude fallback label", got)
+	}
+}
+
 func TestPendingWTFDeliveriesActiveChallenger(t *testing.T) {
 	state, finding := notificationState()
 	got := pendingWTFDeliveries(state, 100)
@@ -61,13 +74,45 @@ func TestPendingWTFDeliveriesActiveChallenger(t *testing.T) {
 	}
 }
 
-func TestPendingWTFDeliveriesRequireActiveChallenger(t *testing.T) {
+func TestPendingWTFDeliveriesOwnerOnlyIsDashboardOnly(t *testing.T) {
 	state, finding := notificationState()
 	finding.Challenger = ""
 	state.Findings[finding.ID] = finding
-	if got := pendingWTFDeliveries(state, 100); len(got) != 1 || got[0].Channel != "mac" {
+	if got := pendingWTFDeliveries(state, 100); len(got) != 0 {
 		t.Fatalf("owner-only deliveries = %#v", got)
 	}
+}
+
+func TestPendingWTFDeliveriesInactiveChallengerIsDashboardOnly(t *testing.T) {
+	state, finding := notificationState()
+	challenger := state.Sessions[finding.Challenger]
+	challenger.Active = false
+	state.Sessions[finding.Challenger] = challenger
+	if got := pendingWTFDeliveries(state, 100); len(got) != 0 {
+		t.Fatalf("inactive-challenger deliveries = %#v", got)
+	}
+}
+
+func TestPendingWTFDeliveriesMissingChallengerIsDashboardOnly(t *testing.T) {
+	state, finding := notificationState()
+	delete(state.Sessions, finding.Challenger)
+	if got := pendingWTFDeliveries(state, 100); len(got) != 0 {
+		t.Fatalf("missing-challenger deliveries = %#v", got)
+	}
+}
+
+func TestPendingWTFDeliveriesSelfConflictIsDashboardOnly(t *testing.T) {
+	state, finding := notificationState()
+	finding.Owner = ""
+	finding.Challenger = state.Trails[finding.TrailKey].OwnerSession
+	state.Findings[finding.ID] = finding
+	if got := pendingWTFDeliveries(state, 100); len(got) != 0 {
+		t.Fatalf("self-conflict deliveries = %#v", got)
+	}
+}
+
+func TestPendingWTFDeliveriesHistoricalIsDashboardOnly(t *testing.T) {
+	state, finding := notificationState()
 	finding.Active = false
 	state.Findings[finding.ID] = finding
 	if got := pendingWTFDeliveries(state, 100); len(got) != 0 {
@@ -117,7 +162,14 @@ func TestPendingWTFDeliveriesRecurrenceStartsPending(t *testing.T) {
 	finding.Active = true
 	cleared := mergeWTFFindings(prior, nil, 110)
 	state.Findings = mergeWTFFindings(cleared, map[string]wtfFinding{finding.ID: finding}, 120)
-	if got := pendingWTFDeliveries(state, 120); len(got) != 2 {
+	recurred := state.Findings[finding.ID]
+	if recurred.Occurrence != 2 {
+		t.Fatalf("recurrence occurrence = %d, want 2", recurred.Occurrence)
+	}
+	if len(recurred.Delivery) != 0 {
+		t.Fatalf("recurrence delivery state = %#v, want fresh pending channels", recurred.Delivery)
+	}
+	if got := pendingWTFDeliveries(state, 120); len(got) != 2 || got[0].Channel != "mac" || got[1].Channel != "session:"+finding.Challenger {
 		t.Fatalf("recurrence deliveries = %#v", got)
 	}
 }
