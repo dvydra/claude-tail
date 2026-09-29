@@ -32,6 +32,11 @@ type wtfRenderOpts struct {
 	snapshotHome string
 }
 
+type wtfComposedRow struct {
+	text       string
+	sessionKey string
+}
+
 func orderedWTFSessions(snapshot wtfSnapshot) []wtfSession {
 	sessions := append([]wtfSession(nil), snapshot.Sessions...)
 	sort.SliceStable(sessions, func(i, j int) bool {
@@ -113,7 +118,11 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		}
 		return clipped + reset
 	}
-	line := func(b *strings.Builder, text string) { b.WriteString(clip(text) + "\n") }
+	var rows []wtfComposedRow
+	line := func(text string) { rows = append(rows, wtfComposedRow{text: clip(text)}) }
+	sessionLine := func(text, key string) {
+		rows = append(rows, wtfComposedRow{text: clip(text), sessionKey: key})
+	}
 
 	sessions := orderedWTFSessions(snapshot)
 	active, ended := 0, 0
@@ -125,11 +134,10 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		}
 	}
 
-	var b strings.Builder
-	line(&b, fmt.Sprintf("%sToday%s  %d active · %d ended today", opts.theme.ClaudeANSI, reset, active, ended))
+	line(fmt.Sprintf("%sToday%s  %d active · %d ended today", opts.theme.ClaudeANSI, reset, active, ended))
 	if len(sessions) == 0 {
-		line(&b, "")
-		line(&b, "No sessions active or seen today.")
+		line("")
+		line("No sessions active or seen today.")
 	} else {
 		renderSection := func(title string, wantActive bool) {
 			rendered := false
@@ -142,8 +150,8 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 			if !rendered {
 				return
 			}
-			line(&b, "")
-			line(&b, opts.theme.ClaudeANSI+title+reset)
+			line("")
+			line(opts.theme.ClaudeANSI + title + reset)
 			lastRepo := "\x00"
 			for i, session := range sessions {
 				if session.Active != wantActive {
@@ -154,11 +162,16 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 				}
 				repo := firstNonEmpty(session.Repo, tildify(session.Cwd, snapshot.Home), "Other")
 				if repo != lastRepo {
-					line(&b, opts.theme.DimANSI+"  "+repo+reset)
+					line(opts.theme.DimANSI + "  " + repo + reset)
 					lastRepo = repo
 				}
-				for _, row := range wtfSessionLines(session, opts, reset) {
-					line(&b, row)
+				key := wtfSessionKey(session.Agent, session.ID)
+				for rowIndex, row := range wtfSessionLines(session, opts, reset) {
+					if rowIndex == 0 {
+						sessionLine(row, key)
+					} else {
+						line(row)
+					}
 				}
 			}
 		}
@@ -169,18 +182,27 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 			renderSection("Recently stopped", false)
 		}
 		if opts.clear {
-			line(&b, "")
-			line(&b, opts.theme.DimANSI+"↑↓ move · ⏎ tail · r refresh · q quit"+reset)
+			line("")
+			line(opts.theme.DimANSI + "↑↓ move · ⏎ tail · r refresh · q quit" + reset)
 		}
+	}
+	if opts.height > 0 && len(rows) > opts.height {
+		start := 0
+		if opts.selected != "" {
+			for i, row := range rows {
+				if row.sessionKey == opts.selected && i >= opts.height {
+					start = i - opts.height + 1
+					break
+				}
+			}
+		}
+		rows = rows[start:min(start+opts.height, len(rows))]
+	}
+	var b strings.Builder
+	for _, row := range rows {
+		b.WriteString(row.text + "\n")
 	}
 	result := b.String()
-	if opts.height > 0 {
-		lines := strings.SplitAfter(result, "\n")
-		if len(lines) > opts.height {
-			lines = lines[:opts.height]
-		}
-		result = strings.Join(lines, "")
-	}
 	if opts.clear {
 		result = "\x1b[H\x1b[2J" + result
 	}
@@ -285,6 +307,12 @@ func updateWTF(ui wtfUI, key treeKey, r rune) wtfUI {
 	return ui
 }
 
+func normalizeWTFViewport(ui wtfUI, width, height int) wtfUI {
+	ui.Width = width
+	ui.Height = height
+	return updateWTF(ui, treeKey(-1), 0)
+}
+
 func collectWTFSnapshot(home string, cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
 	now := time.Now().Unix()
 	snapshot := wtfSnapshot{GeneratedAt: now, Home: home, Sessions: collectWTFSessions(home, now, time.Local, wtfInventoryDeps{Today: todaysSessions, Live: currentLiveSessions})}
@@ -319,13 +347,14 @@ func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
 	buf := make([]byte, 16)
 	last := time.Time{}
 	for {
+		width, height := termSize(tty)
+		ui = normalizeWTFViewport(ui, width, height)
 		if ui.Refresh || time.Since(last) >= wtfRefresh {
 			ui.Snapshot, cache = collectWTFSnapshot(home, cache)
 			ui.Refresh = false
 			ui = updateWTF(ui, treeKey(-1), 0)
 			last = time.Now()
 		}
-		ui.Width, ui.Height = termSize(tty)
 		if _, err := io.WriteString(tty, renderWTF(ui, theme)); err != nil {
 			return nil, err
 		}

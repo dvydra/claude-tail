@@ -175,3 +175,49 @@ func TestUpdateWTFUsesExactRowsAndClampsTopAfterRefresh(t *testing.T) {
 		t.Fatalf("selected remaining session is outside viewport:\n%s", got)
 	}
 }
+
+func TestNormalizeWTFViewportUsesNewDimensionsBeforeRender(t *testing.T) {
+	snapshot := wtfSnapshot{Sessions: []wtfSession{
+		{Agent: AgentClaude, ID: "one", Repo: "repo/a", Active: true, State: "busy", Summary: "one summary"},
+		{Agent: AgentAmp, ID: "two", Repo: "repo/a", Active: true, State: "idle", Summary: "two summary"},
+		{Agent: AgentClaude, ID: "three", Repo: "repo/b", Active: true, State: "idle", Summary: "three summary"},
+	}}
+	ui := wtfUI{Snapshot: snapshot, Cursor: 2, Top: 0, Width: 100, Height: 20}
+
+	ui = normalizeWTFViewport(ui, 40, 1)
+	if ui.Width != 40 || ui.Height != 1 || ui.Top != ui.Cursor {
+		t.Fatalf("resized state width/height/top/cursor = %d/%d/%d/%d, want 40/1/2/2", ui.Width, ui.Height, ui.Top, ui.Cursor)
+	}
+	if got := renderWTF(ui, Theme{}); !strings.Contains(got, "▸ C  three") {
+		t.Fatalf("render after resize hid selected session:\n%s", got)
+	}
+}
+
+func TestRenderWTFMinimalViewportShowsSelectedAcrossHeaders(t *testing.T) {
+	snapshot := wtfSnapshot{Sessions: []wtfSession{
+		{Agent: AgentClaude, ID: "active", Repo: "repo/a", Active: true, State: "busy", Summary: "active summary", NeedsUser: "active need"},
+		{Agent: AgentAmp, ID: "ended", Repo: "repo/b", Active: false, State: "ended", Summary: "ended summary"},
+	}}
+	ui := wtfUI{Snapshot: snapshot, Cursor: 1, Top: 1, Width: 80, Height: 1}
+
+	got := strings.TrimPrefix(renderWTF(ui, Theme{}), "\x1b[H\x1b[2J")
+	if !strings.Contains(got, "▸ A  ended") {
+		t.Fatalf("one-row boundary viewport hid selected session:\n%s", got)
+	}
+	if strings.Contains(got, "Recently stopped") || strings.Contains(got, "repo/b") {
+		t.Fatalf("one-row boundary viewport rendered headers instead of selected session:\n%s", got)
+	}
+}
+
+func TestRenderWTFViewportKeepsHeadersOrderedAndNonSelectable(t *testing.T) {
+	ui := wtfUI{Snapshot: testWTFSnapshot(), Cursor: 2, Width: 120, Height: 40}
+	got := renderWTF(ui, Theme{})
+	if strings.Count(got, "▸ ") != 1 || !strings.Contains(got, "▸ A  new-fix") {
+		t.Fatalf("selection must mark exactly one session row:\n%s", got)
+	}
+	for _, pair := range [][2]string{{"Now", "org/api"}, {"org/api", "api-work"}, {"Recently stopped", "org/new"}, {"org/new", "new-fix"}} {
+		if strings.Index(got, pair[0]) < 0 || strings.Index(got, pair[0]) >= strings.Index(got, pair[1]) {
+			t.Fatalf("%q should precede %q:\n%s", pair[0], pair[1], got)
+		}
+	}
+}
