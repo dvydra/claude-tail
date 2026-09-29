@@ -5,4 +5,5 @@
 {"type":"user","timestamp":"2026-09-29T09:00:03Z","message":{"content":[{"type":"tool_result","content":"result acme/api#4"}]}}
 {"type":"user","timestamp":"2026-09-29T09:00:04Z","promptSource":"system","origin":{"kind":"task-notification"},"message":{"content":"<task-notification><summary>ignore acme/api#99</summary></task-notification>"}}
 {"type":"user","timestamp":"2026-09-29T09:00:04Z","promptSource":"system","origin":{"kind":"task-notification"},"message":{"content":[{"type":"text","text":"ignore block acme/api#95"},{"type":"tool_use","input":{"command":"ignore input acme/api#96"}},{"type":"tool_result","content":"ignore result acme/api#97"}]}}
+{"type":"user","timestamp":"2026-09-29T09:00:04Z","message":{"content":[{"type":"text","text":"<task-notification><summary>ignore legacy block acme/api#92</summary></task-notification>"},{"type":"tool_use","input":{"command":"ignore legacy input acme/api#93"}},{"type":"tool_result","content":"ignore legacy result acme/api#94"}]}}
 {"type":"system","timestamp":"2026-09-29T09:00:05Z","message":{"content":"system acme/api#98"}}

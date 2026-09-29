@@ -224,6 +224,17 @@ func claudeTrailEvents(path string, observedAt int64) []trailTextEvent {
 		if json.Unmarshal(event.Message.Content, &blocks) != nil {
 			continue
 		}
+		if event.Type == "user" {
+			var text strings.Builder
+			for _, block := range blocks {
+				if block.Type == "text" {
+					text.WriteString(block.Text)
+				}
+			}
+			if isTaskNote(event.Origin.Kind, event.PromptSource, text.String()) {
+				continue
+			}
+		}
 		for _, block := range blocks {
 			switch block.Type {
 			case "text":

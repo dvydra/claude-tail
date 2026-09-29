@@ -51,7 +51,7 @@ func isTaskNote(originKind, promptSource, body string) bool {
 	if originKind == "task-notification" {
 		return true
 	}
-	return promptSource == "system" && strings.Contains(body, taskNoteTag)
+	return (promptSource == "system" || originKind == "" && promptSource == "") && strings.Contains(body, taskNoteTag)
 }
 
 // taskNoteLine reduces a task-notification payload to one line: its summary,
