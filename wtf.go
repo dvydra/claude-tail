@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -116,6 +118,24 @@ func runWTF(cfg Config) error {
 		return fmt.Errorf("wtf: unsupported arguments: %s", strings.Join(cfg.WTFArgs, " "))
 	}
 
-	fmt.Println("No sessions active or seen today.")
+	home := firstNonEmpty(os.Getenv("HOME"), mustHome())
+	chosen, err := runWTFDashboard(home, cfg)
+	if err != nil || chosen == nil {
+		return err
+	}
+	claudeBin := resolveClaudeBin(cfg, exec.LookPath, os.Stderr)
+	resolved, ok := resolveTreeChoice(home, claudeBin, wtfTreeChoice(*chosen))
+	if !ok {
+		return nil
+	}
+	cfg.WTFArgs = nil
+	cfg.Agent = string(firstNonEmptyAgent(chosen.Agent, AgentClaude))
+	cfg.Pick = "never"
+	if chosen.Agent == AgentAmp {
+		cfg.FollowSession = chosen.ID
+	} else {
+		cfg.Positional = []string{resolved}
+	}
+	run(cfg)
 	return nil
 }

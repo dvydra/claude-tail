@@ -54,3 +54,10 @@ func TestCollectWTFSessionsMergesExactLiveState(t *testing.T) {
 		t.Fatalf("ended session = %+v", got[3])
 	}
 }
+
+func TestWTFTreeChoiceUsesExistingTailResolverShape(t *testing.T) {
+	got := wtfTreeChoice(wtfSession{Agent: AgentAmp, ID: "T-one", Transcript: "/tmp/one.jsonl", Cwd: "/repo", Repo: "o/r"})
+	if got.Result != treeChosen || got.Agent != AgentAmp || got.ID != "T-one" || got.Path != "/tmp/one.jsonl" || got.Cwd != "/repo" || got.Repo != "o/r" {
+		t.Fatalf("choice = %+v", got)
+	}
+}
