@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -260,6 +262,212 @@ func inspectWorktree(ctx context.Context, repo string, entry gitWorktreeEntry, n
 
 func worktreeHasWIP(w wtfWorktree) bool {
 	return !w.Exists || w.GitError != "" || w.UnmergedCommits < 0 || w.DirtyFiles > 0 || w.UnmergedCommits > 0
+}
+
+func detectWTFFindings(state wtfState, now int64) map[string]wtfFinding {
+	findings := make(map[string]wtfFinding)
+	trailKeys := sortedMapKeys(state.Trails)
+	for _, trailKey := range trailKeys {
+		trail := state.Trails[trailKey]
+		active := activeTrailAssociations(state, trail)
+		activeSessions, activeWorktrees := associationIDs(active)
+
+		if len(activeSessions) > 1 {
+			addWTFFinding(findings, now, "duplicate-active-claim", 3, trail, activeSessions, activeWorktrees,
+				fmt.Sprintf("Active sessions %s claim %s from worktrees %s.", strings.Join(activeSessions, ", "), trail.Key, strings.Join(activeWorktrees, ", ")),
+				append(append([]string(nil), activeSessions...), activeWorktrees...))
+		}
+
+		var elsewhere []string
+		for _, path := range associatedWorktrees(trail) {
+			if containsString(activeWorktrees, path) {
+				continue
+			}
+			worktree, ok := state.Worktrees[path]
+			if ok && (worktree.DirtyFiles > 0 || worktree.UnmergedCommits > 0) {
+				elsewhere = append(elsewhere, path)
+			}
+		}
+		if len(activeSessions) > 0 && len(elsewhere) > 0 {
+			evidence := append([]string(nil), activeSessions...)
+			for _, path := range elsewhere {
+				worktree := state.Worktrees[path]
+				evidence = append(evidence, fmt.Sprintf("%s dirty=%d unmerged=%d", path, worktree.DirtyFiles, worktree.UnmergedCommits))
+			}
+			addWTFFinding(findings, now, "existing-wip-elsewhere", 2, trail, activeSessions, append(activeWorktrees, elsewhere...),
+				fmt.Sprintf("Active sessions %s claim %s while associated worktrees have WIP: %s.", strings.Join(activeSessions, ", "), trail.Key, strings.Join(elsewhere, ", ")), evidence)
+		}
+
+		var outsideSessions, outsideWorktrees []string
+		for _, association := range active {
+			if association.Worktree != "" && trail.CanonicalWorktree != "" && association.Worktree != trail.CanonicalWorktree {
+				outsideSessions = append(outsideSessions, association.SessionKey)
+				outsideWorktrees = append(outsideWorktrees, association.Worktree)
+			}
+		}
+		outsideSessions = sortedUnique(outsideSessions)
+		outsideWorktrees = sortedUnique(outsideWorktrees)
+		if len(outsideSessions) > 0 {
+			addWTFFinding(findings, now, "outside-canonical", 2, trail, outsideSessions, append(outsideWorktrees, trail.CanonicalWorktree),
+				fmt.Sprintf("Active sessions %s work outside canonical worktree %s from %s.", strings.Join(outsideSessions, ", "), trail.CanonicalWorktree, strings.Join(outsideWorktrees, ", ")),
+				append(append([]string(nil), outsideSessions...), append([]string{trail.CanonicalWorktree}, outsideWorktrees...)...))
+		}
+
+		var defaultSessions, defaultWorktrees []string
+		for _, association := range active {
+			worktree, ok := state.Worktrees[association.Worktree]
+			if ok && worktree.Branch != "" && worktree.Branch == strings.TrimPrefix(worktree.DefaultBranch, "origin/") {
+				defaultSessions = append(defaultSessions, association.SessionKey)
+				defaultWorktrees = append(defaultWorktrees, association.Worktree)
+			}
+		}
+		defaultSessions = sortedUnique(defaultSessions)
+		defaultWorktrees = sortedUnique(defaultWorktrees)
+		if len(defaultSessions) > 0 {
+			addWTFFinding(findings, now, "default-branch", 3, trail, defaultSessions, defaultWorktrees,
+				fmt.Sprintf("Active sessions %s claim %s on the resolved default branch in %s.", strings.Join(defaultSessions, ", "), trail.Key, strings.Join(defaultWorktrees, ", ")),
+				append(append([]string(nil), defaultSessions...), defaultWorktrees...))
+		}
+
+		canonical, canonicalKnown := state.Worktrees[trail.CanonicalWorktree]
+		canonicalMissing := trail.CanonicalWorktree != "" && (!canonicalKnown || !canonical.Exists)
+		var supportingWorktrees []string
+		for _, path := range associatedWorktrees(trail) {
+			if path == trail.CanonicalWorktree {
+				continue
+			}
+			worktree := state.Worktrees[path]
+			if containsString(activeWorktrees, path) || worktree.DirtyFiles > 0 || worktree.UnmergedCommits > 0 {
+				supportingWorktrees = append(supportingWorktrees, path)
+			}
+		}
+		if canonicalMissing && len(supportingWorktrees) > 0 {
+			addWTFFinding(findings, now, "missing-canonical", 1, trail, activeSessions, append(supportingWorktrees, trail.CanonicalWorktree),
+				fmt.Sprintf("Canonical worktree %s is missing while associated worktrees remain active or have WIP: %s.", trail.CanonicalWorktree, strings.Join(supportingWorktrees, ", ")),
+				append([]string{trail.CanonicalWorktree}, supportingWorktrees...))
+		}
+	}
+	return findings
+}
+
+func mergeWTFFindings(prior, current map[string]wtfFinding, now int64) map[string]wtfFinding {
+	merged := make(map[string]wtfFinding, len(prior)+len(current))
+	for id, finding := range prior {
+		finding.Active = false
+		merged[id] = finding
+	}
+	for id, finding := range current {
+		finding.Active = true
+		finding.LastSeen = now
+		if old, ok := prior[id]; ok {
+			finding.FirstSeen = old.FirstSeen
+			finding.Occurrence = old.Occurrence
+			if finding.Occurrence == 0 {
+				finding.Occurrence = 1
+			}
+			if old.Active {
+				finding.Delivery = old.Delivery
+			} else {
+				finding.Occurrence++
+				finding.Delivery = nil
+			}
+		} else {
+			finding.FirstSeen = now
+			finding.Occurrence = 1
+		}
+		merged[id] = finding
+	}
+	return merged
+}
+
+func wtfFindingID(kind, trail string, sessions, worktrees []string) string {
+	parts := []string{kind, trail, strings.Join(sortedUnique(sessions), "\x00"), strings.Join(sortedUnique(worktrees), "\x00")}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x01")))
+	return fmt.Sprintf("%s:%x", kind, sum[:12])
+}
+
+func addWTFFinding(findings map[string]wtfFinding, now int64, kind string, severity int, trail wtfTrail, sessions, worktrees []string, explanation string, evidence []string) {
+	sessions = sortedUnique(sessions)
+	worktrees = sortedUnique(worktrees)
+	id := wtfFindingID(kind, trail.Key, sessions, worktrees)
+	challenger := ""
+	if len(sessions) > 0 {
+		challenger = sessions[0]
+		if challenger == trail.OwnerSession && len(sessions) > 1 {
+			challenger = sessions[1]
+		}
+	}
+	findings[id] = wtfFinding{ID: id, Kind: kind, Severity: severity, TrailKey: trail.Key, Owner: trail.OwnerSession, Challenger: challenger,
+		Worktrees: worktrees, Explanation: explanation, Evidence: sortedUnique(evidence), FirstSeen: now, LastSeen: now, Active: true, Occurrence: 1}
+}
+
+func activeTrailAssociations(state wtfState, trail wtfTrail) []wtfAssociation {
+	bySession := make(map[string]wtfAssociation)
+	for _, association := range trail.Associations {
+		session, ok := state.Sessions[association.SessionKey]
+		if !ok || !session.Active {
+			continue
+		}
+		path := session.Cwd
+		if path == "" {
+			path = association.Worktree
+		}
+		bySession[association.SessionKey] = wtfAssociation{SessionKey: association.SessionKey, Worktree: path}
+	}
+	keys := sortedMapKeys(bySession)
+	out := make([]wtfAssociation, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, bySession[key])
+	}
+	return out
+}
+
+func associationIDs(associations []wtfAssociation) ([]string, []string) {
+	var sessions, worktrees []string
+	for _, association := range associations {
+		sessions = append(sessions, association.SessionKey)
+		worktrees = append(worktrees, association.Worktree)
+	}
+	return sortedUnique(sessions), sortedUnique(worktrees)
+}
+
+func associatedWorktrees(trail wtfTrail) []string {
+	paths := make([]string, 0, len(trail.Associations))
+	for _, association := range trail.Associations {
+		paths = append(paths, association.Worktree)
+	}
+	return sortedUnique(paths)
+}
+
+func sortedUnique(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedMapKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func nonemptyLines(data []byte) []string {

@@ -579,3 +579,163 @@ func TestReconcileTrailsCanonicalFallbackUsesClaimsOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestDetectWTFFindingsDuplicateActiveClaim(t *testing.T) {
+	state := findingState()
+	state.Sessions["claude:a"] = wtfSession{Active: true, Cwd: "/wt/a"}
+	state.Sessions["amp:b"] = wtfSession{Active: true, Cwd: "/wt/b"}
+	trail := state.Trails["acme/api#7"]
+	trail.Associations = []wtfAssociation{{SessionKey: "amp:b", Worktree: "/wt/b"}, {SessionKey: "claude:a", Worktree: "/wt/a"}, {SessionKey: "claude:a", Worktree: "/wt/a"}}
+	state.Trails[trail.Key] = trail
+
+	got := detectWTFFindings(state, 100)
+	finding := onlyFinding(t, got, "duplicate-active-claim")
+	wantID := wtfFindingID("duplicate-active-claim", trail.Key, []string{"amp:b", "claude:a"}, []string{"/wt/a", "/wt/b"})
+	if finding.ID != wantID || finding.Severity != 3 {
+		t.Fatalf("finding: %#v, want ID %q severity 3", finding, wantID)
+	}
+	if reversed := wtfFindingID("duplicate-active-claim", trail.Key, []string{"claude:a", "amp:b"}, []string{"/wt/b", "/wt/a"}); reversed != wantID {
+		t.Fatalf("ID changed with input ordering: %q != %q", reversed, wantID)
+	}
+
+	trail.Associations = trail.Associations[:1]
+	state.Trails[trail.Key] = trail
+	if got := detectWTFFindings(state, 100); findingOfKind(got, "duplicate-active-claim") != nil {
+		t.Fatalf("one active session triggered duplicate claim: %#v", got)
+	}
+}
+
+func TestDetectWTFFindingsExistingWIPElsewhere(t *testing.T) {
+	for _, wip := range []wtfWorktree{
+		{Path: "/wt/old", Exists: true, DirtyFiles: 2, LastSeen: 100 - 2*24*60*60},
+		{Path: "/wt/old", Exists: true, UnmergedCommits: 3, LastSeen: 100 - 2*24*60*60},
+	} {
+		state := findingState()
+		state.Sessions["claude:new"] = wtfSession{Active: true, Cwd: "/wt/new"}
+		state.Worktrees["/wt/new"] = wtfWorktree{Path: "/wt/new", Exists: true}
+		state.Worktrees["/wt/old"] = wip
+		trail := state.Trails["acme/api#7"]
+		trail.Associations = []wtfAssociation{{SessionKey: "claude:new", Worktree: "/wt/new"}, {Worktree: "/wt/old"}}
+		state.Trails[trail.Key] = trail
+		finding := onlyFinding(t, detectWTFFindings(state, 100), "existing-wip-elsewhere")
+		if finding.Severity != 2 || !strings.Contains(finding.Explanation, "/wt/old") {
+			t.Fatalf("finding: %#v", finding)
+		}
+
+		clean := state.Worktrees["/wt/old"]
+		clean.DirtyFiles, clean.UnmergedCommits = 0, 0
+		state.Worktrees["/wt/old"] = clean
+		if got := detectWTFFindings(state, 100); findingOfKind(got, "existing-wip-elsewhere") != nil {
+			t.Fatalf("clean associated worktree triggered finding: %#v", got)
+		}
+	}
+}
+
+func TestDetectWTFFindingsOutsideCanonical(t *testing.T) {
+	state := findingState()
+	state.Sessions["claude:owner"] = wtfSession{Active: true, Cwd: "/wt/moved"}
+	trail := state.Trails["acme/api#7"]
+	trail.OwnerSession = "claude:owner"
+	trail.Associations = []wtfAssociation{{SessionKey: "claude:owner", Worktree: "/wt/moved"}}
+	state.Trails[trail.Key] = trail
+	finding := onlyFinding(t, detectWTFFindings(state, 100), "outside-canonical")
+	if finding.Severity != 2 || finding.Owner != "claude:owner" || finding.Challenger != "claude:owner" {
+		t.Fatalf("finding: %#v", finding)
+	}
+
+	state.Sessions["claude:owner"] = wtfSession{Active: true, Cwd: "/wt/canonical"}
+	if got := detectWTFFindings(state, 100); findingOfKind(got, "outside-canonical") != nil {
+		t.Fatalf("canonical session triggered finding: %#v", got)
+	}
+}
+
+func TestDetectWTFFindingsDefaultBranch(t *testing.T) {
+	state := findingState()
+	state.Sessions["claude:a"] = wtfSession{Active: true, Cwd: "/wt/a"}
+	state.Worktrees["/wt/a"] = wtfWorktree{Path: "/wt/a", Exists: true, Branch: "main", DefaultBranch: "origin/main"}
+	trail := state.Trails["acme/api#7"]
+	trail.Associations = []wtfAssociation{{SessionKey: "claude:a", Worktree: "/wt/a"}}
+	state.Trails[trail.Key] = trail
+	if finding := onlyFinding(t, detectWTFFindings(state, 100), "default-branch"); finding.Severity != 3 {
+		t.Fatalf("finding: %#v", finding)
+	}
+
+	worktree := state.Worktrees["/wt/a"]
+	worktree.Branch = "feat/a"
+	state.Worktrees["/wt/a"] = worktree
+	if got := detectWTFFindings(state, 100); findingOfKind(got, "default-branch") != nil {
+		t.Fatalf("feature branch triggered finding: %#v", got)
+	}
+}
+
+func TestDetectWTFFindingsMissingCanonical(t *testing.T) {
+	state := findingState()
+	state.Sessions["claude:a"] = wtfSession{Active: true, Cwd: "/wt/a"}
+	state.Worktrees["/wt/canonical"] = wtfWorktree{Path: "/wt/canonical", Exists: false}
+	trail := state.Trails["acme/api#7"]
+	trail.Associations = []wtfAssociation{{SessionKey: "claude:a", Worktree: "/wt/a"}}
+	state.Trails[trail.Key] = trail
+	if finding := onlyFinding(t, detectWTFFindings(state, 100), "missing-canonical"); finding.Severity != 1 {
+		t.Fatalf("finding: %#v", finding)
+	}
+
+	state.Sessions["claude:a"] = wtfSession{Cwd: "/wt/a"}
+	state.Worktrees["/wt/a"] = wtfWorktree{Path: "/wt/a", Exists: true}
+	if got := detectWTFFindings(state, 100); findingOfKind(got, "missing-canonical") != nil {
+		t.Fatalf("inactive clean association triggered finding: %#v", got)
+	}
+}
+
+func TestMergeWTFFindingsClearRecurrenceAndContinuousDelivery(t *testing.T) {
+	current := map[string]wtfFinding{"f": {ID: "f", Kind: "default-branch", Active: true, FirstSeen: 10, LastSeen: 10, Occurrence: 1}}
+	first := mergeWTFFindings(nil, current, 10)
+	first["f"] = withFindingDelivery(first["f"])
+	continuous := mergeWTFFindings(first, current, 20)
+	if continuous["f"].Occurrence != 1 || len(continuous["f"].Delivery) != 1 || continuous["f"].FirstSeen != 10 {
+		t.Fatalf("continuous finding lost history: %#v", continuous["f"])
+	}
+	cleared := mergeWTFFindings(continuous, nil, 30)
+	if cleared["f"].Active || cleared["f"].LastSeen != 20 || len(cleared) != 1 {
+		t.Fatalf("cleared finding: %#v", cleared["f"])
+	}
+	recurred := mergeWTFFindings(cleared, current, 40)
+	if !recurred["f"].Active || recurred["f"].Occurrence != 2 || recurred["f"].FirstSeen != 10 || recurred["f"].LastSeen != 40 || len(recurred["f"].Delivery) != 0 {
+		t.Fatalf("recurred finding: %#v", recurred["f"])
+	}
+}
+
+func findingState() wtfState {
+	return wtfState{
+		Sessions: map[string]wtfSession{},
+		Worktrees: map[string]wtfWorktree{
+			"/wt/canonical": {Path: "/wt/canonical", Exists: true},
+		},
+		Trails: map[string]wtfTrail{
+			"acme/api#7": {Key: "acme/api#7", OwnerSession: "claude:owner", CanonicalWorktree: "/wt/canonical"},
+		},
+	}
+}
+
+func onlyFinding(t *testing.T, findings map[string]wtfFinding, kind string) wtfFinding {
+	t.Helper()
+	if finding := findingOfKind(findings, kind); finding != nil {
+		return *finding
+	}
+	t.Fatalf("missing %s finding in %#v", kind, findings)
+	return wtfFinding{}
+}
+
+func findingOfKind(findings map[string]wtfFinding, kind string) *wtfFinding {
+	for _, finding := range findings {
+		if finding.Kind == kind {
+			copy := finding
+			return &copy
+		}
+	}
+	return nil
+}
+
+func withFindingDelivery(finding wtfFinding) wtfFinding {
+	finding.Delivery = map[string]wtfDeliveryStatus{"desktop": {State: "sent", Attempts: 1}}
+	return finding
+}
