@@ -560,6 +560,22 @@ func TestRequestWTFScanCoalescesAtomicMarker(t *testing.T) {
 	}
 }
 
+func TestReadWTFHealthFileReportsMalformedAndIgnoresMissing(t *testing.T) {
+	home := t.TempDir()
+	if health, err := readWTFHealthFile(home); err != nil || health != (wtfHealth{}) {
+		t.Fatalf("missing health = %+v, %v", health, err)
+	}
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wtfHealthPath(home), []byte(`{"pid":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if health, err := readWTFHealthFile(home); err == nil || health != (wtfHealth{}) || !strings.Contains(err.Error(), "read wtf health") {
+		t.Fatalf("malformed health = %+v, %v", health, err)
+	}
+}
+
 func TestRunWTFDaemonSerializesScansAndSurvivesDegradation(t *testing.T) {
 	home := t.TempDir()
 	withWTFProcessFakes(t, 707, func(pid int) bool { return pid == 707 }, func(int) string { return "entire-tail" })

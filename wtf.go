@@ -296,16 +296,18 @@ type wtfSession struct {
 }
 
 type wtfSnapshot struct {
-	GeneratedAt int64
-	Home        string
-	Sessions    []wtfSession
-	Trails      []wtfTrail
-	Worktrees   []wtfWorktree
-	Findings    []wtfFinding
-	Errors      []string
-	Monitoring  bool
-	Health      wtfHealth
-	Now         int64
+	GeneratedAt    int64
+	Home           string
+	Sessions       []wtfSession
+	Trails         []wtfTrail
+	Worktrees      []wtfWorktree
+	Findings       []wtfFinding
+	Errors         []string
+	Monitoring     bool
+	Health         wtfHealth
+	HealthError    string
+	RefreshPending bool
+	Now            int64
 }
 
 func snapshotFromWTFState(home string, state wtfState, scanErr error) wtfSnapshot {

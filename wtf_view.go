@@ -129,7 +129,7 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	}
 	var header []wtfComposedRow
 	var rows []wtfComposedRow
-	var footer *wtfComposedRow
+	var footer []wtfComposedRow
 	line := func(text string) { rows = append(rows, wtfComposedRow{text: clip(text)}) }
 	sessionLine := func(text, key string) {
 		rows = append(rows, wtfComposedRow{text: clip(text), sessionKey: key})
@@ -282,15 +282,20 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		line("  degraded: " + sourceErr)
 	}
 	if opts.clear && (opts.height == 0 || opts.height > 2) {
-		row := wtfComposedRow{text: clip(opts.theme.DimANSI + wtfHealthFooter(snapshot) + " · ↑↓ move · ⏎ tail · r refresh · q quit" + reset)}
-		footer = &row
+		status := wtfHealthFooter(snapshot)
+		if snapshot.HealthError != "" {
+			status += " · health: " + snapshot.HealthError
+		}
+		if len(snapshot.Errors) > 0 {
+			status += " · degraded: " + snapshot.Errors[0]
+		}
+		footer = append(footer, wtfComposedRow{text: clip(opts.theme.DimANSI + status + reset)})
+		footer = append(footer, wtfComposedRow{text: clip(opts.theme.DimANSI + "↑↓ move · ⏎ tail · r refresh · q quit" + reset)})
 	}
 	bodyHeight := opts.height
 	if bodyHeight > 0 {
 		bodyHeight-- // fixed header
-		if footer != nil {
-			bodyHeight--
-		}
+		bodyHeight -= len(footer)
 	}
 	if bodyHeight >= 0 && opts.height > 0 && len(rows) > bodyHeight {
 		start := 0
@@ -308,8 +313,8 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	for _, row := range append(header, rows...) {
 		b.WriteString(row.text + "\n")
 	}
-	if footer != nil {
-		b.WriteString(footer.text + "\n")
+	for _, row := range footer {
+		b.WriteString(row.text + "\n")
 	}
 	result := b.String()
 	if opts.clear {
@@ -332,6 +337,9 @@ func wtfHealthFooter(snapshot wtfSnapshot) string {
 		age = formatAge(max(int64(0), now-last)) + " ago"
 	}
 	footer := "monitoring on · last successful scan " + age
+	if snapshot.RefreshPending {
+		footer += " · refresh pending"
+	}
 	if snapshot.Health.LastError != "" {
 		footer += " · error: " + snapshot.Health.LastError
 	}
@@ -622,6 +630,110 @@ type wtfCollectResult struct {
 	cache    map[string]wtfSummaryCache
 }
 
+type wtfDashboardDeps struct {
+	ReadState  func(string, int64) (wtfState, error)
+	ReadHealth func(string) (wtfHealth, error)
+	Running    func(wtfHealth) bool
+	Scan       func(context.Context, string, wtfState, wtfScanDeps) (wtfState, error)
+	Request    func(string) error
+	Now        func() time.Time
+	ScanDeps   wtfScanDeps
+}
+
+type wtfDashboardCollector struct {
+	home            string
+	deps            wtfDashboardDeps
+	state           wtfState
+	stateErr        error
+	health          wtfHealth
+	healthErr       error
+	monitoring      bool
+	fallbackCurrent bool
+	refreshPending  bool
+	refreshBaseline int64
+	durableUpdated  int64
+}
+
+func newWTFDashboardCollector(home string, deps wtfDashboardDeps) *wtfDashboardCollector {
+	now := deps.Now()
+	state, stateErr := deps.ReadState(home, now.Unix())
+	health, healthErr := deps.ReadHealth(home)
+	durableUpdated := int64(0)
+	if stateErr == nil {
+		durableUpdated = state.UpdatedAt
+	}
+	return &wtfDashboardCollector{home: home, deps: deps, state: state, stateErr: stateErr, health: health, healthErr: healthErr, durableUpdated: durableUpdated}
+}
+
+func (c *wtfDashboardCollector) readHealth() bool {
+	health, err := c.deps.ReadHealth(c.home)
+	if err == nil {
+		c.health, c.healthErr = health, nil
+	} else {
+		c.healthErr = err
+	}
+	return c.deps.Running(c.health)
+}
+
+func (c *wtfDashboardCollector) Collect(_ map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
+	now := c.deps.Now()
+	running := c.readHealth()
+	if running {
+		next, err := c.deps.ReadState(c.home, now.Unix())
+		if err == nil {
+			c.state, c.stateErr = next, nil
+			c.durableUpdated = next.UpdatedAt
+		} else {
+			c.stateErr = err
+		}
+		c.fallbackCurrent = false
+	} else if c.monitoring || !c.fallbackCurrent {
+		next, scanErr := c.deps.Scan(context.Background(), c.home, c.state, c.deps.ScanDeps)
+		c.state = next
+		if scanErr != nil {
+			c.stateErr = errors.Join(c.stateErr, scanErr)
+		}
+		c.fallbackCurrent = true
+	}
+	if c.refreshPending && (!running || c.durableUpdated > c.refreshBaseline) {
+		c.refreshPending = false
+	}
+	c.monitoring = running
+	snapshot := snapshotFromWTFState(c.home, c.state, c.stateErr)
+	snapshot.Monitoring = running
+	snapshot.Health = c.health
+	if c.healthErr != nil {
+		snapshot.HealthError = c.healthErr.Error()
+	}
+	snapshot.RefreshPending = c.refreshPending
+	snapshot.Now = now.Unix()
+	return snapshot, c.state.SummaryCache
+}
+
+func (c *wtfDashboardCollector) RequestRefresh() error {
+	health, err := c.deps.ReadHealth(c.home)
+	if err != nil {
+		c.healthErr = err
+		c.refreshPending = false
+		return nil
+	}
+	c.health, c.healthErr = health, nil
+	if !c.deps.Running(health) {
+		c.refreshPending = false
+		return nil
+	}
+	c.refreshBaseline = c.durableUpdated
+	c.refreshPending = true
+	if c.deps.Request == nil {
+		return nil
+	}
+	if err := c.deps.Request(c.home); err != nil {
+		c.refreshPending = false
+		return err
+	}
+	return nil
+}
+
 func runWTFDashboardLoop(ui wtfUI, initialCache map[string]wtfSummaryCache, collect func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache), keys <-chan wtfKeyEvent, render func(wtfUI) error) (*wtfSession, error) {
 	return runWTFDashboardLoopWithRefresh(ui, initialCache, collect, keys, render, nil, nil)
 }
@@ -762,47 +874,12 @@ func readWTFKeyEvents(reader wtfReader, size func() (int, int), width, height in
 }
 
 func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
-	now := time.Now()
-	state, loadErr := readWTFState(home, now.Unix())
-	health, monitoring := readWTFHealth(home)
-	monitoring = monitoring && wtfDaemonRunning(health)
-	cache := state.SummaryCache
-	deps := defaultWTFScanDeps()
-	first := true
-	var stateMod time.Time
-	if info, err := os.Stat(wtfStatePath(home)); err == nil {
-		stateMod = info.ModTime()
-	}
-	collect := func(_ map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
-		if monitoring {
-			var readErr error
-			if info, err := os.Stat(wtfStatePath(home)); err != nil {
-				readErr = err
-			} else if info.ModTime() != stateMod {
-				next, err := readWTFState(home, time.Now().Unix())
-				readErr = err
-				if err == nil {
-					state = next
-					stateMod = info.ModTime()
-				}
-			}
-			snapshot := snapshotFromWTFState(home, state, readErr)
-			health, _ = readWTFHealth(home)
-			snapshot.Monitoring, snapshot.Health, snapshot.Now = true, health, time.Now().Unix()
-			return snapshot, state.SummaryCache
-		}
-		if first {
-			first = false
-			next, scanErr := scanWTF(context.Background(), home, state, deps)
-			state = next
-			snapshot := snapshotFromWTFState(home, next, errors.Join(loadErr, scanErr))
-			snapshot.Now = time.Now().Unix()
-			return snapshot, next.SummaryCache
-		}
-		snapshot := snapshotFromWTFState(home, state, loadErr)
-		snapshot.Now = time.Now().Unix()
-		return snapshot, state.SummaryCache
-	}
+	collector := newWTFDashboardCollector(home, wtfDashboardDeps{
+		ReadState: readWTFState, ReadHealth: readWTFHealthFile, Running: wtfDaemonRunning,
+		Scan: scanWTF, Request: requestWTFScan, Now: time.Now, ScanDeps: defaultWTFScanDeps(),
+	})
+	cache := collector.state.SummaryCache
+	collect := collector.Collect
 	if !isCharDevice(os.Stdout) {
 		snapshot, _ := collect(cache)
 		_, err := io.WriteString(os.Stdout, renderWTFSnapshot(snapshot, 120, false))
@@ -836,11 +913,7 @@ func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
 		_, err := io.WriteString(tty, renderWTF(ui, theme))
 		return err
 	}
-	var requestScan func() error
-	if monitoring {
-		requestScan = func() error { return requestWTFScan(home) }
-	}
-	return runWTFDashboardLoopWithRefresh(wtfUI{Width: width, Height: height}, cache, collect, keys, render, requestScan, nil)
+	return runWTFDashboardLoopWithRefresh(wtfUI{Width: width, Height: height}, cache, collect, keys, render, collector.RequestRefresh, nil)
 }
 
 func loadWTFDashboardCache(home string, now int64) (map[string]wtfSummaryCache, error) {

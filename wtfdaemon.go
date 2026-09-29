@@ -259,13 +259,25 @@ func wtfIsEntireTailProcess(command string) bool {
 	return len(fields) == 3 && filepath.Base(fields[0]) == "entire-tail" && fields[1] == "wtf" && fields[2] == "daemon"
 }
 
-func readWTFHealth(home string) (wtfHealth, bool) {
+func readWTFHealthFile(home string) (wtfHealth, error) {
 	var health wtfHealth
 	data, err := os.ReadFile(wtfHealthPath(home))
-	if err != nil || json.Unmarshal(data, &health) != nil {
-		return wtfHealth{}, false
+	if errors.Is(err, os.ErrNotExist) {
+		return wtfHealth{}, nil
 	}
-	return health, true
+	if err != nil {
+		return wtfHealth{}, fmt.Errorf("read wtf health: %w", err)
+	}
+	if err := json.Unmarshal(data, &health); err != nil {
+		return wtfHealth{}, fmt.Errorf("read wtf health: %w", err)
+	}
+	return health, nil
+
+}
+
+func readWTFHealth(home string) (wtfHealth, bool) {
+	health, err := readWTFHealthFile(home)
+	return health, err == nil && health.PID > 0
 }
 
 func writeWTFHealth(home string, health wtfHealth) error {

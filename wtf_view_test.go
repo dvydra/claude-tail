@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -379,6 +383,162 @@ func TestRunWTFDaemonAwareRefreshWritesRequestAndKeepsSelection(t *testing.T) {
 		func(wtfUI) error { return nil }, func() error { requests++; return nil }, nil)
 	if err != nil || requests != 1 || chosen == nil || chosen.ID != "selected" {
 		t.Fatalf("chosen=%+v requests=%d err=%v", chosen, requests, err)
+	}
+}
+
+func TestWTFDashboardCollectorTransitionsAndNeverSaves(t *testing.T) {
+	now := time.Unix(500, 0)
+	running := false
+	reads, scans := 0, 0
+	state := newWTFState(10)
+	state.Sessions["claude:old"] = wtfSession{Agent: AgentClaude, ID: "old"}
+	collector := newWTFDashboardCollector("/home", wtfDashboardDeps{
+		ReadState:  func(string, int64) (wtfState, error) { reads++; return state, nil },
+		ReadHealth: func(string) (wtfHealth, error) { return wtfHealth{PID: 1, LastSuccessfulScan: 9}, nil },
+		Running:    func(wtfHealth) bool { return running },
+		Scan: func(_ context.Context, _ string, current wtfState, _ wtfScanDeps) (wtfState, error) {
+			scans++
+			current.UpdatedAt++
+			return current, nil
+		},
+		Now: func() time.Time { return now },
+	})
+
+	first, _ := collector.Collect(nil)
+	second, _ := collector.Collect(nil)
+	if reads != 1 || scans != 1 || first.Monitoring || second.GeneratedAt != first.GeneratedAt {
+		t.Fatalf("off reads=%d scans=%d first=%+v second=%+v", reads, scans, first, second)
+	}
+	running = true
+	state.UpdatedAt = 20
+	on, _ := collector.Collect(nil)
+	state.UpdatedAt = 21 // durable content advances even if a filesystem mtime would not
+	poll, _ := collector.Collect(nil)
+	if reads != 3 || scans != 1 || !on.Monitoring || poll.GeneratedAt != 21 {
+		t.Fatalf("on reads=%d scans=%d on=%+v poll=%+v", reads, scans, on, poll)
+	}
+	running = false
+	off, _ := collector.Collect(nil)
+	collector.Collect(nil)
+	if reads != 3 || scans != 2 || off.Monitoring {
+		t.Fatalf("off again reads=%d scans=%d snapshot=%+v", reads, scans, off)
+	}
+}
+
+func TestWTFDashboardCollectorPreservesParseErrors(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		t.Run(fmt.Sprint("running=", running), func(t *testing.T) {
+			parseErr := errors.New("read wtf state: malformed")
+			reads, scans := 0, 0
+			good := newWTFState(20)
+			collector := newWTFDashboardCollector("/home", wtfDashboardDeps{
+				ReadState: func(string, int64) (wtfState, error) {
+					reads++
+					if reads < 3 {
+						return newWTFState(10), parseErr
+					}
+					return good, nil
+				},
+				ReadHealth: func(string) (wtfHealth, error) { return wtfHealth{PID: 1}, nil },
+				Running:    func(wtfHealth) bool { return running },
+				Scan: func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) {
+					scans++
+					return state, nil
+				},
+				Now: time.Now,
+			})
+			first, _ := collector.Collect(nil)
+			if len(first.Errors) == 0 || !strings.Contains(first.Errors[0], "malformed") || (!running && scans != 1) {
+				t.Fatalf("first=%+v scans=%d", first, scans)
+			}
+			second, _ := collector.Collect(nil)
+			if running && len(second.Errors) != 0 {
+				t.Fatalf("successful durable read did not replace parse error: %+v", second.Errors)
+			}
+		})
+	}
+}
+
+func TestWTFDashboardCollectorMalformedHealthRetainsLastValid(t *testing.T) {
+	call := 0
+	collector := newWTFDashboardCollector("/home", wtfDashboardDeps{
+		ReadState: func(string, int64) (wtfState, error) { return newWTFState(10), nil },
+		ReadHealth: func(string) (wtfHealth, error) {
+			call++
+			if call == 1 {
+				return wtfHealth{PID: 1, LastSuccessfulScan: 8}, nil
+			}
+			return wtfHealth{}, errors.New("decode health: malformed")
+		},
+		Running: func(h wtfHealth) bool { return h.PID == 1 },
+		Scan:    func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) { return state, nil },
+		Now:     time.Now,
+	})
+	snapshot, _ := collector.Collect(nil)
+	if !snapshot.Monitoring || snapshot.Health.LastSuccessfulScan != 8 || !strings.Contains(snapshot.HealthError, "malformed") {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+}
+
+func TestWTFDashboardCollectorRefreshUsesLiveHealthAndRealMarker(t *testing.T) {
+	home := t.TempDir()
+	running := false
+	state := newWTFState(10)
+	collector := newWTFDashboardCollector(home, wtfDashboardDeps{
+		ReadState:  func(string, int64) (wtfState, error) { return state, nil },
+		ReadHealth: func(string) (wtfHealth, error) { return wtfHealth{PID: 1}, nil },
+		Running:    func(wtfHealth) bool { return running },
+		Scan:       func(_ context.Context, _ string, state wtfState, _ wtfScanDeps) (wtfState, error) { return state, nil },
+		Request:    requestWTFScan,
+		Now:        time.Now,
+	})
+	if err := collector.RequestRefresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(wtfScanRequestPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("off refresh marker: %v", err)
+	}
+	running = true
+	if err := collector.RequestRefresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(wtfScanRequestPath(home)); err != nil {
+		t.Fatalf("running refresh marker: %v", err)
+	}
+	snapshot, _ := collector.Collect(nil)
+	if !snapshot.RefreshPending {
+		t.Fatal("refresh stopped polling before state advanced")
+	}
+	state.UpdatedAt = 11
+	snapshot, _ = collector.Collect(nil)
+	if snapshot.RefreshPending {
+		t.Fatal("refresh remained pending after durable state advanced")
+	}
+	_ = os.Remove(wtfScanRequestPath(home))
+	running = false
+	if err := collector.RequestRefresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(wtfDir(home), "scan-request")); !os.IsNotExist(err) {
+		t.Fatalf("stale marker written: %v", err)
+	}
+}
+
+func TestRenderWTFFixedFooterKeepsHealthAndFirstDegradation(t *testing.T) {
+	snapshot := testWTFSnapshot()
+	snapshot.HealthError = "health malformed"
+	snapshot.Errors = []string{"state malformed", "secondary"}
+	got := renderWTF(wtfUI{Snapshot: snapshot, Width: 160, Height: 8}, Theme{})
+	for _, want := range []string{"monitoring off", "health malformed", "state malformed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normal-height footer missing %q:\n%s", want, got)
+		}
+	}
+	for _, height := range []int{1, 2} {
+		got = renderWTF(wtfUI{Snapshot: snapshot, Cursor: 1, Top: 1, Width: 80, Height: height}, Theme{})
+		if height == 2 && !strings.Contains(got, "▸ A  amp-idle") {
+			t.Fatalf("height %d hid selected row:\n%s", height, got)
+		}
 	}
 }
 
