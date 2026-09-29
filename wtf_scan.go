@@ -43,9 +43,9 @@ type trailPattern struct {
 
 var trailPatterns = []trailPattern{
 	{"url", regexp.MustCompile(`(?i)https://entire\.io/gh/([a-z0-9_.-]+)/([a-z0-9_.-]+)/trails/([0-9]+)`)},
-	{"qualified", regexp.MustCompile(`(?i)(^|[^a-z0-9_.@-])([a-z0-9_.-]+)/([a-z0-9_.-]+)#([0-9]+)($|[^a-z0-9_.@-])`)},
-	{"repo", regexp.MustCompile(`(?i)(^|[^a-z0-9_.@/-])([a-z0-9_.-]+)#([0-9]+)($|[^a-z0-9_.@-])`)},
-	{"bare", regexp.MustCompile(`(?i)(^|[^a-z0-9_.@-])(trail[ ]+#?([0-9]+))($|[^a-z0-9_.@-])`)},
+	{"qualified", regexp.MustCompile(`(?i)([a-z0-9_.-]+)/([a-z0-9_.-]+)#([0-9]+)`)},
+	{"repo", regexp.MustCompile(`(?i)([a-z0-9_.-]+)#([0-9]+)`)},
+	{"bare", regexp.MustCompile(`(?i)trail[ ]+#?([0-9]+)`)},
 }
 
 type trailMatch struct {
@@ -87,7 +87,8 @@ func trailMatches(text string) []trailMatch {
 	for _, pattern := range trailPatterns {
 		for _, idx := range pattern.re.FindAllStringSubmatchIndex(text, -1) {
 			start, end := idx[0], idx[1]
-			if pattern.kind == "url" && (!trailBoundaryBefore(text, start) || !trailBoundaryAfter(text, end)) {
+			if !trailBoundaryBefore(text, start) || !trailBoundaryAfter(text, end) ||
+				(pattern.kind == "repo" && start > 0 && text[start-1] == '/') {
 				continue
 			}
 			parts := make([]string, 0, len(idx)/2-1)
@@ -97,10 +98,6 @@ func trailMatches(text string) []trailMatch {
 				} else {
 					parts = append(parts, text[idx[i]:idx[i+1]])
 				}
-			}
-			if pattern.kind != "url" {
-				start += len(parts[0])
-				end -= len(parts[len(parts)-1])
 			}
 			candidate := trailMatch{start: start, end: end, kind: pattern.kind, matched: text[start:end], parts: parts}
 			overlaps := false
@@ -139,10 +136,10 @@ func resolveTrailMatch(match trailMatch, event trailTextEvent, ctx trailContext)
 		owner, repo, numberText = match.parts[0], match.parts[1], match.parts[2]
 		e.Resolution = "full URL"
 	case "qualified":
-		owner, repo, numberText = match.parts[1], match.parts[2], match.parts[3]
+		owner, repo, numberText = match.parts[0], match.parts[1], match.parts[2]
 		e.Resolution = "qualified owner/repo"
 	case "repo":
-		repo, numberText = match.parts[1], match.parts[2]
+		repo, numberText = match.parts[0], match.parts[1]
 		currentOwner, currentRepo, ok := splitRepo(ctx.CurrentRepo)
 		if ok && strings.EqualFold(repo, currentRepo) {
 			owner, repo = currentOwner, currentRepo
@@ -165,7 +162,7 @@ func resolveTrailMatch(match trailMatch, event trailTextEvent, ctx trailContext)
 			}
 		}
 	case "bare":
-		numberText = match.parts[2]
+		numberText = match.parts[0]
 		var ok bool
 		owner, repo, ok = splitRepo(ctx.CurrentRepo)
 		if ok {
@@ -174,7 +171,12 @@ func resolveTrailMatch(match trailMatch, event trailTextEvent, ctx trailContext)
 			e.Resolution = "bare trail without current repo"
 		}
 	}
-	e.Number, _ = strconv.Atoi(numberText)
+	number, err := strconv.Atoi(numberText)
+	if err != nil || number <= 0 {
+		e.Resolution = "invalid trail number"
+		return e
+	}
+	e.Number = number
 	if owner == "" || repo == "" {
 		return e
 	}
@@ -207,10 +209,13 @@ func claudeTrailEvents(path string, observedAt int64) []trailTextEvent {
 		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.Message == nil || (event.Type != "user" && event.Type != "assistant") {
 			continue
 		}
+		if event.Type == "user" && isSyntheticUser(event.Origin.Kind, event.PromptSource, event.IsMeta) {
+			continue
+		}
 		at := parsedTrailTime(event.Timestamp, observedAt)
 		var plain string
 		if json.Unmarshal(event.Message.Content, &plain) == nil {
-			if event.Type == "user" && !isTaskNote(event.Origin.Kind, event.PromptSource, plain) && !isSyntheticUser(event.Origin.Kind, event.PromptSource, event.IsMeta) {
+			if event.Type == "user" && !isTaskNote(event.Origin.Kind, event.PromptSource, plain) {
 				events = append(events, trailTextEvent{At: at, Source: "user", Text: plain})
 			}
 			continue
@@ -222,9 +227,7 @@ func claudeTrailEvents(path string, observedAt int64) []trailTextEvent {
 		for _, block := range blocks {
 			switch block.Type {
 			case "text":
-				if event.Type == "assistant" {
-					events = append(events, trailTextEvent{At: at, Source: "assistant", Text: block.Text})
-				}
+				events = append(events, trailTextEvent{At: at, Source: event.Type, Text: block.Text})
 			case "tool_use":
 				events = appendJSONText(events, at, "tool input", block.Input)
 			case "tool_result":

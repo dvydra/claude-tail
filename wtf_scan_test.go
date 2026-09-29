@@ -64,10 +64,46 @@ func TestExtractTrailEvidenceDeduplicatesByEarliestTimestamp(t *testing.T) {
 	}
 }
 
+func TestExtractTrailEvidenceFindsAdjacentReferences(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		ctx  trailContext
+		want []string
+	}{
+		{"qualified", "acme/api#1,other/web#2", trailContext{}, []string{"acme/api#1", "other/web#2"}},
+		{"repo shorthand", "api#3,web#4", trailContext{KnownRepos: []string{"acme/api", "other/web"}}, []string{"acme/api#3", "other/web#4"}},
+		{"bare", "trail #5,trail #6", trailContext{CurrentRepo: "acme/api"}, []string{"acme/api#5", "acme/api#6"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractTrailEvidence([]trailTextEvent{{At: 42, Source: "user", Text: tt.text}}, tt.ctx)
+			keys := make([]string, len(got))
+			for i := range got {
+				keys[i] = got[i].Key
+			}
+			if !reflect.DeepEqual(keys, tt.want) {
+				t.Fatalf("keys: got %q, want %q", keys, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractTrailEvidenceRejectsOverflow(t *testing.T) {
+	got := extractTrailEvidence([]trailTextEvent{{At: 42, Source: "user", Text: "acme/api#999999999999999999999999999999999999"}}, trailContext{})
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want unresolved evidence", len(got))
+	}
+	if got[0].Resolved || got[0].Key != "" || got[0].Number != 0 {
+		t.Fatalf("overflow resolved: %#v", got[0])
+	}
+}
+
 func TestClaudeTrailEvents(t *testing.T) {
 	got := claudeTrailEvents(filepath.Join("testdata", "wtf", "claude-trails.jsonl"), 999)
 	want := []trailTextEvent{
 		{At: 1790672400, Source: "user", Text: "user acme/api#1"},
+		{At: 1790672400, Source: "user", Text: "user block acme/api#10"},
 		{At: 1790672401, Source: "assistant", Text: "assistant acme/api#2"},
 		{At: 1790672402, Source: "tool input", Text: "input acme/api#3"},
 		{At: 1790672403, Source: "tool result", Text: "result acme/api#4"},
