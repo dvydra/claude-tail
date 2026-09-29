@@ -710,3 +710,31 @@ func TestLoadClaudeMetaContent(t *testing.T) {
 		t.Errorf("Content not wired into treeSession: %q", s.Content)
 	}
 }
+
+// An Amp row's folder is labelled by repo (`owner/repo`), not by path, so the
+// workspace launcher must get the session's own cwd or it silently tails instead.
+func TestSelectSessionAmpUsesSessionCwd(t *testing.T) {
+	dir := t.TempDir()
+	tr := sessionTree{Folders: []treeFolder{{
+		Cwd:      "dvydra/claude-tail",
+		Expanded: true,
+		Sessions: []treeSession{{Agent: AgentAmp, Path: "T-1", ID: "T-1", cwd: dir}},
+	}}}
+	pick := func() string {
+		ui := treeUI{Tree: tr, Height: 20}
+		ui.Rows = flattenRows(ui.Tree, "")
+		ui.Cursor = 1
+		ui.selectSession(true)
+		return ui.ChosenCwd
+	}
+	if got := pick(); got != dir {
+		t.Errorf("ChosenCwd = %q, want session cwd %q", got, dir)
+	}
+
+	// Session cwd gone → the folder's real Dir, never the label.
+	tr.Folders[0].Sessions[0].cwd = "/gone/away"
+	tr.Folders[0].Dir = dir
+	if got := pick(); got != dir {
+		t.Errorf("fallback ChosenCwd = %q, want folder Dir %q", got, dir)
+	}
+}

@@ -840,7 +840,15 @@ func (ui *treeUI) selectSession(workspace bool) {
 	folder := ui.Tree.Folders[row.Folder]
 	s := folder.Sessions[row.Session]
 	ui.Chosen = s.Path
+	// folder.Cwd is the group LABEL — `owner/repo` once grouped by remote — so
+	// the launcher needs a real directory: the session's own cwd, else the
+	// folder's Dir. Amp depends on this; Claude derives its dir from the path.
 	ui.ChosenCwd = folder.Cwd
+	if s.cwd != "" && isDir(s.cwd) {
+		ui.ChosenCwd = s.cwd
+	} else if folder.Dir != "" {
+		ui.ChosenCwd = folder.Dir
+	}
 	ui.ChosenID = s.ID
 	ui.ChosenRepo = s.Repo
 	ui.ChosenAcc = s.Profile
