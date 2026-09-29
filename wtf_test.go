@@ -1,12 +1,121 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestWTFStateMissingReturnsInitializedState(t *testing.T) {
+	home := t.TempDir()
+	state, err := loadWTFState(home, 1_700_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != wtfStateVersion || state.UpdatedAt != 1_700_000_000 {
+		t.Fatalf("state metadata = %+v", state)
+	}
+	if state.Sessions == nil || state.Trails == nil || state.Worktrees == nil || state.Findings == nil || state.SummaryCache == nil {
+		t.Fatalf("state maps are not initialized: %+v", state)
+	}
+}
+
+func TestWTFStateRoundTripKeepsHistoryAndUsesAtomicModes(t *testing.T) {
+	home := t.TempDir()
+	state := newWTFState(1_700_000_000)
+	state.Trails["o/r#7"] = wtfTrail{Key: "o/r#7", Owner: "o", Repo: "r", Number: 7, FirstSeen: 10, LastSeen: 20}
+	state.Worktrees["/gone"] = wtfWorktree{Repo: "o/r", Path: "/gone", Exists: false, FirstSeen: 11, LastSeen: 21}
+	state.SummaryCache["claude:s1"] = wtfSummaryCache{InputHash: "abc", Value: wtfSummary{Summary: "cached"}}
+
+	if err := saveWTFState(home, state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadWTFState(home, 1_700_000_001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Trails["o/r#7"].FirstSeen != 10 || loaded.Worktrees["/gone"].Exists || loaded.SummaryCache["claude:s1"].Value.Summary != "cached" {
+		t.Fatalf("round trip = %+v", loaded)
+	}
+	if matches, err := filepath.Glob(filepath.Join(wtfDir(home), "*.tmp")); err != nil || len(matches) != 0 {
+		t.Fatalf("temporary files = %v, err = %v", matches, err)
+	}
+	if info, err := os.Stat(wtfDir(home)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("state directory mode = %v, err = %v", infoMode(info), err)
+	}
+	if info, err := os.Stat(wtfStatePath(home)); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("state file mode = %v, err = %v", infoMode(info), err)
+	}
+}
+
+func TestWTFStateCorruptFileIsPreserved(t *testing.T) {
+	home := t.TempDir()
+	now := int64(1_700_000_123)
+	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bad := []byte(`{"version":`)
+	if err := os.WriteFile(wtfStatePath(home), bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := loadWTFState(home, now)
+	if err == nil || !strings.Contains(err.Error(), "recovered corrupt wtf state") {
+		t.Fatalf("load error = %v", err)
+	}
+	var syntaxErr *os.PathError
+	if errors.As(err, &syntaxErr) {
+		t.Fatalf("wanted explicit recovery error, got path error: %v", err)
+	}
+	if state.Version != wtfStateVersion || state.Sessions == nil || state.Trails == nil {
+		t.Fatalf("recovered state = %+v", state)
+	}
+	corrupt := filepath.Join(wtfDir(home), "state.corrupt-1700000123.json")
+	if got, readErr := os.ReadFile(corrupt); readErr != nil || string(got) != string(bad) {
+		t.Fatalf("corrupt copy = %q, err = %v", got, readErr)
+	}
+	if _, statErr := os.Stat(wtfStatePath(home)); !os.IsNotExist(statErr) {
+		t.Fatalf("state path still exists: %v", statErr)
+	}
+}
+
+func TestExpireWTFSessionsKeepsAssociations(t *testing.T) {
+	state := newWTFState(200)
+	state.Sessions["claude:old"] = wtfSession{Agent: AgentClaude, ID: "old", State: "ended", LastActivity: 99}
+	state.Sessions["claude:active"] = wtfSession{Agent: AgentClaude, ID: "active", State: "busy", Active: true, LastActivity: 50}
+	state.Sessions["amp:today"] = wtfSession{Agent: AgentAmp, ID: "today", State: "ended", LastActivity: 100}
+	state.Trails["o/r#1"] = wtfTrail{
+		Key:          "o/r#1",
+		FirstClaim:   &wtfClaim{SessionKey: "claude:old", At: 60},
+		Associations: []wtfAssociation{{SessionKey: "claude:old", At: 70, Source: "transcript"}},
+	}
+
+	expireWTFSessions(&state, 100)
+	if _, ok := state.Sessions["claude:old"]; ok {
+		t.Fatal("yesterday's ended session was not expired")
+	}
+	if _, ok := state.Sessions["claude:active"]; !ok {
+		t.Fatal("active session was expired")
+	}
+	if _, ok := state.Sessions["amp:today"]; !ok {
+		t.Fatal("session ending at midnight was expired")
+	}
+	trail := state.Trails["o/r#1"]
+	if trail.FirstClaim == nil || trail.FirstClaim.SessionKey != "claude:old" || len(trail.Associations) != 1 || trail.Associations[0].SessionKey != "claude:old" {
+		t.Fatalf("trail history changed: %+v", trail)
+	}
+}
+
+func infoMode(info os.FileInfo) os.FileMode {
+	if info == nil {
+		return 0
+	}
+	return info.Mode().Perm()
+}
 
 func TestRunWTFRejectsArguments(t *testing.T) {
 	err := runWTF(Config{WTFArgs: []string{"status"}})
