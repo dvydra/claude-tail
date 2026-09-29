@@ -3,7 +3,9 @@ package main
 import (
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func testWTFSnapshot() wtfSnapshot {
@@ -184,9 +186,9 @@ func TestNormalizeWTFViewportUsesNewDimensionsBeforeRender(t *testing.T) {
 	}}
 	ui := wtfUI{Snapshot: snapshot, Cursor: 2, Top: 0, Width: 100, Height: 20}
 
-	ui = normalizeWTFViewport(ui, 40, 1)
-	if ui.Width != 40 || ui.Height != 1 || ui.Top != ui.Cursor {
-		t.Fatalf("resized state width/height/top/cursor = %d/%d/%d/%d, want 40/1/2/2", ui.Width, ui.Height, ui.Top, ui.Cursor)
+	ui = normalizeWTFViewport(ui, 40, 2)
+	if ui.Width != 40 || ui.Height != 2 || ui.Top != ui.Cursor {
+		t.Fatalf("resized state width/height/top/cursor = %d/%d/%d/%d, want 40/2/2/2", ui.Width, ui.Height, ui.Top, ui.Cursor)
 	}
 	if got := renderWTF(ui, Theme{}); !strings.Contains(got, "▸ C  three") {
 		t.Fatalf("render after resize hid selected session:\n%s", got)
@@ -201,12 +203,105 @@ func TestRenderWTFMinimalViewportShowsSelectedAcrossHeaders(t *testing.T) {
 	ui := wtfUI{Snapshot: snapshot, Cursor: 1, Top: 1, Width: 80, Height: 1}
 
 	got := strings.TrimPrefix(renderWTF(ui, Theme{}), "\x1b[H\x1b[2J")
-	if !strings.Contains(got, "▸ A  ended") {
-		t.Fatalf("one-row boundary viewport hid selected session:\n%s", got)
+	if !strings.Contains(got, "Today  1 active · 1 ended today") {
+		t.Fatalf("one-row viewport hid fixed header:\n%s", got)
 	}
-	if strings.Contains(got, "Recently stopped") || strings.Contains(got, "repo/b") {
-		t.Fatalf("one-row boundary viewport rendered headers instead of selected session:\n%s", got)
+	if strings.Contains(got, "▸ A  ended") || strings.Contains(got, "Recently stopped") || strings.Contains(got, "repo/b") {
+		t.Fatalf("one-row viewport rendered body despite zero body rows:\n%s", got)
 	}
+}
+
+func TestRenderWTFKeepsTodayHeaderFixedWhileBodyScrolls(t *testing.T) {
+	snapshot := wtfSnapshot{Sessions: []wtfSession{
+		{Agent: AgentClaude, ID: "one", Repo: "repo/a", Active: true, State: "busy", Summary: "one"},
+		{Agent: AgentClaude, ID: "two", Repo: "repo/b", Active: true, State: "idle", Summary: "two"},
+		{Agent: AgentAmp, ID: "three", Repo: "repo/c", Active: false, State: "ended", Summary: "three"},
+	}}
+	ui := wtfUI{Snapshot: snapshot, Cursor: 2, Top: 2, Width: 80, Height: 5}
+
+	got := renderWTF(ui, Theme{})
+	if !strings.Contains(got, "Today  2 active · 1 ended today") || !strings.Contains(got, "▸ A  three") {
+		t.Fatalf("scrolled render must retain header and selection:\n%s", got)
+	}
+}
+
+func TestApplyWTFSnapshotPreservesSelectedIdentityAcrossReorder(t *testing.T) {
+	ui := wtfUI{Snapshot: wtfSnapshot{Sessions: []wtfSession{
+		{Agent: AgentClaude, ID: "wanted", Active: true, LastActivity: 10},
+		{Agent: AgentAmp, ID: "other", Active: true, LastActivity: 5},
+	}}, Cursor: 0, Height: 20}
+	next := wtfSnapshot{Sessions: []wtfSession{
+		{Agent: AgentAmp, ID: "other", Active: true, LastActivity: 20},
+		{Agent: AgentClaude, ID: "wanted", Active: true, LastActivity: 10},
+	}}
+
+	ui = applyWTFSnapshot(ui, next)
+	ui = updateWTF(ui, kEnter, 0)
+	if ui.Chosen == nil || wtfSessionKey(ui.Chosen.Agent, ui.Chosen.ID) != "claude:wanted" {
+		t.Fatalf("chosen after reorder = %+v", ui.Chosen)
+	}
+}
+
+func TestWTFDashboardLoopHandlesKeysWhileCollectionBlocked(t *testing.T) {
+	keys := make(chan wtfKeyEvent, 2)
+	renders := make(chan wtfUI, 3)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	collect := func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
+		once.Do(func() { close(started) })
+		<-release
+		return wtfSnapshot{}, nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ui := wtfUI{Width: 80, Height: 20, Snapshot: wtfSnapshot{Sessions: []wtfSession{
+			{Agent: AgentClaude, ID: "one", Active: true},
+			{Agent: AgentAmp, ID: "two", Active: true},
+		}}}
+		_, _ = runWTFDashboardLoop(ui, collect, keys, func(ui wtfUI) error {
+			renders <- ui
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("collection did not start")
+	}
+	<-renders
+	keys <- wtfKeyEvent{key: kDown}
+	if ui := <-renders; ui.Cursor != 1 {
+		t.Fatalf("down cursor while collecting = %d, want 1", ui.Cursor)
+	}
+	keys <- wtfKeyEvent{key: kRune, r: 'q'}
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("q was blocked by collection")
+	}
+	close(release)
+}
+
+func TestWTFDashboardLoopHandlesEscapeWhileCollectionBlocked(t *testing.T) {
+	keys := make(chan wtfKeyEvent, 1)
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = runWTFDashboardLoop(wtfUI{Width: 80, Height: 20}, func(cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
+			<-release
+			return wtfSnapshot{}, cache
+		}, keys, func(wtfUI) error { return nil })
+	}()
+	keys <- wtfKeyEvent{key: kEsc}
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Escape was blocked by collection")
+	}
+	close(release)
 }
 
 func TestRenderWTFViewportKeepsHeadersOrderedAndNonSelectable(t *testing.T) {

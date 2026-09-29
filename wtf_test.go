@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -52,6 +55,49 @@ func TestCollectWTFSessionsMergesExactLiveState(t *testing.T) {
 	}
 	if got[3].State != "ended" || got[3].Active || got[3].LastActivity != 90 {
 		t.Fatalf("ended session = %+v", got[3])
+	}
+}
+
+func TestCollectWTFSessionsKeepsSameIDForDifferentAgents(t *testing.T) {
+	deps := wtfInventoryDeps{
+		Today: func(string, int64, *time.Location) []handoverItem {
+			return []handoverItem{
+				{Agent: AgentClaude, SessionID: "same", Title: "Claude"},
+				{Agent: AgentAmp, SessionID: "same", Title: "Amp"},
+			}
+		},
+		Live: func(string) []liveSession { return nil },
+	}
+
+	got := collectWTFSessions(t.TempDir(), 1, time.UTC, deps)
+	if len(got) != 2 || wtfSessionKey(got[0].Agent, got[0].ID) == wtfSessionKey(got[1].Agent, got[1].ID) {
+		t.Fatalf("sessions = %+v, want distinct Claude and Amp rows", got)
+	}
+}
+
+func TestCollectWTFSessionsDefaultsEmptyLiveStatusAndResolvesRepo(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init"}, {"remote", "add", "origin", "git@github.com:org/project.git"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	deps := wtfInventoryDeps{
+		Today: func(string, int64, *time.Location) []handoverItem { return nil },
+		Live: func(string) []liveSession {
+			return []liveSession{{Agent: AgentClaude, SessionID: "live-only", Cwd: repo}}
+		},
+	}
+
+	got := collectWTFSessions(home, 1, time.UTC, deps)
+	if len(got) != 1 || got[0].State != "active" || got[0].Repo != "org/project" {
+		t.Fatalf("live-only session = %+v", got)
 	}
 }
 

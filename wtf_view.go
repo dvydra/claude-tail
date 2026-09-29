@@ -37,6 +37,13 @@ type wtfComposedRow struct {
 	sessionKey string
 }
 
+type wtfKeyEvent struct {
+	key           treeKey
+	r             rune
+	width, height int
+	err           error
+}
+
 func orderedWTFSessions(snapshot wtfSnapshot) []wtfSession {
 	sessions := append([]wtfSession(nil), snapshot.Sessions...)
 	sort.SliceStable(sessions, func(i, j int) bool {
@@ -118,6 +125,7 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		}
 		return clipped + reset
 	}
+	var header []wtfComposedRow
 	var rows []wtfComposedRow
 	line := func(text string) { rows = append(rows, wtfComposedRow{text: clip(text)}) }
 	sessionLine := func(text, key string) {
@@ -134,7 +142,7 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 		}
 	}
 
-	line(fmt.Sprintf("%sToday%s  %d active · %d ended today", opts.theme.ClaudeANSI, reset, active, ended))
+	header = append(header, wtfComposedRow{text: clip(fmt.Sprintf("%sToday%s  %d active · %d ended today", opts.theme.ClaudeANSI, reset, active, ended))})
 	if len(sessions) == 0 {
 		line("")
 		line("No sessions active or seen today.")
@@ -186,20 +194,24 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 			line(opts.theme.DimANSI + "↑↓ move · ⏎ tail · r refresh · q quit" + reset)
 		}
 	}
-	if opts.height > 0 && len(rows) > opts.height {
+	bodyHeight := opts.height
+	if bodyHeight > 0 {
+		bodyHeight--
+	}
+	if bodyHeight >= 0 && opts.height > 0 && len(rows) > bodyHeight {
 		start := 0
 		if opts.selected != "" {
 			for i, row := range rows {
-				if row.sessionKey == opts.selected && i >= opts.height {
-					start = i - opts.height + 1
+				if row.sessionKey == opts.selected && i >= bodyHeight {
+					start = i - bodyHeight + 1
 					break
 				}
 			}
 		}
-		rows = rows[start:min(start+opts.height, len(rows))]
+		rows = rows[start:min(start+bodyHeight, len(rows))]
 	}
 	var b strings.Builder
-	for _, row := range rows {
+	for _, row := range append(header, rows...) {
 		b.WriteString(row.text + "\n")
 	}
 	result := b.String()
@@ -313,10 +325,112 @@ func normalizeWTFViewport(ui wtfUI, width, height int) wtfUI {
 	return updateWTF(ui, treeKey(-1), 0)
 }
 
+func applyWTFSnapshot(ui wtfUI, snapshot wtfSnapshot) wtfUI {
+	selected := ""
+	old := orderedWTFSessions(ui.Snapshot)
+	if len(old) > 0 {
+		index := max(0, min(ui.Cursor, len(old)-1))
+		selected = wtfSessionKey(old[index].Agent, old[index].ID)
+	}
+	ui.Snapshot = snapshot
+	next := orderedWTFSessions(snapshot)
+	if selected != "" {
+		for i, session := range next {
+			if wtfSessionKey(session.Agent, session.ID) == selected {
+				ui.Cursor = i
+				return updateWTF(ui, treeKey(-1), 0)
+			}
+		}
+	}
+	ui.Cursor = max(0, min(ui.Cursor, len(next)-1))
+	return updateWTF(ui, treeKey(-1), 0)
+}
+
 func collectWTFSnapshot(home string, cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
 	now := time.Now().Unix()
 	snapshot := wtfSnapshot{GeneratedAt: now, Home: home, Sessions: collectWTFSessions(home, now, time.Local, wtfInventoryDeps{Today: todaysSessions, Live: currentLiveSessions})}
 	return summarizeWTFSnapshot(snapshot, home, cache, summarizeWTFSession)
+}
+
+type wtfCollectResult struct {
+	snapshot wtfSnapshot
+	cache    map[string]wtfSummaryCache
+}
+
+func runWTFDashboardLoop(ui wtfUI, collect func(map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache), keys <-chan wtfKeyEvent, render func(wtfUI) error) (*wtfSession, error) {
+	requests := make(chan map[string]wtfSummaryCache, 1)
+	results := make(chan wtfCollectResult)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for cache := range requests {
+			snapshot, nextCache := collect(cache)
+			select {
+			case results <- wtfCollectResult{snapshot: snapshot, cache: nextCache}:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	cache := map[string]wtfSummaryCache{}
+	refreshing := false
+	refreshPending := false
+	requestRefresh := func() {
+		if refreshing {
+			refreshPending = true
+			return
+		}
+		refreshing = true
+		requests <- cache
+	}
+	requestRefresh()
+	if err := render(ui); err != nil {
+		return nil, err
+	}
+	ticker := time.NewTicker(wtfRefresh)
+	defer ticker.Stop()
+	for {
+		select {
+		case result := <-results:
+			refreshing = false
+			cache = result.cache
+			ui = applyWTFSnapshot(ui, result.snapshot)
+			if err := render(ui); err != nil {
+				return nil, err
+			}
+			if refreshPending {
+				refreshPending = false
+				requestRefresh()
+			}
+		case event, ok := <-keys:
+			if !ok {
+				return nil, nil
+			}
+			if event.err != nil {
+				return nil, event.err
+			}
+			if event.width > 0 && event.height > 0 {
+				ui = normalizeWTFViewport(ui, event.width, event.height)
+			}
+			ui = updateWTF(ui, event.key, event.r)
+			if ui.Refresh {
+				ui.Refresh = false
+				requestRefresh()
+			}
+			if ui.Quit {
+				return nil, nil
+			}
+			if ui.Chosen != nil {
+				return ui.Chosen, nil
+			}
+			if err := render(ui); err != nil {
+				return nil, err
+			}
+		case <-ticker.C:
+			requestRefresh()
+		}
+	}
 }
 
 func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
@@ -343,37 +457,45 @@ func runWTFDashboard(home string, cfg Config) (*wtfSession, error) {
 	defer io.WriteString(tty, "\x1b[?25h\x1b[?1049l")
 
 	theme := mustLoadTheme(cfg)
-	ui := wtfUI{}
-	buf := make([]byte, 16)
-	last := time.Time{}
-	for {
-		width, height := termSize(tty)
-		ui = normalizeWTFViewport(ui, width, height)
-		if ui.Refresh || time.Since(last) >= wtfRefresh {
-			ui.Snapshot, cache = collectWTFSnapshot(home, cache)
-			ui.Refresh = false
-			ui = updateWTF(ui, treeKey(-1), 0)
-			last = time.Now()
-		}
-		if _, err := io.WriteString(tty, renderWTF(ui, theme)); err != nil {
-			return nil, err
-		}
-		n, readErr := tty.Read(buf)
-		if n == 0 {
-			if readErr != nil && readErr != io.EOF {
-				return nil, readErr
+	width, height := termSize(tty)
+	keys := make(chan wtfKeyEvent)
+	readDone := make(chan struct{})
+	defer close(readDone)
+	go func() {
+		buf := make([]byte, 16)
+		for {
+			n, readErr := tty.Read(buf)
+			if n > 0 {
+				key, r := decodeKey(buf[:n])
+				w, h := termSize(tty)
+				select {
+				case keys <- wtfKeyEvent{key: key, r: r, width: w, height: h}:
+				case <-readDone:
+					return
+				}
 			}
-			continue
+			if readErr != nil && readErr != io.EOF {
+				select {
+				case keys <- wtfKeyEvent{err: readErr}:
+				case <-readDone:
+				}
+				return
+			}
+			select {
+			case <-readDone:
+				return
+			default:
+			}
 		}
-		key, r := decodeKey(buf[:n])
-		ui = updateWTF(ui, key, r)
-		if ui.Quit {
-			return nil, nil
-		}
-		if ui.Chosen != nil {
-			return ui.Chosen, nil
-		}
+	}()
+	collect := func(cache map[string]wtfSummaryCache) (wtfSnapshot, map[string]wtfSummaryCache) {
+		return collectWTFSnapshot(home, cache)
 	}
+	render := func(ui wtfUI) error {
+		_, err := io.WriteString(tty, renderWTF(ui, theme))
+		return err
+	}
+	return runWTFDashboardLoop(wtfUI{Width: width, Height: height}, collect, keys, render)
 }
 
 func wtfTreeChoice(session wtfSession) treeChoice {
