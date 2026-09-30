@@ -425,6 +425,32 @@ func TestMergeLiveAmpSessionsKeepsLocalAndAddsRemote(t *testing.T) {
 	}
 }
 
+func TestMergeLiveAmpSessionsKeepsFollowedRenderFile(t *testing.T) {
+	home := t.TempDir()
+	exportPath := filepath.Join(ampCacheDir(home), "exports", "T-orb.json")
+	if err := writeAmpCache(exportPath, []byte(`{"v":1,"id":"T-orb","messages":[{"role":"assistant","protocolMessageID":"M-old","state":{"type":"complete"},"content":[{"type":"text","text":"cached"}]}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	renderPath := ampSnapshotPath(home, "T-orb")
+	followed := []byte(`{"agent":"amp","message":{"role":"assistant","protocolMessageID":"M-old","state":{"type":"complete"},"content":[{"type":"text","text":"cached"}]}}` + "\n" +
+		`{"agent":"amp","message":{"role":"assistant","protocolMessageID":"M-feed","state":{"type":"complete"},"content":[{"type":"text","text":"from the feed"}]}}` + "\n")
+	if err := writeAmpCache(renderPath, followed); err != nil {
+		t.Fatal(err)
+	}
+
+	got := mergeLiveAmpSessions(home, nil, []ampActiveThread{{ID: "T-orb", State: "idle"}})
+	if len(got) != 1 || got[0].Path != renderPath {
+		t.Fatalf("sessions=%+v", got)
+	}
+	data, err := os.ReadFile(renderPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, followed) {
+		t.Fatalf("live refresh rewrote a followed render file from the stale export cache:\n%s", data)
+	}
+}
+
 func TestAmpChildChannelsMaterializeExportedThread(t *testing.T) {
 	home := t.TempDir()
 	child := `{"id":"T-child","title":"Child export","meta":{"lastKnownAgentState":{"state":"idle"}},"messages":[{"role":"assistant","state":{"type":"complete"},"content":[{"type":"text","text":"child answer"}]}]}`

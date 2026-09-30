@@ -714,7 +714,7 @@ func mergeLiveAmpSessions(home string, local []liveSession, active []ampActiveTh
 		}
 		if ex, err := ampExportThread(home, id, true); err == nil {
 			path := ampSnapshotPath(home, id)
-			_ = writeAmpCache(path, ampExportLines(ex))
+			seedAmpSnapshot(path, ex)
 			s.Path = path
 			if s.Cwd == "" {
 				s.Cwd = ex.cwd()
@@ -764,7 +764,7 @@ func collectLiveAmpSessions(home string) []liveSession {
 			}
 			s.Name = firstNonEmpty(ex.Title, s.Name)
 			path := ampSnapshotPath(home, id)
-			_ = writeAmpCache(path, ampExportLines(ex))
+			seedAmpSnapshot(path, ex)
 			s.Path = path
 		} else if path := ampSnapshotPath(home, id); isFile(path) {
 			s.Path = path

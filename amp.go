@@ -442,6 +442,15 @@ func readAmpExport(path string) (ampExport, error) {
 	return out, nil
 }
 
+// seedAmpSnapshot creates a render file from a cached export only when none
+// exists. Once a snapshot follower owns the file it holds plugin-feed lines the
+// export cache never sees, so rewriting it from that cache drops them.
+func seedAmpSnapshot(path string, ex ampExport) {
+	if !isFile(path) {
+		_ = writeAmpCache(path, ampExportLines(ex))
+	}
+}
+
 func writeAmpCache(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
