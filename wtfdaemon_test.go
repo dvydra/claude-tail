@@ -18,8 +18,10 @@ import (
 )
 
 func TestWTFAgentPlist(t *testing.T) {
-	plist := wtfAgentPlist("/usr/local/bin/entire-tail", "/Users/d/Library/Application Support/entire-tail/wtf/daemon.log")
+	plist := wtfAgentPlist("/usr/local/bin/entire-tail", "/Users/d/Library/Application Support/entire-tail/wtf/daemon.log", "/Users/d/go/bin:/usr/bin")
 	for _, want := range []string{
+		"<key>EnvironmentVariables</key>",
+		"<key>PATH</key><string>/Users/d/go/bin:/usr/bin</string>",
 		"<key>Label</key><string>" + wtfAgentLabel + "</string>",
 		"<string>/usr/local/bin/entire-tail</string>",
 		"<string>wtf</string>",
@@ -34,10 +36,15 @@ func TestWTFAgentPlist(t *testing.T) {
 			t.Errorf("plist missing %q:\n%s", want, plist)
 		}
 	}
+	// launchd starts agents with /usr/bin:/bin:/usr/sbin:/sbin, where neither
+	// entire nor amp lives; with no PATH to hand on, the plist says nothing.
+	if bare := wtfAgentPlist("/b", "/l", ""); strings.Contains(bare, "EnvironmentVariables") {
+		t.Errorf("empty PATH still wrote an environment:\n%s", bare)
+	}
 }
 
 func TestWTFAgentPlistEscapesInterpolatedStrings(t *testing.T) {
-	plist := wtfAgentPlist("/Applications/A&B/<current>/entire-tail", "/tmp/A&B/<logs>/daemon.log")
+	plist := wtfAgentPlist("/Applications/A&B/<current>/entire-tail", "/tmp/A&B/<logs>/daemon.log", "/opt/A&B/bin")
 	var document any
 	if err := xml.Unmarshal([]byte(plist), &document); err != nil {
 		t.Fatalf("generated plist is not XML: %v\n%s", err, plist)
