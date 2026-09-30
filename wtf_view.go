@@ -132,8 +132,22 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 	var rows []wtfComposedRow
 	var footer []wtfComposedRow
 	line := func(text string) { rows = append(rows, wtfComposedRow{text: clip(text)}) }
-	sessionLine := func(text, key string) {
-		rows = append(rows, wtfComposedRow{text: clip(text), sessionKey: key})
+	// sessionBlock adds a session's lines, highlighting all of them when it is
+	// the selected one and there is colour to highlight with.
+	sessionBlock := func(session wtfSession, trails []string) {
+		key := wtfSessionKey(session.Agent, session.ID)
+		selected := reset != "" && key == opts.selected
+		for i, row := range wtfSessionLines(session, trails, opts, reset) {
+			text := clip(row)
+			if selected {
+				text = highlightRow(text)
+			}
+			composed := wtfComposedRow{text: text}
+			if i == 0 {
+				composed.sessionKey = key
+			}
+			rows = append(rows, composed)
+		}
 	}
 
 	sessions := orderedWTFSessions(snapshot)
@@ -225,14 +239,7 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 					line(opts.theme.DimANSI + "  " + repo + reset)
 					lastRepo = repo
 				}
-				key := wtfSessionKey(session.Agent, session.ID)
-				for rowIndex, row := range wtfSessionLines(session, sessionTrails[key], opts, reset) {
-					if rowIndex == 0 {
-						sessionLine(row, key)
-					} else {
-						line(row)
-					}
-				}
+				sessionBlock(session, sessionTrails[wtfSessionKey(session.Agent, session.ID)])
 			}
 		}
 		if active > 0 {
@@ -267,14 +274,7 @@ func composeWTF(snapshot wtfSnapshot, opts wtfRenderOpts) string {
 				line(opts.theme.DimANSI + "  " + repo + reset)
 				lastRepo = repo
 			}
-			key := wtfSessionKey(session.Agent, session.ID)
-			for rowIndex, row := range wtfSessionLines(session, sessionTrails[key], opts, reset) {
-				if rowIndex == 0 {
-					sessionLine(row, key)
-				} else {
-					line(row)
-				}
-			}
+			sessionBlock(session, sessionTrails[wtfSessionKey(session.Agent, session.ID)])
 		}
 	} else {
 		line(opts.theme.DimANSI + "  None" + reset)
@@ -543,8 +543,10 @@ func wtfComposedRows(snapshot wtfSnapshot, top, end int) int {
 }
 
 func wtfSessionLines(session wtfSession, trails []string, opts wtfRenderOpts, reset string) []string {
+	// With colour the selected block is highlighted by composeWTF; without it
+	// the glyph is the only way to show the cursor.
 	mark := "  "
-	if opts.selected == wtfSessionKey(session.Agent, session.ID) {
+	if reset == "" && opts.selected == wtfSessionKey(session.Agent, session.ID) {
 		mark = "▸ "
 	}
 	agent, color := "C", opts.theme.ClaudeANSI

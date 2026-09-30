@@ -141,3 +141,15 @@ func TestVisWidthSkipsANSI(t *testing.T) {
 		t.Errorf("padVisible over-long = %d cols, want 4", got)
 	}
 }
+
+// The highlight must survive the row's own colours: every reset inside the
+// line would otherwise end it at the first coloured span. It ends by erasing
+// to end of line while the background is still set, so the terminal fills the
+// rest of the row without the row having to be padded to the width.
+func TestHighlightRow(t *testing.T) {
+	got := highlightRow("  \x1b[36mC\x1b[0m  name \x1b[2mdim\x1b[m tail")
+	want := rowHighlight + "  \x1b[36mC\x1b[0m" + rowHighlight + "  name \x1b[2mdim\x1b[m" + rowHighlight + " tail\x1b[K\x1b[0m"
+	if got != want {
+		t.Fatalf("highlightRow:\n got %q\nwant %q", got, want)
+	}
+}
