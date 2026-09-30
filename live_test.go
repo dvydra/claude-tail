@@ -602,3 +602,29 @@ func TestLiveCursorFor(t *testing.T) {
 		t.Errorf("got %d, want -1 with no pane claudes", got)
 	}
 }
+
+// With colour, the cursor is the selected block painted edge to edge rather
+// than a one-cell glyph; without colour (a pipe) the glyph is all there is.
+func TestRenderLiveHighlightsCursorBlock(t *testing.T) {
+	theme, err := loadTheme("dracula", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := parseLiveSession([]byte(liveFixture))
+	b := a
+	b.PID, b.SessionID, b.Name = 41763, "eab90abf-1b59-4244-ac0d-9803fc257e94", "entiredb-16"
+	out := renderLive(liveUI{Sessions: []liveSession{a, b}, Width: 78, Height: 40, Now: 1789599265, TailN: liveTailDefault, Theme: theme})
+	if strings.Contains(out, liveCursorMark) {
+		t.Errorf("glyph drawn alongside the highlight:\n%s", out)
+	}
+	var highlighted []string
+	for _, line := range strings.Split(out, "\r\n") {
+		if strings.Contains(line, rowHighlight) {
+			highlighted = append(highlighted, line)
+		}
+	}
+	block := liveBlockLines(a, nil, liveBlockOpts{Now: 1789599265, Width: 78, Theme: theme})
+	if len(highlighted) != len(block) || !strings.Contains(highlighted[0], a.Label()) {
+		t.Errorf("want the first block's %d lines highlighted, got %d:\n%s", len(block), len(highlighted), strings.Join(highlighted, "\n"))
+	}
+}

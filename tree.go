@@ -1037,23 +1037,20 @@ func composeSessionRow(s treeSession, now int64, restore string) string {
 	return fmt.Sprintf("    %s %s%s%s%-8s  %-8s  %s  %s%s", bullet, agentMark(s.Agent), nearbyMark(s.Nearby, restore), profileMark(s.Profile, restore), shortID(s.ID), relAge(s.Mtime, now), prCell(s), branch, s.Snippet)
 }
 
-// styleRow applies the cursor marker, recency color, and width truncation.
+// styleRow applies the recency color, width truncation and, on the cursor
+// row, the full-width highlight.
 func styleRow(text string, tier recencyTier, cursor bool, width int) string {
-	prefix := "  "
-	if cursor {
-		prefix = "❯ "
-	}
-	line := prefix + text
+	line := "  " + text
 	if width > 0 {
 		// truncVisible (not truncateRunes) so an embedded OSC-8 PR hyperlink is
 		// passed through uncounted rather than sliced mid-escape.
 		line = truncVisible(line, width)
 	}
-	color := tierColor(tier)
+	line = tierColor(tier) + line + reset
 	if cursor {
-		return "\x1b[7m" + color + line + reset
+		return highlightRow(line)
 	}
-	return color + line + reset
+	return line
 }
 
 func renderRow(ui treeUI, i int) string {

@@ -867,3 +867,29 @@ func TestRenderWTFViewportKeepsHeadersOrderedAndNonSelectable(t *testing.T) {
 		}
 	}
 }
+
+// With colour the selected session's whole block is highlighted and the
+// glyph goes; without colour (piped, or Theme{}) the glyph stays.
+func TestRenderWTFHighlightsSelectedBlock(t *testing.T) {
+	theme, err := loadTheme("dracula", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := wtfUI{Snapshot: wtfSnapshot{Home: "/h", Sessions: []wtfSession{
+		{Agent: AgentClaude, ID: "one", Name: "one", Active: true, State: "busy", Summary: "doing one", LastActivity: 20},
+		{Agent: AgentClaude, ID: "two", Name: "two", Active: true, State: "idle", LastActivity: 10},
+	}}, Width: 100, Height: 40}
+	got := renderWTF(ui, theme)
+	if strings.Contains(got, "▸ ") {
+		t.Fatalf("glyph drawn alongside the highlight:\n%s", got)
+	}
+	var highlighted []string
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, rowHighlight) {
+			highlighted = append(highlighted, stripANSI(line))
+		}
+	}
+	if len(highlighted) != 2 || !strings.Contains(highlighted[0], "one") || !strings.Contains(highlighted[1], "doing one") {
+		t.Fatalf("want session one's head and summary highlighted, got %q", highlighted)
+	}
+}

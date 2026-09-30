@@ -230,8 +230,10 @@ func liveBlockLines(s liveSession, tail []string, o liveBlockOpts) []string {
 	if dim != "" {
 		reset = "\x1b[0m"
 	}
+	// With colour the selected block is highlighted (below); without it, as on a
+	// pipe, the glyph is the only way to show the cursor.
 	mark := "  "
-	if o.Selected {
+	if o.Selected && dim == "" {
 		mark = liveCursorMark + " "
 	}
 
@@ -295,6 +297,11 @@ func liveBlockLines(s liveSession, tail []string, o liveBlockOpts) []string {
 	}
 	for _, l := range tail {
 		add(dim + "│ " + reset + l)
+	}
+	if o.Selected && dim != "" {
+		for i, l := range lines {
+			lines[i] = highlightRow(l)
+		}
 	}
 	return lines
 }

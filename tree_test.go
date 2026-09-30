@@ -738,3 +738,13 @@ func TestSelectSessionAmpUsesSessionCwd(t *testing.T) {
 		t.Errorf("fallback ChosenCwd = %q, want folder Dir %q", got, dir)
 	}
 }
+
+func TestStyleRowHighlightsCursorRow(t *testing.T) {
+	cursor := styleRow("  ● C  abc  just now", tierRecent, true, 40)
+	if !strings.HasPrefix(cursor, rowHighlight) || !strings.Contains(cursor, "\x1b[K") || strings.Contains(cursor, "❯") {
+		t.Fatalf("cursor row not highlighted end to end: %q", cursor)
+	}
+	if other := styleRow("  ● C  abc  just now", tierRecent, false, 40); strings.Contains(other, rowHighlight) {
+		t.Fatalf("non-cursor row highlighted: %q", other)
+	}
+}

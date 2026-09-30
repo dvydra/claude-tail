@@ -101,6 +101,24 @@ func visWidth(s string) int {
 	return n
 }
 
+// rowHighlight is the background of the row under the cursor in the tree,
+// --live and wtf. A background rather than reverse video: reverse turns every
+// coloured span into a block of a different colour, while one grey keeps the
+// text colours readable, and every bundled theme is dark.
+const rowHighlight = "\x1b[48;5;238m"
+
+// highlightRow paints a row edge to edge. The background is re-applied after
+// every reset inside the line, or the row's first coloured span would end it,
+// and the line ends by erasing to end of line with the background still set,
+// which fills the rest of the row without padding it to the width (a row that
+// reaches the last column can make the terminal wrap).
+func highlightRow(line string) string {
+	line = strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+rowHighlight)
+	line = strings.ReplaceAll(line, "\x1b[m", "\x1b[m"+rowHighlight)
+	line = strings.ReplaceAll(line, "\x1b[49m", "\x1b[49m"+rowHighlight)
+	return rowHighlight + line + "\x1b[K\x1b[0m"
+}
+
 // padVisible pads (or truncates) s to exactly w visible columns.
 func padVisible(s string, w int) string {
 	if n := visWidth(s); n < w {
