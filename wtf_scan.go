@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -131,10 +132,25 @@ func parseGitWorktreePorcelain(data []byte) []gitWorktreeEntry {
 	return entries
 }
 
-func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prior []wtfWorktree, run wtfCommandRunner) ([]wtfWorktree, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	data, err := run(ctx, cwd, "git", "-C", cwd, "worktree", "list", "--porcelain")
+// A repo can hold well over a hundred worktrees (entiredb: 134, about 34s
+// to inspect one after another), and the daemon scans every two seconds. So
+// each worktree gets its own time budget rather than sharing one for the repo
+// (a shared five seconds failed every worktree after the first few), they are
+// inspected a few at a time, and a cold worktree is reused for a minute.
+const (
+	wtfWorktreeTimeout  = 10 * time.Second
+	wtfInspectWorkers   = 8
+	wtfColdInspectEvery = int64(60)
+)
+
+// inspectRepoWorktrees lists a repo's worktrees and inspects each with git.
+// hot names the worktrees an active session is in: those are inspected on
+// every scan. Any other worktree whose last clean inspection is under
+// wtfColdInspectEvery old, on the same branch and HEAD, keeps its facts.
+func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prior []wtfWorktree, hot map[string]bool, run wtfCommandRunner) ([]wtfWorktree, error) {
+	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	data, err := run(listCtx, cwd, "git", "-C", cwd, "worktree", "list", "--porcelain")
+	cancel()
 	if err != nil {
 		return append([]wtfWorktree(nil), prior...), err
 	}
@@ -145,10 +161,35 @@ func inspectRepoWorktrees(ctx context.Context, repo, cwd string, now int64, prio
 			priorByPath[worktree.Path] = worktree
 		}
 	}
+
+	inspected := make([]wtfWorktree, len(entries))
+	slots := make(chan struct{}, wtfInspectWorkers)
+	var wg sync.WaitGroup
+	for i, entry := range entries {
+		if old, ok := priorByPath[entry.Path]; ok && !hot[entry.Path] && old.Exists && old.GitError == "" &&
+			old.InspectedAt > 0 && now-old.InspectedAt < wtfColdInspectEvery && old.Branch == entry.Branch && old.Head == entry.Head {
+			old.LastSeen = now
+			if worktreeHasWIP(old) {
+				old.LastWIPAt = now
+			}
+			inspected[i] = old
+			continue
+		}
+		wg.Add(1)
+		slots <- struct{}{}
+		go func(i int, entry gitWorktreeEntry) {
+			defer func() { <-slots; wg.Done() }()
+			worktreeCtx, cancel := context.WithTimeout(ctx, wtfWorktreeTimeout)
+			defer cancel()
+			inspected[i] = inspectWorktree(worktreeCtx, repo, entry, now, run)
+		}(i, entry)
+	}
+	wg.Wait()
+
 	worktrees := make([]wtfWorktree, 0, len(entries)+len(priorByPath))
 	var inspectionErrors []error
-	for _, entry := range entries {
-		worktree := inspectWorktree(ctx, repo, entry, now, run)
+	for i, entry := range entries {
+		worktree := inspected[i]
 		if worktree.Exists && worktree.GitError != "" {
 			inspectionErrors = append(inspectionErrors, fmt.Errorf("%s: %s", entry.Path, worktree.GitError))
 		}
@@ -224,6 +265,7 @@ func inspectWorktree(ctx context.Context, repo string, entry gitWorktreeEntry, n
 		return w
 	}
 	w.Exists = true
+	w.InspectedAt = now
 	status, err := run(ctx, entry.Path, "git", "-C", entry.Path, "status", "--porcelain")
 	if err != nil {
 		w.GitError = "git status failed"
@@ -585,6 +627,12 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 			repoCandidates[worktree.Repo] = append(repoCandidates[worktree.Repo], worktree.Path)
 		}
 	}
+	hot := make(map[string]bool)
+	for _, session := range sessions {
+		if session.Active && session.Cwd != "" {
+			hot[session.Cwd] = true
+		}
+	}
 	worktrees := make(map[string]wtfWorktree)
 	localFailed := false
 	for _, repo := range sortedMapKeys(repoCandidates) {
@@ -595,7 +643,7 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 			}
 		}
 		cwd := deterministicRepoSeed(repoCandidates[repo])
-		inspected, err := inspectRepoWorktrees(ctx, repo, cwd, nowUnix, old, deps.Run)
+		inspected, err := inspectRepoWorktrees(ctx, repo, cwd, nowUnix, old, hot, deps.Run)
 		if err != nil {
 			degraded = append(degraded, fmt.Errorf("git worktrees for %s: %w", repo, err))
 			localFailed = true

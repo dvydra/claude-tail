@@ -86,6 +86,9 @@ type wtfWorktree struct {
 	FirstSeen       int64            `json:"firstSeen"`
 	LastSeen        int64            `json:"lastSeen"`
 	LastWIPAt       int64            `json:"lastWipAt,omitempty"`
+	// InspectedAt is when git last looked at this worktree. A cold one (no
+	// active session in it) is reused until it is wtfColdInspectEvery old.
+	InspectedAt int64 `json:"inspectedAt,omitempty"`
 }
 
 type wtfFinding struct {

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -175,7 +176,7 @@ func TestInspectRepoWorktreesPreservesPriorRecordsMissingFromPorcelain(t *testin
 		"diff --no-ext-diff --unified=0 HEAD --":             "",
 	})
 
-	got, err := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, run)
+	got, err := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, nil, run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +218,7 @@ func TestInspectRepoWorktreesDistinguishesUnlistedAndMissingPriorPaths(t *testin
 		"diff --no-ext-diff --unified=0 HEAD --":             "",
 	})
 
-	got, err := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, run)
+	got, err := inspectRepoWorktrees(context.Background(), "acme/repo", currentPath, 42, prior, nil, run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +267,7 @@ func TestInspectWorktreeRealRepositoryDistinguishesDirtyAndUnmerged(t *testing.T
 		cmd.Dir = dir
 		return cmd.Output()
 	}
-	got, err := inspectRepoWorktrees(context.Background(), "acme/repo", repo, 42, nil, run)
+	got, err := inspectRepoWorktrees(context.Background(), "acme/repo", repo, 42, nil, nil, run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -890,9 +891,12 @@ func TestScanWTFIntegration(t *testing.T) {
 	prior.Worktrees[oldWorktree] = wtfWorktree{Repo: "acme/api", Path: oldWorktree, Branch: "feat/old", Exists: true, DirtyFiles: 1, UnmergedCommits: 0, TrailKeys: []string{"acme/api#1223"}, SessionKeys: []string{"claude:old"}, FirstSeen: oldAt, LastSeen: oldAt, LastWIPAt: oldAt}
 
 	var commands []string
+	var commandsMu sync.Mutex // worktrees are inspected concurrently
 	run := func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
 		command := name + " " + strings.Join(args, " ")
+		commandsMu.Lock()
 		commands = append(commands, command)
+		commandsMu.Unlock()
 		if name == "entire" {
 			return []byte(`{"number":1223,"branch":"feat/old","base":"main","title":"Registry","status":"open"}`), nil
 		}
@@ -1253,4 +1257,72 @@ func findingOfKind(findings map[string]wtfFinding, kind string) *wtfFinding {
 func withFindingDelivery(finding wtfFinding) wtfFinding {
 	finding.Delivery = map[string]wtfDeliveryStatus{"desktop": {State: "sent", Attempts: 1}}
 	return finding
+}
+
+// A repo with many worktrees used to share one five-second budget, so every
+// worktree after the first few failed once it ran out: entiredb has 134 and
+// takes about 34s to inspect serially. Each worktree now gets its own budget,
+// and a cold one (no active session in it) is reused for a minute instead of
+// being re-inspected on every two-second scan.
+func TestInspectRepoWorktreesBudgetsPerWorktreeAndReusesColdOnes(t *testing.T) {
+	root := t.TempDir()
+	var paths []string
+	for _, name := range []string{"hot", "cold", "failed", "stale"} {
+		path := filepath.Join(root, name)
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	hot, cold, failed, stale := paths[0], paths[1], paths[2], paths[3]
+	var listing strings.Builder
+	for _, path := range paths {
+		listing.WriteString("worktree " + path + "\nHEAD abc\nbranch refs/heads/b\n\n")
+	}
+	var mu sync.Mutex
+	statused := map[string]bool{}
+	run := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "worktree list"):
+			return []byte(listing.String()), nil
+		case strings.Contains(joined, "status --porcelain"):
+			mu.Lock()
+			statused[dir] = true
+			mu.Unlock()
+			return nil, nil
+		case strings.Contains(joined, "symbolic-ref"):
+			return []byte("refs/remotes/origin/main\n"), nil
+		case strings.Contains(joined, "rev-list"):
+			return []byte("0\n"), nil
+		}
+		return nil, ctx.Err()
+	}
+	now := int64(1000)
+	prior := []wtfWorktree{
+		{Repo: "a/b", Path: hot, Branch: "b", Head: "abc", Exists: true, InspectedAt: now - 5},
+		{Repo: "a/b", Path: cold, Branch: "b", Head: "abc", Exists: true, InspectedAt: now - 5, DirtyFiles: 3},
+		{Repo: "a/b", Path: failed, Branch: "b", Head: "abc", Exists: true, InspectedAt: now - 5, GitError: "git status failed"},
+		{Repo: "a/b", Path: stale, Branch: "b", Head: "abc", Exists: true, InspectedAt: now - wtfColdInspectEvery - 1},
+	}
+	got, err := inspectRepoWorktrees(context.Background(), "a/b", root, now, prior, map[string]bool{hot: true}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{hot, failed, stale} {
+		if !statused[path] {
+			t.Errorf("%s was not re-inspected", filepath.Base(path))
+		}
+	}
+	if statused[cold] {
+		t.Errorf("cold worktree re-inspected inside its refresh window")
+	}
+	for _, w := range got {
+		if w.Path == cold && (w.DirtyFiles != 3 || w.InspectedAt != now-5 || w.LastSeen != now) {
+			t.Errorf("cold worktree facts not carried over: %#v", w)
+		}
+		if w.Path == hot && w.InspectedAt != now {
+			t.Errorf("hot worktree inspection time not recorded: %#v", w)
+		}
+	}
 }

@@ -85,7 +85,15 @@ func wtfPlistString(value string) string {
 	return escaped.String()
 }
 
-func wtfAgentPlist(bin, logPath string) string {
+// wtfAgentPlist writes the LaunchAgent. path is the PATH to run the daemon
+// with: launchd starts agents with /usr/bin:/bin:/usr/sbin:/sbin, and the
+// daemon shells out to entire (trail metadata) and amp (thread exports), which
+// live in user bin dirs. So install hands on the PATH of the shell that ran it.
+func wtfAgentPlist(bin, logPath, path string) string {
+	env := ""
+	if path != "" {
+		env = fmt.Sprintf("  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key><string>%s</string>\n  </dict>\n", wtfPlistString(path))
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -102,9 +110,9 @@ func wtfAgentPlist(bin, logPath string) string {
   <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>%s</string>
   <key>StandardErrorPath</key><string>%s</string>
-</dict>
+%s</dict>
 </plist>
-`, wtfPlistString(wtfAgentLabel), wtfPlistString(bin), wtfPlistString(logPath), wtfPlistString(logPath))
+`, wtfPlistString(wtfAgentLabel), wtfPlistString(bin), wtfPlistString(logPath), wtfPlistString(logPath), env)
 }
 
 func installWTFAgent(home, bin string, out io.Writer) (string, error) {
@@ -115,7 +123,7 @@ func installWTFAgent(home, bin string, out io.Writer) (string, error) {
 	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, []byte(wtfAgentPlist(bin, wtfLogPath(home))), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(wtfAgentPlist(bin, wtfLogPath(home), os.Getenv("PATH"))), 0o644); err != nil {
 		return "", err
 	}
 	if looksEphemeralBinary(bin) {
