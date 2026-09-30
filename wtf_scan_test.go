@@ -381,35 +381,20 @@ func TestTrailMetadataDue(t *testing.T) {
 
 func TestExtractTrailEvidence(t *testing.T) {
 	tests := []struct {
-		name, text, current string
-		known               []string
-		wantKey             string
-		wantResolved        bool
+		name, text string
+		wantKey    string
+		wantURL    string
 	}{
-		{"url", "see https://entire.io/gh/acme/api/trails/12", "x/y", nil, "acme/api#12", true},
-		{"entire-hosted url", "see https://entire.io/et/acme/api/trails/22", "x/y", nil, "acme/api#22", true},
-		{"qualified", "acme/api#13", "x/y", nil, "acme/api#13", true},
-		{"repo shorthand current", "api#14", "acme/api", nil, "acme/api#14", true},
-		{"repo shorthand unique known", "api#15", "", []string{"acme/api"}, "acme/api#15", true},
-		{"repo shorthand ambiguous", "api#16", "", []string{"acme/api", "other/api"}, "", false},
-		{"bare current", "trail #17", "acme/api", nil, "acme/api#17", true},
-		{"bare no current", "trail 18", "", []string{"acme/api"}, "", false},
-		{"bare after sentence word", "we are on trail 23", "acme/api", nil, "acme/api#23", true},
-		{"bare named current repo", "api trail 24", "acme/api", nil, "acme/api#24", true},
-		{"bare named known repo", "web trail 25", "acme/api", []string{"acme/api", "other/web"}, "other/web#25", true},
-		{"bare named unknown repo", "company-knowledge trail 11", "acme/api", nil, "", false},
-		{"ordinary hash", "color #123", "acme/api", nil, "", false},
-		{"email boundary", "xapi#19@example.com", "acme/api", nil, "", false},
-		{"url boundary", "xhttps://entire.io/gh/acme/api/trails/20", "", nil, "", false},
-		{"numeric boundary", "acme/api#21x", "", nil, "", false},
+		{"url", "see https://entire.io/gh/acme/api/trails/12", "acme/api#12", "https://entire.io/gh/acme/api/trails/12"},
+		{"entire-hosted url", "see https://entire.io/et/acme/api/trails/22", "acme/api#22", "https://entire.io/et/acme/api/trails/22"},
+		{"case folded", "https://ENTIRE.io/GH/Acme/API/trails/7", "acme/api#7", "https://entire.io/gh/acme/api/trails/7"},
+		{"url boundary", "xhttps://entire.io/gh/acme/api/trails/20", "", ""},
+		{"numeric boundary", "https://entire.io/gh/acme/api/trails/21x", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractTrailEvidence([]trailTextEvent{{At: 42, Source: "user", Text: tt.text}}, trailContext{CurrentRepo: tt.current, KnownRepos: tt.known})
-			if tt.wantKey == "" && tt.wantResolved && len(got) == 0 {
-				t.Fatal("expected evidence")
-			}
-			if !tt.wantResolved && tt.wantKey == "" && tt.name != "repo shorthand ambiguous" && tt.name != "bare no current" && tt.name != "bare named unknown repo" {
+			got := extractTrailEvidence([]trailTextEvent{{At: 42, Source: "user", Text: tt.text}})
+			if tt.wantKey == "" {
 				if len(got) != 0 {
 					t.Fatalf("got false-positive evidence: %#v", got)
 				}
@@ -418,8 +403,8 @@ func TestExtractTrailEvidence(t *testing.T) {
 			if len(got) != 1 {
 				t.Fatalf("got %d evidence entries, want 1: %#v", len(got), got)
 			}
-			if got[0].Key != tt.wantKey || got[0].Resolved != tt.wantResolved {
-				t.Fatalf("got key=%q resolved=%v, want key=%q resolved=%v", got[0].Key, got[0].Resolved, tt.wantKey, tt.wantResolved)
+			if got[0].Key != tt.wantKey || !got[0].Resolved || got[0].URL != tt.wantURL {
+				t.Fatalf("got key=%q resolved=%v url=%q, want key=%q url=%q", got[0].Key, got[0].Resolved, got[0].URL, tt.wantKey, tt.wantURL)
 			}
 			if got[0].Matched == "" || got[0].Source != "user" || got[0].At != 42 || got[0].Resolution == "" {
 				t.Fatalf("evidence metadata not preserved: %#v", got[0])
@@ -428,11 +413,30 @@ func TestExtractTrailEvidence(t *testing.T) {
 	}
 }
 
+// Shorthands are how GitHub writes PRs and issues, and how anyone talks
+// ABOUT a trail. Each one filed phantom trails: PR numbers became trails, and
+// a session debugging a warning became the owner of the trail it named.
+func TestExtractTrailEvidenceIgnoresShorthands(t *testing.T) {
+	for _, text := range []string{
+		"acme/api#13",
+		"merged dvydra/claude-tail#87",
+		"api#14",
+		"trail #17",
+		"we are on trail 23",
+		"company-knowledge trail 11",
+		"color #123",
+	} {
+		if got := extractTrailEvidence([]trailTextEvent{{At: 42, Source: "user", Text: text}}); len(got) != 0 {
+			t.Fatalf("%q produced evidence: %#v", text, got)
+		}
+	}
+}
+
 func TestExtractTrailEvidenceDeduplicatesByEarliestTimestamp(t *testing.T) {
 	got := extractTrailEvidence([]trailTextEvent{
-		{At: 200, Source: "assistant", Text: "ACME/API#7"},
+		{At: 200, Source: "assistant", Text: "https://entire.io/gh/ACME/API/trails/7"},
 		{At: 100, Source: "user", Text: "https://entire.io/gh/acme/api/trails/7"},
-	}, trailContext{})
+	})
 	if len(got) != 1 {
 		t.Fatalf("got %d entries, want 1", len(got))
 	}
@@ -445,43 +449,32 @@ func TestExtractTrailEvidenceDeduplicatesByEarliestTimestamp(t *testing.T) {
 // a spec or a grep hit names trails the session never touches, and counting
 // those as claims warned two read-only sessions off a trail neither had used.
 func TestExtractTrailEvidenceIgnoresToolText(t *testing.T) {
+	url := "https://entire.io/gh/acme/api/trails/7"
 	got := extractTrailEvidence([]trailTextEvent{
-		{At: 100, Source: "tool result", Text: "acme/api#7"},
-		{At: 101, Source: "tool input", Text: "acme/api#8"},
-		{At: 200, Source: "assistant", Text: "acme/api#7"},
-	}, trailContext{})
+		{At: 100, Source: "tool result", Text: url},
+		{At: 101, Source: "tool input", Text: "https://entire.io/gh/acme/api/trails/8"},
+		{At: 200, Source: "assistant", Text: url},
+	})
 	if len(got) != 1 || got[0].Key != "acme/api#7" || got[0].Source != "assistant" || got[0].At != 200 {
 		t.Fatalf("tool text counted as a claim: %#v", got)
 	}
 }
 
 func TestExtractTrailEvidenceFindsAdjacentReferences(t *testing.T) {
-	tests := []struct {
-		name string
-		text string
-		ctx  trailContext
-		want []string
-	}{
-		{"qualified", "acme/api#1,other/web#2", trailContext{}, []string{"acme/api#1", "other/web#2"}},
-		{"repo shorthand", "api#3,web#4", trailContext{KnownRepos: []string{"acme/api", "other/web"}}, []string{"acme/api#3", "other/web#4"}},
-		{"bare", "trail #5,trail #6", trailContext{CurrentRepo: "acme/api"}, []string{"acme/api#5", "acme/api#6"}},
+	text := "https://entire.io/gh/acme/api/trails/1,https://entire.io/et/other/web/trails/2"
+	got := extractTrailEvidence([]trailTextEvent{{At: 42, Source: "user", Text: text}})
+	keys := make([]string, len(got))
+	for i := range got {
+		keys[i] = got[i].Key
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := extractTrailEvidence([]trailTextEvent{{At: 42, Source: "user", Text: tt.text}}, tt.ctx)
-			keys := make([]string, len(got))
-			for i := range got {
-				keys[i] = got[i].Key
-			}
-			if !reflect.DeepEqual(keys, tt.want) {
-				t.Fatalf("keys: got %q, want %q", keys, tt.want)
-			}
-		})
+	sort.Strings(keys)
+	if want := []string{"acme/api#1", "other/web#2"}; !reflect.DeepEqual(keys, want) {
+		t.Fatalf("keys: got %q, want %q", keys, want)
 	}
 }
 
 func TestExtractTrailEvidenceRejectsOverflow(t *testing.T) {
-	got := extractTrailEvidence([]trailTextEvent{{At: 42, Source: "user", Text: "acme/api#999999999999999999999999999999999999"}}, trailContext{})
+	got := extractTrailEvidence([]trailTextEvent{{At: 42, Source: "user", Text: "https://entire.io/gh/acme/api/trails/999999999999999999999999999999999999"}})
 	if len(got) != 1 {
 		t.Fatalf("got %d entries, want unresolved evidence", len(got))
 	}
@@ -542,8 +535,8 @@ func TestReconcileTrailsChoosesEarliestClaimAndPreservesIt(t *testing.T) {
 		{Agent: AgentClaude, ID: "earlier", Repo: "acme/api", Cwd: "/wt/earlier", Active: true},
 	}
 	evidence := map[string][]trailEvidence{
-		"claude:later":   {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, URL: "url", Matched: "api#7", Source: "user", At: 200, Resolved: true}},
-		"claude:earlier": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, URL: "url", Matched: "api#7", Source: "user", At: 100, Resolved: true}},
+		"claude:later":   {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, URL: "url", Matched: "https://entire.io/gh/acme/api/trails/7", Source: "user", At: 200, Resolved: true}},
+		"claude:earlier": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, URL: "url", Matched: "https://entire.io/gh/acme/api/trails/7", Source: "user", At: 100, Resolved: true}},
 	}
 	worktrees := map[string]wtfWorktree{
 		"/wt/later":   {Repo: "acme/api", Path: "/wt/later", Exists: true},
@@ -569,7 +562,7 @@ func TestReconcileTrailsChoosesEarliestClaimAndPreservesIt(t *testing.T) {
 // ci-webhooks trail with an entire-tail checkout as its canonical worktree.
 func TestReconcileTrailsIgnoresClaimsFromAnotherRepo(t *testing.T) {
 	sessions := []wtfSession{{Agent: AgentClaude, ID: "elsewhere", Repo: "acme/tool", Cwd: "/wt/tool", Active: true}}
-	evidence := map[string][]trailEvidence{"claude:elsewhere": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, Matched: "acme/api#7", Source: "assistant", At: 100, Resolved: true}}}
+	evidence := map[string][]trailEvidence{"claude:elsewhere": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, Matched: "https://entire.io/gh/acme/api/trails/7", Source: "assistant", At: 100, Resolved: true}}}
 	worktrees := map[string]wtfWorktree{"/wt/tool": {Repo: "acme/tool", Path: "/wt/tool", Exists: true}}
 
 	trail := reconcileTrails(wtfState{}, sessions, evidence, worktrees, 200).Trails["acme/api#7"]
@@ -603,6 +596,39 @@ func TestDetectWTFFindingsIgnoresSessionsInAnotherRepo(t *testing.T) {
 	}
 }
 
+// Trails the old shorthand rules invented (PR numbers, a trail named while
+// debugging) leave the registry; a trail with a URL claim keeps it and loses
+// only the shorthand one.
+func TestReconcileTrailsDropsStoredShorthandTrails(t *testing.T) {
+	url := "https://entire.io/gh/acme/api/trails/7"
+	prior := wtfState{Trails: map[string]wtfTrail{
+		"acme/api#87": {Key: "acme/api#87", Owner: "acme", Repo: "api", Number: 87, OwnerSession: "claude:a",
+			FirstClaim:   &wtfClaim{SessionKey: "claude:a", Worktree: "/wt/a", At: 10, Evidence: "acme/api#87"},
+			Associations: []wtfAssociation{{SessionKey: "claude:a", Worktree: "/wt/a", At: 10, Evidence: "acme/api#87", Source: "user"}}},
+		"acme/api#7": {Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, OwnerSession: "claude:a", CanonicalWorktree: "/wt/a",
+			FirstClaim: &wtfClaim{SessionKey: "claude:a", Worktree: "/wt/a", At: 20, Evidence: url},
+			Associations: []wtfAssociation{
+				{SessionKey: "claude:a", Worktree: "/wt/a", At: 20, Evidence: url, Source: "user"},
+				{SessionKey: "claude:b", Worktree: "/wt/b", At: 30, Evidence: "trail 7", Source: "assistant"},
+			}},
+	}}
+	worktrees := map[string]wtfWorktree{"/wt/a": {Repo: "acme/api", Path: "/wt/a", Exists: true}}
+
+	prior.Trails["acme/api#88"] = wtfTrail{Key: "acme/api#88", Owner: "acme", Repo: "api", Number: 88,
+		Associations: []wtfAssociation{{Worktree: "/wt/a", At: 10, Evidence: "acme/api#88", Source: "diff"}}}
+
+	got := reconcileTrails(prior, nil, nil, worktrees, 100)
+	for _, key := range []string{"acme/api#87", "acme/api#88"} {
+		if _, ok := got.Trails[key]; ok {
+			t.Fatalf("%s survived: %#v", key, got.Trails[key])
+		}
+	}
+	trail := got.Trails["acme/api#7"]
+	if trail.OwnerSession != "claude:a" || trail.CanonicalWorktree != "/wt/a" || len(trail.Associations) != 1 || trail.Associations[0].Evidence != url {
+		t.Fatalf("URL-claimed trail changed: %#v", trail)
+	}
+}
+
 // A registry written before tool text stopped counting still holds claims
 // made by reading a trail's number. Left in place they keep the warnings
 // coming, so a reconcile drops them and whatever ownership they decided.
@@ -615,7 +641,7 @@ func TestReconcileTrailsDropsStoredToolClaims(t *testing.T) {
 		Associations: []wtfAssociation{read, {Worktree: "/wt/feature", At: 50, Evidence: "feature", Source: "source branch"}},
 	}}}
 	sessions := []wtfSession{{Agent: AgentClaude, ID: "worker", Repo: "acme/api", Cwd: "/wt/feature", Active: true}}
-	evidence := map[string][]trailEvidence{"claude:worker": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, Matched: "api#7", Source: "user", At: 200, Resolved: true}}}
+	evidence := map[string][]trailEvidence{"claude:worker": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, Matched: "https://entire.io/gh/acme/api/trails/7", Source: "user", At: 200, Resolved: true}}}
 	worktrees := map[string]wtfWorktree{
 		"/wt/main":    {Repo: "acme/api", Path: "/wt/main", Exists: true},
 		"/wt/feature": {Repo: "acme/api", Path: "/wt/feature", Exists: true},
@@ -633,7 +659,7 @@ func TestReconcileTrailsDropsStoredToolClaims(t *testing.T) {
 }
 
 func TestReconcileTrailsClaimsRequireActiveLocalWorktree(t *testing.T) {
-	e := trailEvidence{Key: "acme/api#8", Owner: "acme", Repo: "api", Number: 8, Matched: "acme/api#8", Source: "user", At: 100, Resolved: true}
+	e := trailEvidence{Key: "acme/api#8", Owner: "acme", Repo: "api", Number: 8, Matched: "https://entire.io/gh/acme/api/trails/8", Source: "user", At: 100, Resolved: true}
 	sessions := []wtfSession{
 		{Agent: AgentClaude, ID: "remote", Repo: "acme/api", Active: true},
 		{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/shared", Active: true},
@@ -648,7 +674,7 @@ func TestReconcileTrailsClaimsRequireActiveLocalWorktree(t *testing.T) {
 }
 
 func TestRemoteAndMissingAssociationsAreRelatedButNeverClaims(t *testing.T) {
-	e := trailEvidence{Key: "acme/api#8", Owner: "acme", Repo: "api", Number: 8, Matched: "api#8", At: 1, Resolved: true}
+	e := trailEvidence{Key: "acme/api#8", Owner: "acme", Repo: "api", Number: 8, Matched: "https://entire.io/gh/acme/api/trails/8", At: 1, Resolved: true}
 	sessions := []wtfSession{{Agent: AgentAmp, ID: "remote", Repo: "acme/api", Active: true}, {Agent: AgentClaude, ID: "missing", Repo: "acme/api", Cwd: "/missing", Active: true}}
 	state := reconcileTrails(wtfState{}, sessions, map[string][]trailEvidence{"amp:remote": {e}, "claude:missing": {e}}, map[string]wtfWorktree{"/missing": {Repo: "acme/api", Path: "/missing", Exists: false, GitError: "worktree path missing"}}, 2)
 	trail := state.Trails[e.Key]
@@ -658,7 +684,7 @@ func TestRemoteAndMissingAssociationsAreRelatedButNeverClaims(t *testing.T) {
 }
 
 func TestErroredExistingWorktreeNeitherClaimsNorTriggersFindings(t *testing.T) {
-	e := trailEvidence{Key: "acme/api#9", Owner: "acme", Repo: "api", Number: 9, Matched: "api#9", Source: "user", At: 1, Resolved: true}
+	e := trailEvidence{Key: "acme/api#9", Owner: "acme", Repo: "api", Number: 9, Matched: "https://entire.io/gh/acme/api/trails/9", Source: "user", At: 1, Resolved: true}
 	sessions := []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/bad", Active: true}}
 	worktrees := map[string]wtfWorktree{"/wt/bad": {Repo: "acme/api", Path: "/wt/bad", Exists: true, GitError: "git diff failed", Branch: "main", DefaultBranch: "origin/main"}}
 	state := reconcileTrails(wtfState{}, sessions, map[string][]trailEvidence{"claude:one": {e}}, worktrees, 2)
@@ -749,7 +775,7 @@ func TestReconcileTrailsProducesStableAssociationJSON(t *testing.T) {
 func TestScanWTFMetadataSelectsInitialCanonicalInSameScan(t *testing.T) {
 	home, first, source := t.TempDir(), t.TempDir(), t.TempDir()
 	transcript := filepath.Join(home, "c.jsonl")
-	if err := os.WriteFile(transcript, []byte(`{"type":"user","timestamp":"2026-09-29T09:00:00Z","message":{"content":"acme/api#44"}}`+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(transcript, []byte(`{"type":"user","timestamp":"2026-09-29T09:00:00Z","message":{"content":"https://entire.io/gh/acme/api/trails/44"}}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
@@ -764,7 +790,7 @@ func TestScanWTFMetadataSelectsInitialCanonicalInSameScan(t *testing.T) {
 }
 
 func TestReconcileTrailsMovingSessionKeepsOwnerAndAddsAssociation(t *testing.T) {
-	e := trailEvidence{Key: "acme/api#9", Owner: "acme", Repo: "api", Number: 9, Matched: "api#9", Source: "user", At: 100, Resolved: true}
+	e := trailEvidence{Key: "acme/api#9", Owner: "acme", Repo: "api", Number: 9, Matched: "https://entire.io/gh/acme/api/trails/9", Source: "user", At: 100, Resolved: true}
 	first := reconcileTrails(wtfState{}, []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/one", Active: true}}, map[string][]trailEvidence{"claude:one": {e}}, map[string]wtfWorktree{"/wt/one": {Repo: "acme/api", Path: "/wt/one", Exists: true}}, 200)
 	second := reconcileTrails(first, []wtfSession{{Agent: AgentClaude, ID: "one", Repo: "acme/api", Cwd: "/wt/two", Active: true}}, map[string][]trailEvidence{"claude:one": {e}}, map[string]wtfWorktree{"/wt/two": {Repo: "acme/api", Path: "/wt/two", Exists: true}}, 300)
 	trail := second.Trails[e.Key]
@@ -774,7 +800,7 @@ func TestReconcileTrailsMovingSessionKeepsOwnerAndAddsAssociation(t *testing.T) 
 }
 
 func TestReconcileTrailsInactiveCannotIntroduceOrClaim(t *testing.T) {
-	e := trailEvidence{Key: "acme/api#10", Owner: "acme", Repo: "api", Number: 10, Matched: "api#10", Source: "user", At: 100, Resolved: true}
+	e := trailEvidence{Key: "acme/api#10", Owner: "acme", Repo: "api", Number: 10, Matched: "https://entire.io/gh/acme/api/trails/10", Source: "user", At: 100, Resolved: true}
 	ended := []wtfSession{{Agent: AgentClaude, ID: "ended", Repo: "acme/api", Cwd: "/wt/ended", State: "ended"}}
 	worktrees := map[string]wtfWorktree{"/wt/ended": {Repo: "acme/api", Path: "/wt/ended"}}
 	if got := reconcileTrails(wtfState{}, ended, map[string][]trailEvidence{"claude:ended": {e}}, worktrees, 200); len(got.Trails) != 0 {
@@ -787,13 +813,13 @@ func TestReconcileTrailsInactiveCannotIntroduceOrClaim(t *testing.T) {
 	}
 }
 
-func TestReconcileTrailsAssociationsAreIdempotentAndRejectBareGitNumbers(t *testing.T) {
+func TestReconcileTrailsAssociationsAreIdempotentAndRejectShorthandGitRefs(t *testing.T) {
 	trail := wtfTrail{Key: "acme/api#11", Owner: "acme", Repo: "api", Number: 11}
 	prior := wtfState{Trails: map[string]wtfTrail{trail.Key: trail}}
-	worktrees := map[string]wtfWorktree{"/wt/git": {Repo: "acme/api", Path: "/wt/git", Exists: true, GitEvidence: []wtfGitEvidence{{Source: "branch", Text: "fix trail 11 and acme/api#11"}}}}
+	worktrees := map[string]wtfWorktree{"/wt/git": {Repo: "acme/api", Path: "/wt/git", Exists: true, GitEvidence: []wtfGitEvidence{{Source: "branch", Text: "fix trail 11, acme/api#11 and https://entire.io/gh/acme/api/trails/11"}}}}
 	first := reconcileTrails(prior, nil, nil, worktrees, 200)
 	second := reconcileTrails(first, nil, nil, worktrees, 300)
-	if got := second.Trails[trail.Key].Associations; len(got) != 1 || got[0].Evidence != "acme/api#11" {
+	if got := second.Trails[trail.Key].Associations; len(got) != 1 || got[0].Evidence != "https://entire.io/gh/acme/api/trails/11" {
 		t.Fatalf("git associations: %#v", got)
 	}
 }
@@ -816,7 +842,7 @@ func TestChooseInitialCanonical(t *testing.T) {
 
 func TestReconcileTrailsCanonicalFallbackUsesClaimsOnly(t *testing.T) {
 	const key = "acme/api#13"
-	claimEvidence := trailEvidence{Key: key, Owner: "acme", Repo: "api", Number: 13, Matched: "api#13", Source: "user", At: 100, Resolved: true}
+	claimEvidence := trailEvidence{Key: key, Owner: "acme", Repo: "api", Number: 13, Matched: "https://entire.io/gh/acme/api/trails/13", Source: "user", At: 100, Resolved: true}
 	session := wtfSession{Agent: AgentClaude, ID: "claim", Repo: "acme/api", Cwd: "/wt/claim", Active: true}
 
 	for _, test := range []struct {
@@ -830,7 +856,7 @@ func TestReconcileTrailsCanonicalFallbackUsesClaimsOnly(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			prior := wtfState{Trails: map[string]wtfTrail{key: {Key: key, Owner: "acme", Repo: "api", Number: 13, SourceBranch: test.sourceBranch}}}
 			worktrees := map[string]wtfWorktree{
-				"/wt/git":   {Repo: "acme/api", Path: "/wt/git", Branch: "feat/git", FirstSeen: 50, Exists: true, GitEvidence: []wtfGitEvidence{{Source: "unmerged subjects", Text: key}}},
+				"/wt/git":   {Repo: "acme/api", Path: "/wt/git", Branch: "feat/git", FirstSeen: 50, Exists: true, GitEvidence: []wtfGitEvidence{{Source: "unmerged subjects", Text: "https://entire.io/gh/acme/api/trails/13"}}},
 				"/wt/claim": {Repo: "acme/api", Path: "/wt/claim", Branch: "feat/claim", FirstSeen: 90, Exists: true},
 			}
 
@@ -847,12 +873,12 @@ func TestScanWTFIntegration(t *testing.T) {
 	oldWorktree := t.TempDir()
 	activeWorktree := t.TempDir()
 	exportPath := filepath.Join(home, "active.json")
-	if err := os.WriteFile(exportPath, []byte(`{"v":1,"id":"T-active","messages":[{"role":"user","createdAt":"2026-09-29T09:00:00Z","content":[{"type":"text","text":"Continue acme/api#1223"}]}]}`), 0o600); err != nil {
+	if err := os.WriteFile(exportPath, []byte(`{"v":1,"id":"T-active","messages":[{"role":"user","createdAt":"2026-09-29T09:00:00Z","content":[{"type":"text","text":"Continue https://entire.io/gh/acme/api/trails/1223"}]}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	oldAt := now.Add(-48 * time.Hour).Unix()
-	oldClaim := wtfClaim{SessionKey: "claude:old", Worktree: oldWorktree, At: oldAt, Evidence: "acme/api#1223"}
+	oldClaim := wtfClaim{SessionKey: "claude:old", Worktree: oldWorktree, At: oldAt, Evidence: "https://entire.io/gh/acme/api/trails/1223"}
 	prior := newWTFState(oldAt)
 	prior.Sessions["claude:old"] = wtfSession{Agent: AgentClaude, ID: "old", Repo: "acme/api", Cwd: oldWorktree, State: "ended", LastActivity: oldAt}
 	prior.Trails["acme/api#1223"] = wtfTrail{

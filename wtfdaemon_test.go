@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -386,14 +387,42 @@ func TestWTFLockReleaseRefusesReplacedIdentityAfterWaiting(t *testing.T) {
 	}
 }
 
+// One broken source (a stale Amp export, one worktree git can't read) used
+// to fail every scan, so the footer said "last successful scan never" while
+// the daemon was saving fresh state every two seconds.
+func TestRecordWTFScan(t *testing.T) {
+	partial := &wtfScanError{errors: []error{errors.New("amp transcript T-1: invalid")}, localFailed: true}
+
+	var health wtfHealth
+	recordWTFScan(&health, 10, partial, nil)
+	if health.LastSuccessfulScan != 10 || health.LastError != "" || !reflect.DeepEqual(health.Degraded, []string{"amp transcript T-1: invalid"}) {
+		t.Fatalf("partial scan: %#v", health)
+	}
+
+	recordWTFScan(&health, 20, nil, nil)
+	if health.LastSuccessfulScan != 20 || health.LastError != "" || health.Degraded != nil {
+		t.Fatalf("clean scan: %#v", health)
+	}
+
+	recordWTFScan(&health, 30, partial, errors.New("disk full"))
+	if health.LastSuccessfulScan != 20 || !strings.Contains(health.LastError, "disk full") {
+		t.Fatalf("unsaved scan counted as success: %#v", health)
+	}
+
+	recordWTFScan(&health, 40, errors.New("inventory failed"), nil)
+	if health.LastSuccessfulScan != 20 || health.LastError != "inventory failed" {
+		t.Fatalf("failed scan counted as success: %#v", health)
+	}
+}
+
 func TestWTFHealthRoundTripsAndChecksProcessIdentity(t *testing.T) {
 	home := t.TempDir()
-	want := wtfHealth{PID: 42, Version: "test", StartedAt: 10, LastAttemptedScan: 11, LastSuccessfulScan: 12, LastError: "degraded"}
+	want := wtfHealth{PID: 42, Version: "test", StartedAt: 10, LastAttemptedScan: 11, LastSuccessfulScan: 12, LastError: "failed", Degraded: []string{"one source"}}
 	if err := writeWTFHealth(home, want); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := readWTFHealth(home)
-	if !ok || got != want {
+	if !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("health = %#v, %v", got, ok)
 	}
 	if matches, _ := filepath.Glob(filepath.Join(wtfDir(home), "health-*.tmp")); len(matches) != 0 {
@@ -562,7 +591,7 @@ func TestRequestWTFScanCoalescesAtomicMarker(t *testing.T) {
 
 func TestReadWTFHealthFileReportsMalformedAndIgnoresMissing(t *testing.T) {
 	home := t.TempDir()
-	if health, err := readWTFHealthFile(home); err != nil || health != (wtfHealth{}) {
+	if health, err := readWTFHealthFile(home); err != nil || !reflect.DeepEqual(health, wtfHealth{}) {
 		t.Fatalf("missing health = %+v, %v", health, err)
 	}
 	if err := os.MkdirAll(wtfDir(home), 0o700); err != nil {
@@ -571,7 +600,7 @@ func TestReadWTFHealthFileReportsMalformedAndIgnoresMissing(t *testing.T) {
 	if err := os.WriteFile(wtfHealthPath(home), []byte(`{"pid":`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if health, err := readWTFHealthFile(home); err == nil || health != (wtfHealth{}) || !strings.Contains(err.Error(), "read wtf health") {
+	if health, err := readWTFHealthFile(home); err == nil || !reflect.DeepEqual(health, wtfHealth{}) || !strings.Contains(err.Error(), "read wtf health") {
 		t.Fatalf("malformed health = %+v, %v", health, err)
 	}
 }
