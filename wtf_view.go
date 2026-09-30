@@ -343,10 +343,23 @@ func wtfHealthFooter(snapshot wtfSnapshot) string {
 	if snapshot.RefreshPending {
 		footer += " · refresh pending"
 	}
+	if degraded := degradedLines(snapshot.Health.Degraded); len(degraded) > 0 {
+		footer += fmt.Sprintf(" · %d sources degraded (%s)", len(degraded), degraded[0])
+	}
 	if snapshot.Health.LastError != "" {
 		footer += " · error: " + snapshot.Health.LastError
 	}
 	return footer
+}
+
+// degradedLines flattens degraded sources to one per line: a single repo's
+// entry can list every worktree git failed to read.
+func degradedLines(degraded []string) []string {
+	var lines []string
+	for _, entry := range degraded {
+		lines = append(lines, nonemptyLines([]byte(entry))...)
+	}
+	return lines
 }
 
 func formatAge(seconds int64) string {

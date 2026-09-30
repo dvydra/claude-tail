@@ -523,11 +523,6 @@ type trailTextEvent struct {
 	Text   string
 }
 
-type trailContext struct {
-	CurrentRepo string
-	KnownRepos  []string
-}
-
 type trailEvidence struct {
 	Key        string
 	Owner      string
@@ -562,14 +557,6 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 	}
 	expireWTFSessions(&state, localMidnight(nowUnix, now.Location()))
 
-	knownRepos := make([]string, 0, len(prior.Trails)+len(sessions))
-	for _, trail := range prior.Trails {
-		knownRepos = append(knownRepos, trail.Owner+"/"+trail.Repo)
-	}
-	for _, session := range sessions {
-		knownRepos = append(knownRepos, session.Repo)
-	}
-	knownRepos = sortedUnique(knownRepos)
 	evidence := make(map[string][]trailEvidence)
 	var degraded []error
 	transcriptFailures := make(map[string]bool)
@@ -584,7 +571,7 @@ func scanWTF(ctx context.Context, home string, prior wtfState, deps wtfScanDeps)
 			transcriptFailures[key] = true
 			continue
 		}
-		evidence[key] = extractTrailEvidence(events, trailContext{CurrentRepo: session.Repo, KnownRepos: knownRepos})
+		evidence[key] = extractTrailEvidence(events)
 	}
 
 	repoCandidates := make(map[string][]string)
@@ -706,12 +693,19 @@ func reconcileTrails(prior wtfState, sessions []wtfSession, evidence map[string]
 
 func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map[string][]trailEvidence, worktrees map[string]wtfWorktree, now int64, chooseCanonical bool) wtfState {
 	state := prior
+	// hollow holds trails with nothing left behind them once weak claims go.
+	// They are dropped at the end only if this scan re-attaches nothing.
+	hollow := make(map[string]bool)
 	if state.Trails == nil {
 		state.Trails = make(map[string]wtfTrail)
 	} else {
 		trails := make(map[string]wtfTrail, len(state.Trails))
 		for key, trail := range state.Trails {
-			trails[key] = dropToolClaims(trail)
+			trail, keep := dropWeakClaims(trail)
+			trails[key] = trail
+			if !keep {
+				hollow[key] = true
+			}
 		}
 		state.Trails = trails
 	}
@@ -790,12 +784,8 @@ func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map
 			}
 			for _, gitEvidence := range worktree.GitEvidence {
 				event := trailTextEvent{At: worktree.FirstSeen, Source: gitEvidence.Source, Text: gitEvidence.Text}
-				context := trailContext{CurrentRepo: worktree.Repo, KnownRepos: []string{worktree.Repo}}
 				for _, candidate := range trailMatches(gitEvidence.Text) {
-					if candidate.kind == "bare" {
-						continue
-					}
-					match := resolveTrailMatch(candidate, event, context)
+					match := resolveTrailMatch(candidate, event)
 					if match.Resolved && match.Key == key {
 						trail.Associations = addAssociation(trail.Associations, wtfAssociation{Worktree: path, At: match.At, Evidence: match.Matched, Source: gitEvidence.Source})
 						associateWorktree(&state, path, "", trail.Key)
@@ -819,39 +809,50 @@ func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map
 		}
 		trail.Associations = sortedAssociations(trail.Associations)
 		state.Trails[key] = trail
+		if hollow[key] && len(trail.Associations) == 0 && trail.FirstClaim == nil {
+			delete(state.Trails, key)
+		}
 	}
 	state.Version = wtfStateVersion
 	state.UpdatedAt = now
 	return state
 }
 
-// dropToolClaims removes session associations a registry recorded from tool
-// text before trailClaimSource existed. If one of them was the first claim,
-// the owner and canonical worktree it chose go too, and the next claim from
-// the session's own words decides them again.
-func dropToolClaims(trail wtfTrail) wtfTrail {
+// dropWeakClaims removes associations a registry recorded under rules since
+// tightened: anything short of a trail URL (a source-branch match aside), and
+// session text that came from a tool. A first claim that was one of them goes
+// with the owner and canonical worktree it chose, and the next real claim
+// decides them again. keep is false for a trail this emptied; one that had
+// no associations to begin with (metadata alone) is left as it was.
+func dropWeakClaims(trail wtfTrail) (_ wtfTrail, keep bool) {
+	weak := func(association wtfAssociation) bool {
+		if association.Source == "source branch" {
+			return false
+		}
+		return !trailURL.MatchString(association.Evidence) || (association.SessionKey != "" && !trailClaimSource(association.Source))
+	}
 	kept := make([]wtfAssociation, 0, len(trail.Associations))
-	firstWasTool := false
+	firstWasWeak := trail.FirstClaim != nil && trail.FirstClaim.Evidence != "" && !trailURL.MatchString(trail.FirstClaim.Evidence)
 	for _, association := range trail.Associations {
-		if association.SessionKey != "" && !trailClaimSource(association.Source) {
+		if weak(association) {
 			if claim := trail.FirstClaim; claim != nil && claim.SessionKey == association.SessionKey &&
 				claim.Worktree == association.Worktree && claim.At == association.At && claim.Evidence == association.Evidence {
-				firstWasTool = true
+				firstWasWeak = true
 			}
 			continue
 		}
 		kept = append(kept, association)
 	}
-	if len(kept) == len(trail.Associations) {
-		return trail
+	if len(kept) == len(trail.Associations) && !firstWasWeak {
+		return trail, true
 	}
 	trail.Associations = kept
-	if firstWasTool {
+	if firstWasWeak {
 		trail.FirstClaim = nil
 		trail.OwnerSession = ""
 		trail.CanonicalWorktree = ""
 	}
-	return trail
+	return trail, len(kept) > 0 || trail.FirstClaim != nil
 }
 
 func chooseInitialCanonical(trail wtfTrail, claims []wtfClaim, worktrees map[string]wtfWorktree) string {
@@ -930,25 +931,16 @@ func addString(existing []string, next string) []string {
 	return append(existing, next)
 }
 
-type trailPattern struct {
-	kind string
-	re   *regexp.Regexp
-}
-
-var trailPatterns = []trailPattern{
-	{"url", regexp.MustCompile(`(?i)https://entire\.io/(?:gh|et)/([a-z0-9_.-]+)/([a-z0-9_.-]+)/trails/([0-9]+)`)},
-	{"qualified", regexp.MustCompile(`(?i)([a-z0-9_.-]+)/([a-z0-9_.-]+)#([0-9]+)`)},
-	{"repo", regexp.MustCompile(`(?i)([a-z0-9_.-]+)#([0-9]+)`)},
-	{"bare", regexp.MustCompile(`(?i)trail[ ]+#?([0-9]+)`)},
-}
+// trailURL is the only text taken to name a trail. The shorthands this used to
+// accept ("owner/repo#N", "repo#N", "trail N") are also how GitHub PRs and
+// issues are written, and turn up in any conversation ABOUT a trail, so each
+// one filed phantom trails and claims: PR numbers became trails, and a session
+// debugging a warning became the owner of the trail it was warned about.
+var trailURL = regexp.MustCompile(`(?i)https://entire\.io/(gh|et)/([a-z0-9_.-]+)/([a-z0-9_.-]+)/trails/([0-9]+)`)
 
 type trailMatch struct {
-	start, end int
-	kind       string
-	matched    string
-	parts      []string
-	// prefix is the word before a bare "trail N", which may name its repo.
-	prefix string
+	matched                    string
+	forge, owner, repo, number string
 }
 
 // trailClaimSource reports whether text from this source is the session's
@@ -958,14 +950,14 @@ func trailClaimSource(source string) bool {
 	return source != "tool input" && source != "tool result"
 }
 
-func extractTrailEvidence(events []trailTextEvent, ctx trailContext) []trailEvidence {
+func extractTrailEvidence(events []trailTextEvent) []trailEvidence {
 	byIdentity := make(map[string]trailEvidence)
 	for _, event := range events {
 		if !trailClaimSource(event.Source) {
 			continue
 		}
 		for _, match := range trailMatches(event.Text) {
-			evidence := resolveTrailMatch(match, event, ctx)
+			evidence := resolveTrailMatch(match, event)
 			identity := evidence.Key
 			if identity == "" {
 				identity = "unresolved:" + strings.ToLower(evidence.Matched)
@@ -990,53 +982,15 @@ func extractTrailEvidence(events []trailTextEvent, ctx trailContext) []trailEvid
 
 func trailMatches(text string) []trailMatch {
 	var matches []trailMatch
-	for _, pattern := range trailPatterns {
-		for _, idx := range pattern.re.FindAllStringSubmatchIndex(text, -1) {
-			start, end := idx[0], idx[1]
-			if !trailBoundaryBefore(text, start) || !trailBoundaryAfter(text, end) ||
-				(pattern.kind == "repo" && start > 0 && text[start-1] == '/') {
-				continue
-			}
-			parts := make([]string, 0, len(idx)/2-1)
-			for i := 2; i < len(idx); i += 2 {
-				if idx[i] < 0 {
-					parts = append(parts, "")
-				} else {
-					parts = append(parts, text[idx[i]:idx[i+1]])
-				}
-			}
-			candidate := trailMatch{start: start, end: end, kind: pattern.kind, matched: text[start:end], parts: parts}
-			if pattern.kind == "bare" {
-				candidate.prefix = wordBefore(text, start)
-			}
-			overlaps := false
-			for _, accepted := range matches {
-				if start < accepted.end && end > accepted.start {
-					overlaps = true
-					break
-				}
-			}
-			if !overlaps {
-				matches = append(matches, candidate)
-			}
+	for _, idx := range trailURL.FindAllStringSubmatchIndex(text, -1) {
+		start, end := idx[0], idx[1]
+		if !trailBoundaryBefore(text, start) || !trailBoundaryAfter(text, end) {
+			continue
 		}
+		matches = append(matches, trailMatch{matched: text[start:end],
+			forge: text[idx[2]:idx[3]], owner: text[idx[4]:idx[5]], repo: text[idx[6]:idx[7]], number: text[idx[8]:idx[9]]})
 	}
-	sort.SliceStable(matches, func(i, j int) bool { return matches[i].start < matches[j].start })
 	return matches
-}
-
-// wordBefore returns the token ending just before at, across spaces, without
-// trailing punctuation: "company-knowledge trail 11" gives "company-knowledge".
-func wordBefore(text string, at int) string {
-	end := at
-	for end > 0 && text[end-1] == ' ' {
-		end--
-	}
-	start := end
-	for start > 0 && isTrailTokenByte(text[start-1]) {
-		start--
-	}
-	return strings.TrimRight(text[start:end], ".-")
 }
 
 func trailBoundaryBefore(text string, at int) bool {
@@ -1051,94 +1005,19 @@ func isTrailTokenByte(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || strings.ContainsRune("_.@-", rune(b))
 }
 
-func resolveTrailMatch(match trailMatch, event trailTextEvent, ctx trailContext) trailEvidence {
-	e := trailEvidence{Matched: match.matched, Source: event.Source, At: event.At}
-	var owner, repo, numberText string
-	switch match.kind {
-	case "url":
-		owner, repo, numberText = match.parts[0], match.parts[1], match.parts[2]
-		e.Resolution = "full URL"
-	case "qualified":
-		owner, repo, numberText = match.parts[0], match.parts[1], match.parts[2]
-		e.Resolution = "qualified owner/repo"
-	case "repo":
-		repo, numberText = match.parts[0], match.parts[1]
-		currentOwner, currentRepo, ok := splitRepo(ctx.CurrentRepo)
-		if ok && strings.EqualFold(repo, currentRepo) {
-			owner, repo = currentOwner, currentRepo
-			e.Resolution = "current repo basename"
-		} else {
-			var candidates [][2]string
-			for _, known := range ctx.KnownRepos {
-				o, r, valid := splitRepo(known)
-				if valid && strings.EqualFold(repo, r) {
-					candidates = append(candidates, [2]string{o, r})
-				}
-			}
-			if len(candidates) == 1 {
-				owner, repo = candidates[0][0], candidates[0][1]
-				e.Resolution = "unique known repo basename"
-			} else if len(candidates) == 0 {
-				e.Resolution = "no repo matches shorthand"
-			} else {
-				e.Resolution = "ambiguous repo shorthand"
-			}
-		}
-	case "bare":
-		numberText = match.parts[0]
-		owner, repo, e.Resolution = resolveBareTrailRepo(match.prefix, ctx)
-	}
-	number, err := strconv.Atoi(numberText)
+func resolveTrailMatch(match trailMatch, event trailTextEvent) trailEvidence {
+	e := trailEvidence{Matched: match.matched, Source: event.Source, At: event.At, Resolution: "full URL"}
+	number, err := strconv.Atoi(match.number)
 	if err != nil || number <= 0 {
 		e.Resolution = "invalid trail number"
 		return e
 	}
 	e.Number = number
-	if owner == "" || repo == "" {
-		return e
-	}
-	e.Owner, e.Repo = strings.ToLower(owner), strings.ToLower(repo)
+	e.Owner, e.Repo = strings.ToLower(match.owner), strings.ToLower(match.repo)
 	e.Key = e.Owner + "/" + e.Repo + "#" + strconv.Itoa(e.Number)
-	e.URL = "https://entire.io/gh/" + e.Owner + "/" + e.Repo + "/trails/" + strconv.Itoa(e.Number)
+	e.URL = "https://entire.io/" + strings.ToLower(match.forge) + "/" + e.Owner + "/" + e.Repo + "/trails/" + strconv.Itoa(e.Number)
 	e.Resolved = true
 	return e
-}
-
-// resolveBareTrailRepo picks the repo for a bare "trail N". The word before it
-// can name the repo ("company-knowledge trail 11"); binding that to the
-// current repo filed a mention of another repo's trail against this one.
-func resolveBareTrailRepo(prefix string, ctx trailContext) (owner, repo, resolution string) {
-	currentOwner, currentRepo, currentOK := splitRepo(ctx.CurrentRepo)
-	if prefix != "" && !(currentOK && strings.EqualFold(prefix, currentRepo)) {
-		var candidates [][2]string
-		for _, known := range ctx.KnownRepos {
-			o, r, valid := splitRepo(known)
-			if valid && strings.EqualFold(prefix, r) {
-				candidates = append(candidates, [2]string{o, r})
-			}
-		}
-		switch {
-		case len(candidates) == 1:
-			return candidates[0][0], candidates[0][1], "named known repo"
-		case len(candidates) > 1:
-			return "", "", "ambiguous named repo"
-		case strings.ContainsAny(prefix, "-_."):
-			// Shaped like a repo name, not a word of prose.
-			return "", "", "names an unknown repo"
-		}
-	}
-	if !currentOK {
-		return "", "", "bare trail without current repo"
-	}
-	return currentOwner, currentRepo, "current repo"
-}
-
-func splitRepo(value string) (string, string, bool) {
-	parts := strings.Split(strings.Trim(value, "/"), "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
 }
 
 func claudeTrailEvents(path string, observedAt int64) ([]trailTextEvent, error) {

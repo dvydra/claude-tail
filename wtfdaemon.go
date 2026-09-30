@@ -29,6 +29,29 @@ type wtfHealth struct {
 	LastAttemptedScan  int64  `json:"lastAttemptedScan,omitempty"`
 	LastSuccessfulScan int64  `json:"lastSuccessfulScan,omitempty"`
 	LastError          string `json:"lastError,omitempty"`
+	// Degraded lists the sources the last successful scan couldn't read. The
+	// scan still counts: its partial state was saved, and one stale export or
+	// unreadable worktree must not make every scan look failed.
+	Degraded []string `json:"degraded,omitempty"`
+}
+
+// recordWTFScan updates health after a scan. A scan that saved its state
+// succeeded even when some sources degraded; only an unsaved scan or one that
+// failed outright is an error.
+func recordWTFScan(health *wtfHealth, now int64, scanErr, saveErr error) {
+	var partial *wtfScanError
+	if saveErr != nil || (scanErr != nil && !errors.As(scanErr, &partial)) {
+		health.LastError = errors.Join(scanErr, saveErr).Error()
+		return
+	}
+	health.LastSuccessfulScan = now
+	health.LastError = ""
+	health.Degraded = nil
+	if partial != nil {
+		for _, err := range partial.errors {
+			health.Degraded = append(health.Degraded, err.Error())
+		}
+	}
 }
 
 type wtfDaemonDeps struct {
@@ -453,12 +476,7 @@ func runWTFDaemon(ctx context.Context, home string, deps wtfDaemonDeps) error {
 		next, scanErr := deps.Scan(ctx, home, state, defaultWTFScanDeps())
 		saveErr := deps.Save(home, next)
 		state = next
-		if scanErr != nil || saveErr != nil {
-			health.LastError = errors.Join(scanErr, saveErr).Error()
-		} else {
-			health.LastSuccessfulScan = now
-			health.LastError = ""
-		}
+		recordWTFScan(&health, now, scanErr, saveErr)
 		if err := writeWTFHealth(home, health); err != nil {
 			return err
 		}

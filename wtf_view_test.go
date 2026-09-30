@@ -360,6 +360,8 @@ func TestRenderWTFHealth(t *testing.T) {
 		{name: "absent", snapshot: wtfSnapshot{}, want: "monitoring off · run entire wtf install"},
 		{name: "running", snapshot: wtfSnapshot{Monitoring: true, Now: 200, Health: wtfHealth{LastSuccessfulScan: 195}}, want: "monitoring on · last successful scan 5s ago"},
 		{name: "stale error", snapshot: wtfSnapshot{Monitoring: true, Now: 500, Health: wtfHealth{LastSuccessfulScan: 200, LastError: "git unavailable"}}, want: "last successful scan 5m ago · error: git unavailable"},
+		{name: "degraded", snapshot: wtfSnapshot{Monitoring: true, Now: 200, Health: wtfHealth{LastSuccessfulScan: 195, Degraded: []string{"amp transcript T-1: invalid", "git worktrees for a/b: x failed\ny failed"}}},
+			want: "last successful scan 5s ago · 3 sources degraded (amp transcript T-1: invalid)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := renderWTF(wtfUI{Snapshot: test.snapshot, Width: 160, Height: 40}, Theme{})
