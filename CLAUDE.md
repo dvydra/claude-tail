@@ -61,7 +61,10 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   A tail backfills with one `amp threads export`. After that, if the
   `amp-plugin/entire-tail.ts` feed exists at
   `~/.cache/entire-tail/amp/live/<T-…>.jsonl`, `followAmpLive` appends its lines
-  to the render file and **no further exports run**. Busy threads used to
+  to the render file and **no further exports run**. So the export cache goes
+  stale while the render file doesn't: `live.go` only **seeds** a render file
+  (`seedAmpSnapshot`). Rewriting it from the cache on each `--live` tick
+  silently dropped every feed line (whole turns missing). Busy threads used to
   re-export on every log event (a subprocess plus a full JSON rewrite, ~1–2 MB/s
   per busy thread). The plugin runs inside Amp and writes each settled message
   as an `ampEnvelope` line, so `normalizeAmp` renders it unchanged. Message ids
