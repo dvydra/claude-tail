@@ -97,6 +97,9 @@ export default function (amp: PluginAPI) {
     emitted.set(thread.id, seen);
     const page = await thread.messages({ full: true, from: "end", limit: pageSize });
     for (const m of page) if (String(m.id) !== keep) seen.add(String(m.id));
+    // An empty feed already switches a waiting tail off export polling.
+    mkdirSync(liveDir, { recursive: true, mode: 0o700 });
+    appendFileSync(join(liveDir, `${thread.id}.jsonl`), "", { mode: 0o600 });
   };
 
   // Serialized per thread; a failed read never blocks Amp or the next event.
