@@ -563,6 +563,46 @@ func TestReconcileTrailsChoosesEarliestClaimAndPreservesIt(t *testing.T) {
 	}
 }
 
+// Naming another repo's trail is talking about it, not working on it: the
+// session's worktree holds a different repo, so nothing there can be the
+// trail's work. A claim of that shape made one session the "owner" of a
+// ci-webhooks trail with an entire-tail checkout as its canonical worktree.
+func TestReconcileTrailsIgnoresClaimsFromAnotherRepo(t *testing.T) {
+	sessions := []wtfSession{{Agent: AgentClaude, ID: "elsewhere", Repo: "acme/tool", Cwd: "/wt/tool", Active: true}}
+	evidence := map[string][]trailEvidence{"claude:elsewhere": {{Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7, Matched: "acme/api#7", Source: "assistant", At: 100, Resolved: true}}}
+	worktrees := map[string]wtfWorktree{"/wt/tool": {Repo: "acme/tool", Path: "/wt/tool", Exists: true}}
+
+	trail := reconcileTrails(wtfState{}, sessions, evidence, worktrees, 200).Trails["acme/api#7"]
+	if trail.OwnerSession != "" || trail.FirstClaim != nil || trail.CanonicalWorktree != "" {
+		t.Fatalf("cross-repo mention claimed the trail: %#v", trail)
+	}
+
+	stored := wtfState{Trails: map[string]wtfTrail{"acme/api#7": {
+		Key: "acme/api#7", Owner: "acme", Repo: "api", Number: 7,
+		OwnerSession: "claude:elsewhere", CanonicalWorktree: "/wt/tool",
+		FirstClaim: &wtfClaim{SessionKey: "claude:elsewhere", Worktree: "/wt/tool", At: 100, Evidence: "acme/api#7"},
+	}}}
+	trail = reconcileTrails(stored, sessions, evidence, worktrees, 300).Trails["acme/api#7"]
+	if trail.OwnerSession != "" || trail.FirstClaim != nil || trail.CanonicalWorktree != "" {
+		t.Fatalf("stored cross-repo claim kept its ownership: %#v", trail)
+	}
+}
+
+func TestDetectWTFFindingsIgnoresSessionsInAnotherRepo(t *testing.T) {
+	state := findingState()
+	state.Sessions["claude:a"] = wtfSession{Active: true, Cwd: "/wt/a"}
+	state.Sessions["claude:other"] = wtfSession{Active: true, Cwd: "/wt/other"}
+	state.Worktrees["/wt/a"] = wtfWorktree{Path: "/wt/a", Repo: "acme/api", Exists: true}
+	state.Worktrees["/wt/other"] = wtfWorktree{Path: "/wt/other", Repo: "acme/tool", Exists: true}
+	trail := state.Trails["acme/api#7"]
+	trail.Associations = []wtfAssociation{{SessionKey: "claude:a", Worktree: "/wt/a"}, {SessionKey: "claude:other", Worktree: "/wt/other"}}
+	state.Trails[trail.Key] = trail
+
+	if got := detectWTFFindings(state, 100); findingOfKind(got, "duplicate-active-claim") != nil {
+		t.Fatalf("a session in another repo counted as a claimant: %#v", got)
+	}
+}
+
 // A registry written before tool text stopped counting still holds claims
 // made by reading a trail's number. Left in place they keep the warnings
 // coming, so a reconcile drops them and whatever ownership they decided.

@@ -426,7 +426,7 @@ func activeTrailAssociations(state wtfState, trail wtfTrail) []wtfAssociation {
 			path = association.Worktree
 		}
 		worktree, local := state.Worktrees[path]
-		if !local || !worktree.Exists || worktree.GitError != "" {
+		if !local || !worktree.Exists || worktree.GitError != "" || !worktreeHoldsTrail(worktree, trail) {
 			continue
 		}
 		bySession[association.SessionKey] = wtfAssociation{SessionKey: association.SessionKey, Worktree: path}
@@ -437,6 +437,14 @@ func activeTrailAssociations(state wtfState, trail wtfTrail) []wtfAssociation {
 		out = append(out, bySession[key])
 	}
 	return out
+}
+
+// worktreeHoldsTrail reports whether work on the trail could happen in this
+// worktree: it must be a checkout of the trail's repo. A session elsewhere
+// that names the trail is talking about it, not working on it. An unknown
+// repo is given the benefit of the doubt.
+func worktreeHoldsTrail(worktree wtfWorktree, trail wtfTrail) bool {
+	return worktree.Repo == "" || strings.EqualFold(worktree.Repo, trail.Owner+"/"+trail.Repo)
 }
 
 func associationIDs(associations []wtfAssociation) ([]string, []string) {
@@ -744,7 +752,7 @@ func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map
 		trail.LastSeen = now
 		association := wtfAssociation{SessionKey: observation.SessionKey, Worktree: observation.Worktree, At: found.At, Evidence: found.Matched, Source: found.Source}
 		trail.Associations = addAssociation(trail.Associations, association)
-		if worktree, ok := worktrees[observation.Worktree]; ok && worktree.Exists && worktree.GitError == "" && worktree.Repo == observation.Repo {
+		if worktree, ok := worktrees[observation.Worktree]; ok && worktree.Exists && worktree.GitError == "" && worktree.Repo == observation.Repo && worktreeHoldsTrail(worktree, trail) {
 			claim := wtfClaim{SessionKey: observation.SessionKey, Worktree: observation.Worktree, At: found.At, Evidence: found.Matched}
 			claims[trail.Key] = append(claims[trail.Key], claim)
 			if trail.FirstClaim == nil {
@@ -766,6 +774,11 @@ func reconcileTrailsInternal(prior wtfState, sessions []wtfSession, evidence map
 	sort.Strings(trailKeys)
 	for _, key := range trailKeys {
 		trail := state.Trails[key]
+		if claim := trail.FirstClaim; claim != nil {
+			if worktree, ok := worktrees[claim.Worktree]; ok && !worktreeHoldsTrail(worktree, trail) {
+				trail.FirstClaim, trail.OwnerSession, trail.CanonicalWorktree = nil, "", ""
+			}
+		}
 		for _, path := range sortedMapKeys(worktrees) {
 			worktree := worktrees[path]
 			if !worktree.Exists || worktree.GitError != "" || worktree.Repo != trail.Owner+"/"+trail.Repo {
