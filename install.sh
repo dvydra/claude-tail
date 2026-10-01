@@ -6,6 +6,7 @@
 #      tail` and `entire wtf` plugins.
 #   2. Always also drops `entire-tail` and `entire-wtf` symlinks in
 #      ~/.local/bin. The latter selects the dashboard from argv[0].
+#   3. Links amp-plugin/entire-tail.ts into ~/.config/amp/plugins.
 #
 # The binary embeds its themes (go:embed), so it is self-contained — the
 # symlink works from anywhere and editing themes/ requires a rebuild.
@@ -31,6 +32,12 @@ ln -sf "$BIN" "$LOCAL_BIN/entire-tail"
 echo "Linked: $LOCAL_BIN/entire-tail -> $BIN"
 ln -sf "$BIN" "$LOCAL_BIN/entire-wtf"
 echo "Linked: $LOCAL_BIN/entire-wtf -> $BIN"
+
+# ── Amp plugin: live feed so Amp tails skip `amp threads export` polling ─────
+AMP_PLUGINS="$HOME/.config/amp/plugins"
+mkdir -p "$AMP_PLUGINS"
+ln -sf "$HERE/amp-plugin/entire-tail.ts" "$AMP_PLUGINS/entire-tail.ts"
+echo "Linked: $AMP_PLUGINS/entire-tail.ts (loads in Amp sessions started from now on)"
 
 # ── entire plugin install (best-effort) ──────────────────────────────────────
 if command -v entire >/dev/null 2>&1; then

@@ -1210,18 +1210,37 @@ func fileMtimeNano(path string) int64 {
 	return fi.ModTime().UnixNano()
 }
 
+// signalExit and signalQuitGrace are package vars so a test can observe the
+// forced exit without the test binary exiting.
+var (
+	signalExit      = os.Exit
+	signalQuitGrace = 2 * time.Second
+)
+
 // installSignals reports an exit code on codeCh for Ctrl-C (SIGINT → 130) and
 // SIGTERM (→ 0). It never touches stdout, so the render goroutine stays the sole
 // writer of the buffered output.
+//
+// The graceful quit runs on the render goroutine and flushes to the terminal,
+// which blocks forever if that pty stops draining — seen live as a tail that
+// ignored SIGTERM and Ctrl-C and only died to kill -9. So the first signal also
+// hands later ones back to the default action (a second signal kills), and a
+// quit that hasn't finished within signalQuitGrace exits without the flush.
 func installSignals(codeCh chan<- int) {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
+		code := 0
 		if <-sigc == syscall.SIGINT {
-			codeCh <- 130
-		} else {
-			codeCh <- 0
+			code = 130
 		}
+		signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+		select {
+		case codeCh <- code:
+		default: // a quit is already queued; the deadline below still applies
+		}
+		time.Sleep(signalQuitGrace)
+		signalExit(code)
 	}()
 }
 

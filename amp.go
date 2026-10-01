@@ -407,6 +407,13 @@ func ampSnapshotPath(home, id string) string {
 	return filepath.Join(ampCacheDir(home), "render", id+".jsonl")
 }
 
+// ampLivePath is the append-only feed the entire-tail Amp plugin writes from
+// inside the Amp process (amp-plugin/entire-tail.ts). Its lines are already
+// ampEnvelope-shaped, so they render through normalizeAmp unchanged.
+func ampLivePath(home, id string) string {
+	return filepath.Join(ampCacheDir(home), "live", id+".jsonl")
+}
+
 func ampThreadLogPath(home, id string) string {
 	return filepath.Join(home, ".cache", "amp", "logs", "threads", id+".log")
 }
@@ -433,6 +440,15 @@ func readAmpExport(path string) (ampExport, error) {
 		return out, errors.New("invalid cached Amp export")
 	}
 	return out, nil
+}
+
+// seedAmpSnapshot creates a render file from a cached export only when none
+// exists. Once a snapshot follower owns the file it holds plugin-feed lines the
+// export cache never sees, so rewriting it from that cache drops them.
+func seedAmpSnapshot(path string, ex ampExport) {
+	if !isFile(path) {
+		_ = writeAmpCache(path, ampExportLines(ex))
+	}
 }
 
 func writeAmpCache(path string, data []byte) error {
@@ -555,12 +571,20 @@ func startAmpSnapshot(home, id string, cacheOnly bool) (string, chan struct{}, <
 			}
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
+			livePath := ampLivePath(home, id)
 			for {
+				if isFile(livePath) {
+					followAmpLive(livePath, path, prior, stop)
+					return
+				}
 				select {
 				case <-stop:
 					return
 				case <-logChanged:
 				case <-ticker.C:
+				}
+				if isFile(livePath) {
+					continue
 				}
 				next, fetchErr := ampExportThread(home, id, false)
 				if fetchErr != nil {
@@ -592,6 +616,55 @@ func startAmpSnapshot(home, id string, cacheOnly bool) (string, chan struct{}, <
 		}
 	}
 	return path, stop, sourceErrors, err
+}
+
+// followAmpLive replaces export polling once the plugin feed exists: it appends
+// each new feed line to the render file, skipping messages the backfill export
+// already rendered. A message the export caught mid-stream is not counted as
+// rendered, so its completed form from the feed still lands.
+func followAmpLive(livePath, renderPath string, rendered []byte, stop <-chan struct{}) {
+	seen := make(map[string]bool)
+	for _, line := range bytes.Split(rendered, []byte("\n")) {
+		if id := ampCompleteMessageID(line); id != "" {
+			seen[id] = true
+		}
+	}
+	ticker := time.NewTicker(ampLocalLogPollInterval)
+	defer ticker.Stop()
+	var offset int64
+	for {
+		var batch []byte
+		offset = appendStep(livePath, offset, func(line []byte) {
+			id := ampCompleteMessageID(line)
+			if id == "" || seen[id] {
+				return
+			}
+			seen[id] = true
+			batch = append(append(batch, line...), '\n')
+		})
+		if len(batch) > 0 {
+			if f, err := os.OpenFile(renderPath, os.O_APPEND|os.O_WRONLY, 0); err == nil {
+				_, _ = f.Write(batch)
+				_ = f.Close()
+			}
+		}
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func ampCompleteMessageID(line []byte) string {
+	var env ampEnvelope
+	if json.Unmarshal(line, &env) != nil || env.Message.ProtocolMessageID == "" {
+		return ""
+	}
+	if env.Message.Role == "assistant" && env.Message.State.Type != "complete" {
+		return ""
+	}
+	return env.Message.ProtocolMessageID
 }
 
 func ampExportLines(ex ampExport) []byte {

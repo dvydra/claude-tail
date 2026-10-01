@@ -31,6 +31,7 @@ the full investigation/decision.
 ```sh
 go build -o entire-tail .        # build
 go test ./...                    # unit + golden-file suite (no external deps)
+bun test amp-plugin              # Amp plugin tests
 RUN_ORACLE=1 go test ./...       # ALSO diff Go output vs entire-tail.bash (needs bash/jq/glow)
 go vet ./... && go test -race ./...   # what CI/the review gate expects
 ./install.sh                     # build + symlink ~/.local/bin + register entire plugin
@@ -58,11 +59,34 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
 - `adapter.go` — the `Record`/`Kind` types and the adapter interface
 - `amp.go` / `amp_tree.go` — the supported Amp CLI boundary, last-good cache,
   export snapshots, `amp top` activity stream, and combined tree inventory.
-  Amp transcript truth always comes from `amp threads export`; local diagnostic
-  logs correlate a process with its `T-…` id and trigger an export when a
-  `message_added` or `agent_state` event lands. They never supply transcript
-  content. Local tails retain a 10-second fallback refresh; remote tails, which
-  have no local log, poll exports every second.
+  A tail backfills with one `amp threads export`. After that, if the
+  `amp-plugin/entire-tail.ts` feed exists at
+  `~/.cache/entire-tail/amp/live/<T-…>.jsonl`, `followAmpLive` appends its lines
+  to the render file and **no further exports run**. So the export cache goes
+  stale while the render file doesn't: `live.go` only **seeds** a render file
+  (`seedAmpSnapshot`). Rewriting it from the cache on each `--live` tick
+  silently dropped every feed line (whole turns missing). Busy threads used to
+  re-export on every log event (a subprocess plus a full JSON rewrite, ~1–2 MB/s
+  per busy thread). The plugin runs inside Amp and writes each settled message
+  as an `ampEnvelope` line, so `normalizeAmp` renders it unchanged. Message ids
+  (`M-…`) match the export's `protocolMessageID`; dedupe counts only *complete*
+  export messages, so one caught mid-stream still lands from the feed. Plugin
+  gotchas, verified against a real `amp -x` run: `thread.messages()` still
+  lags the turn's last messages when `agent.end` fires, so the final sync uses
+  `event.messages`. `agent.end` is not guaranteed to fire, so one state
+  subscription per thread also reconciles on `idle`: it reads the newest 20
+  messages, paging backward only until it reaches an emitted id. Handlers must
+  be awaited, since `amp -x` exits right after the turn. Tool output arrives
+  JSON-encoded (shell's `{output, exitCode}`), so
+  it is parsed and spread into `run.result` to match the export. `tool.call` is
+  deliberately unused: it is a request event, and returning `allow` could
+  override another plugin's rejection. The plugin watches Amp's thread log to
+  pick up tool calls as they start. Without the feed (plugin not installed, or
+  runner/orb threads, where the plugin isn't local), local diagnostic logs
+  trigger an export when a `message_added` or `agent_state` event lands. Local
+  tails keep a 10-second fallback refresh; remote tails, which have no local
+  log, poll exports every second. The logs themselves never carry transcript
+  content.
 - `profile.go` — **which Claude ACCOUNT a session belongs to.** A second Claude
   subscription can't just `/login` on macOS (subscription logins live in the
   shared Keychain, so the last login flips every session, running ones
