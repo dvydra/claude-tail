@@ -75,8 +75,10 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   lags the turn's last messages when `agent.end` fires, so the final sync uses
   `event.messages`. `agent.end` is not guaranteed to fire, so one state
   subscription per thread also reconciles on `idle`: it reads the newest 20
-  messages, paging backward only until it reaches an emitted id. Handlers must
-  be awaited, since `amp -x` exits right after the turn. Tool output arrives
+  messages, paging backward only until it reaches an emitted id. On plugin
+  reload, the emitted-id set is seeded from the existing feed before that API
+  page, or older messages outside the newest 20 can be appended again. Handlers
+  must be awaited, since `amp -x` exits right after the turn. Tool output arrives
   JSON-encoded (shell's `{output, exitCode}`), so
   it is parsed and spread into `run.result` to match the export. `tool.call` is
   deliberately unused: it is a request event, and returning `allow` could

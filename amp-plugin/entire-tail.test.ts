@@ -1,5 +1,5 @@
 import { afterAll, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
@@ -75,4 +75,57 @@ test("idle backfills paginated messages when agent.end is absent", async () => {
 
   disposers.forEach((dispose) => dispose());
   expect(unsubscribed).toBe(true);
+});
+
+test("reload does not append a message already present in the feed", async () => {
+  const handlers = new Map<string, (...args: any[]) => unknown>();
+  let stateSubscriber: ((state: string) => void) | undefined;
+  let reads = 0;
+  const thread = {
+    id: "T-reload-dedupe",
+    messages: async () => {
+      reads++;
+      if (reads === 1) return [message(2)];
+      // Amp returned this page newest-first in the observed reload. M-1 sits
+      // outside the seed page but is already durable in the plugin feed.
+      return [message(2), message(1)];
+    },
+    state: {
+      subscribe(callback: (state: string) => void) {
+        stateSubscriber = callback;
+        return { unsubscribe() {} };
+      },
+    },
+  };
+  const amp = {
+    on: (name: string, handler: (...args: any[]) => unknown) => handlers.set(name, handler),
+    onDispose() {},
+  };
+  const ctx = { thread, system: { executor: { kind: "local" } } };
+  const feed = join(home, ".cache", "entire-tail", "amp", "live", `${thread.id}.jsonl`);
+  mkdirSync(join(feed, ".."), { recursive: true });
+  writeFileSync(
+    feed,
+    JSON.stringify({
+      agent: "amp",
+      message: {
+        role: "assistant",
+        protocolMessageID: "M-1",
+        state: { type: "complete" },
+        content: [{ type: "text", text: "message 1" }],
+      },
+    }) + "\n",
+  );
+
+  entireTail(amp as any);
+  handlers.get("session.start")?.({}, ctx);
+  await waitFor(() => reads === 1);
+  stateSubscriber?.("idle");
+  await handlers.get("tool.result")?.({}, ctx);
+
+  const ids = readFileSync(feed, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line).message.protocolMessageID);
+  expect(ids).toEqual(["M-1"]);
 });

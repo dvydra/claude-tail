@@ -3,7 +3,7 @@
 // follows a local file instead of polling `amp threads export`. Lines use the
 // ampEnvelope shape that adapter_amp.go's normalizeAmp already renders.
 import type { PluginAPI, PluginThread, Subscription, ThreadMessage } from "@ampcode/plugin";
-import { appendFileSync, mkdirSync, watch, type FSWatcher } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -96,11 +96,21 @@ export default function (amp: PluginAPI) {
     if (emitted.has(thread.id)) return;
     const seen = new Set<string>();
     emitted.set(thread.id, seen);
+    const feed = join(liveDir, `${thread.id}.jsonl`);
+    try {
+      for (const line of readFileSync(feed, "utf8").split("\n")) {
+        if (!line) continue;
+        try {
+          const id = JSON.parse(line)?.message?.protocolMessageID;
+          if (id) seen.add(String(id));
+        } catch {}
+      }
+    } catch {}
     const page = await thread.messages({ full: true, from: "end", limit: pageSize });
     for (const m of page) if (String(m.id) !== keep) seen.add(String(m.id));
     // An empty feed already switches a waiting tail off export polling.
     mkdirSync(liveDir, { recursive: true, mode: 0o700 });
-    appendFileSync(join(liveDir, `${thread.id}.jsonl`), "", { mode: 0o600 });
+    appendFileSync(feed, "", { mode: 0o600 });
   };
 
   // Serialized per thread; a failed read never blocks Amp or the next event.
