@@ -2,7 +2,7 @@
 // ~/.cache/entire-tail/amp/live/<thread>.jsonl so `entire-tail --agent amp`
 // follows a local file instead of polling `amp threads export`. Lines use the
 // ampEnvelope shape that adapter_amp.go's normalizeAmp already renders.
-import type { PluginAPI, PluginThread, ThreadMessage } from "@ampcode/plugin";
+import type { PluginAPI, PluginThread, Subscription, ThreadMessage } from "@ampcode/plugin";
 import { appendFileSync, mkdirSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ const pageSize = 20;
 export default function (amp: PluginAPI) {
   const emitted = new Map<string, Set<string>>();
   const queues = new Map<string, Promise<void>>();
+  const stateSubscriptions = new Map<string, Subscription>();
 
   // Newest-first pages until one reaches a message already emitted, so a burst
   // of messages between two events is never skipped.
@@ -131,12 +132,20 @@ export default function (amp: PluginAPI) {
   };
 
   const local = (ctx: { system: { executor: { kind: string } } }) => ctx.system.executor.kind === "local";
+  const watchState = (thread: PluginThread): void => {
+    if (stateSubscriptions.has(thread.id)) return;
+    const subscription = thread.state.subscribe((state) => {
+      if (state === "idle") enqueue(thread, () => sync(thread, true));
+    });
+    stateSubscriptions.set(thread.id, subscription);
+  };
   const start = (thread: PluginThread, keep?: string): void => {
     enqueue(thread, async () => {
       await seed(thread, keep);
       watchLog(thread);
       if (keep !== undefined) await sync(thread, false);
     });
+    watchState(thread);
   };
 
   amp.on("session.start", (_event, ctx) => {
@@ -155,5 +164,6 @@ export default function (amp: PluginAPI) {
   });
   amp.onDispose(() => {
     for (const watcher of watchers.values()) watcher.close();
+    for (const subscription of stateSubscriptions.values()) subscription.unsubscribe();
   });
 }

@@ -31,6 +31,7 @@ the full investigation/decision.
 ```sh
 go build -o entire-tail .        # build
 go test ./...                    # unit + golden-file suite (no external deps)
+bun test amp-plugin              # Amp plugin tests
 RUN_ORACLE=1 go test ./...       # ALSO diff Go output vs entire-tail.bash (needs bash/jq/glow)
 go vet ./... && go test -race ./...   # what CI/the review gate expects
 ./install.sh                     # build + symlink ~/.local/bin + register entire plugin
@@ -72,8 +73,11 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   export messages, so one caught mid-stream still lands from the feed. Plugin
   gotchas, verified against a real `amp -x` run: `thread.messages()` still
   lags the turn's last messages when `agent.end` fires, so the final sync uses
-  `event.messages`. Handlers must be awaited, since `amp -x` exits right after
-  the turn. Tool output arrives JSON-encoded (shell's `{output, exitCode}`), so
+  `event.messages`. `agent.end` is not guaranteed to fire, so one state
+  subscription per thread also reconciles on `idle`: it reads the newest 20
+  messages, paging backward only until it reaches an emitted id. Handlers must
+  be awaited, since `amp -x` exits right after the turn. Tool output arrives
+  JSON-encoded (shell's `{output, exitCode}`), so
   it is parsed and spread into `run.result` to match the export. `tool.call` is
   deliberately unused: it is a request event, and returning `allow` could
   override another plugin's rejection. The plugin watches Amp's thread log to
