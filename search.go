@@ -104,12 +104,18 @@ func buildSearchTree(home, pwd, query string, localOnly bool, now int64) session
 		list = append(list, h)
 	}
 	var ampHits []ampThread
-	if localOnly {
-		ampHits = ampCachedSearch(home, query)
-	} else {
+	if !localOnly {
 		ampHits, _ = ampSearch(query)
 	}
+	// Remote search can omit threads already present in the local cache.
+	// Keep its ordering and metadata, then add cached matches in both modes.
+	ampHits = append(ampHits, ampCachedSearch(home, query)...)
+	seenAmp := make(map[string]bool)
 	for rank, hit := range ampHits {
+		if seenAmp[hit.ID] {
+			continue
+		}
+		seenAmp[hit.ID] = true
 		list = append(list, &searchHit{
 			agent: AgentAmp, id: hit.ID, path: hit.ID, snippet: hit.Title,
 			mtime: hit.updatedUnix(), ampHit: true, ampRank: rank,

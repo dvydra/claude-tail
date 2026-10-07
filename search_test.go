@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -95,6 +98,52 @@ func TestWindow(t *testing.T) {
 func TestCleanMatch(t *testing.T) {
 	if got := cleanMatch(`a\nb\"c\\d`); got != `a b"c\d` {
 		t.Errorf("cleanMatch = %q", got)
+	}
+}
+
+func TestSearchMergesCachedAmpMatches(t *testing.T) {
+	// Keep Entire and rg off PATH; no real network commands in this test.
+	t.Setenv("PATH", t.TempDir())
+	home := t.TempDir()
+	if err := writeAmpCache(filepath.Join(ampCacheDir(home), "threads.json"), []byte(`[{"id":"T-local","title":"Bitrise CI PoC","updated":"2026-10-07T07:00:00Z"},{"id":"T-shared","title":"Bitrise cached title","updated":"2026-10-06T07:00:00Z"}]`)); err != nil {
+		t.Fatal(err)
+	}
+	old := ampRun
+	t.Cleanup(func() { ampRun = old })
+	for _, tt := range []struct {
+		name      string
+		localOnly bool
+		remoteErr error
+		want      []string
+	}{
+		{"online", false, nil, []string{"T-remote", "T-shared", "T-local"}},
+		{"offline", false, errors.New("offline"), []string{"T-local", "T-shared"}},
+		{"local", true, nil, []string{"T-local", "T-shared"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ampRun = func(_ context.Context, args ...string) ([]byte, error) {
+				if tt.localOnly || !reflect.DeepEqual(args, []string{"threads", "search", "--json", "bitrise"}) {
+					t.Fatalf("unexpected Amp command: %q", args)
+				}
+				return []byte(`[{"id":"T-remote","title":"Bitrise remote","updatedAt":"2026-10-05T07:00:00Z"},{"id":"T-shared","title":"Bitrise current title","updatedAt":"2026-10-08T07:00:00Z"}]`), tt.remoteErr
+			}
+			tree := buildSearchTree(home, home, "bitrise", tt.localOnly, 0)
+			var ids []string
+			for _, folder := range tree.Folders {
+				for _, session := range folder.Sessions {
+					ids = append(ids, session.ID)
+					if session.Agent != AgentAmp || session.Path != session.ID {
+						t.Errorf("invalid Amp search result: %+v", session)
+					}
+					if tt.name == "online" && session.ID == "T-shared" && session.Snippet != "Bitrise current title" {
+						t.Errorf("cached duplicate replaced remote metadata: %+v", session)
+					}
+				}
+			}
+			if !reflect.DeepEqual(ids, tt.want) {
+				t.Fatalf("ids=%v, want %v", ids, tt.want)
+			}
+		})
 	}
 }
 
