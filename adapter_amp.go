@@ -121,21 +121,16 @@ func normalizeAmp(line []byte, loc *time.Location) []Record {
 				out = append(out, Record{Kind: KindAssistant, Ts: ts, Body: b.Text, Done: done, MsgID: m.ProtocolMessageID})
 				done = false
 			case "tool_use":
-				questions := ampParseQuestions(b.Input)
 				switch b.Name {
 				case "ask_user_choice", "AskUserQuestion":
-					out = append(out, Record{Kind: KindQuestion, Ts: ts, QID: b.ID, Questions: questions})
+					out = append(out, Record{Kind: KindQuestion, Ts: ts, QID: b.ID, Questions: ampParseQuestions(b.Input)})
 				case "Task":
 					desc, atype := claudeAgentSpawn(b.Input)
 					out = append(out, Record{Kind: KindAgentSpawn, Ts: ts, AgentDesc: desc, AgentType: atype})
 				case "create_thread":
 					out = append(out, Record{Kind: KindAgentSpawn, Ts: ts, AgentDesc: ampThreadTitle(b.Input, b.ChildThreadID), AgentType: "thread"})
 				default:
-					if len(questions) > 0 {
-						out = append(out, Record{Kind: KindQuestion, Ts: ts, QID: b.ID, Questions: questions})
-					} else {
-						out = append(out, Record{Kind: KindToolUse, Name: b.Name, Summary: ampToolSummary(b.Name, b.Input)})
-					}
+					out = append(out, Record{Kind: KindToolUse, Name: b.Name, Summary: ampToolSummary(b.Name, b.Input)})
 				}
 			}
 		}
