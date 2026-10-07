@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,33 @@ func TestNormalizeAmpToolsQuestionsAndResults(t *testing.T) {
 	r := normalizeAmp(result, time.UTC)[0]
 	if r.Kind != KindToolResult || r.Result == nil || r.Result.Summary != "exit 0" || !reflect.DeepEqual(r.Result.Output, []string{"ok", "pass"}) {
 		t.Fatalf("result %+v", r)
+	}
+}
+
+func TestNormalizeAmpQuestionRequiresQuestionTool(t *testing.T) {
+	for _, tt := range []struct {
+		name, input string
+		kind        Kind
+	}{
+		{"read_thread", `{"question":"What remains to finish trail 3951?"}`, KindToolUse},
+		{"other_tool", `{"questions":[{"question":"Which approach?","options":[{"label":"A"},{"label":"B"}]}]}`, KindToolUse},
+		{"ask_user_choice", `{"question":"Ship it?","options":["Yes","No"]}`, KindQuestion},
+		{"AskUserQuestion", `{"questions":[{"question":"Which approach?","options":[{"label":"A"},{"label":"B"}]}]}`, KindQuestion},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			line := ampLine(t, `{"role":"assistant","state":{"type":"complete"},"content":[{"type":"tool_use","id":"q1","name":"`+tt.name+`","input":`+tt.input+`}]}`, false)
+			got := normalizeAmp(line, time.UTC)
+			if len(got) != 1 || got[0].Kind != tt.kind {
+				t.Fatalf("got %+v, want kind %v", got, tt.kind)
+			}
+			for _, style := range []string{"dots", "full", "hidden"} {
+				out := renderRecords(style, 0, true, got...)
+				wantQuestion := tt.kind == KindQuestion
+				if strings.Contains(out, "WAITING FOR YOUR ANSWER") != wantQuestion || strings.Contains(out, "\a") != wantQuestion {
+					t.Errorf("style %s: incorrect question alert: %q", style, out)
+				}
+			}
+		})
 	}
 }
 
