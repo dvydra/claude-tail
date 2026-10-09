@@ -56,4 +56,4 @@ The separate `trails-continue` worktree contains URL-handler and Trails for Mac 
 
 ## Approval state
 
-The in-chat product scope is approved. The collection, association, and persistence details above are proposed for review before an implementation plan is written. No implementation or monitoring installation has been performed.
+Daniel approved this written spec on 2026-10-09. No implementation or monitoring installation has been performed.
