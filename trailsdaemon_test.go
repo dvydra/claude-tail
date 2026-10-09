@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,5 +71,33 @@ func TestTrailsAgentPlist(t *testing.T) {
 	}
 	if strings.Contains(p, "<string>wtf</string>") {
 		t.Fatal("wrong daemon")
+	}
+}
+
+func TestTrailsAgentLifecycle(t *testing.T) {
+	home := t.TempDir()
+	oldLoad, oldUnload, oldWait := trailsAgentLoad, trailsAgentUnload, trailsAgentWait
+	t.Cleanup(func() { trailsAgentLoad, trailsAgentUnload, trailsAgentWait = oldLoad, oldUnload, oldWait })
+	trailsAgentLoad = func(string) error { t.Fatal("must not load during foreground ownership"); return nil }
+	trailsAgentWait = func(string, int64) bool { t.Fatal("must not wait during foreground ownership"); return false }
+	trailsAgentUnload = func(string) error { return nil }
+	release, ok, err := acquireTrailsLock(home)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	defer release()
+	if err := runTrailsCommand([]string{"install"}, home, io.Discard); err == nil || !strings.Contains(err.Error(), "foreground") {
+		t.Fatal("did not refuse foreground install", err)
+	}
+	ui, _ := trailsUIFixture()
+	if err := saveTrails(home, ui.Catalog); err != nil {
+		t.Fatal(err)
+	}
+	if err := runTrailsCommand([]string{"uninstall"}, home, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	c, err := loadTrails(home)
+	if err != nil || len(c.Trails) != 1 {
+		t.Fatal("uninstall lost catalog", err)
 	}
 }

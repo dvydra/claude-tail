@@ -218,11 +218,18 @@ func renderTrails(ui trailsUI, now time.Time) string {
 	}
 	footer := firstNonEmpty(ui.Collector, "background off") + " · updated " + trailsScanTime(ui.Catalog.UpdatedAt)
 	if ui.Error != "" {
-		footer = ui.Error
+		footer += " · " + ui.Error
 	} else if len(ui.Catalog.Errors) > 0 {
-		footer = fmt.Sprintf("%d degraded sources · %s", len(ui.Catalog.Errors), ui.Catalog.Errors[0])
+		footer += fmt.Sprintf(" · %d degraded sources · %s", len(ui.Catalog.Errors), ui.Catalog.Errors[0])
 	}
-	lines = append(lines, "\x1b[2m "+trailsSafe(footer)+"\x1b[0m", " / search  Enter open  s session  r refresh  q quit")
+	hints := " / search  Enter open  s session  r refresh  q quit"
+	if w < visWidth(hints) {
+		hints = " /find  ⏎open  s tail  r scan  q quit"
+	}
+	if len(ui.SessionKeys) > 0 {
+		hints = " ↑↓ select  Enter tail  Esc back"
+	}
+	lines = append(lines, "\x1b[2m "+trailsSafe(footer)+"\x1b[0m", hints)
 	if len(lines) > h {
 		lines = lines[:h]
 	}
@@ -335,6 +342,7 @@ func runTrails(cfg Config) error {
 		ui.Width, ui.Height = termSize(tty)
 		ui, _ = updateTrails(ui, kNone, 0, time.Now())
 		io.WriteString(tty, "\x1b[H\x1b[2J"+strings.ReplaceAll(renderTrails(ui, time.Now()), "\n", "\r\n"))
+		ui.Error = ""
 		n, e := tty.Read(buf)
 		if e != nil && !(n == 0 && errors.Is(e, io.EOF)) {
 			return e

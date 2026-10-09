@@ -2,10 +2,9 @@
 # Install entire-tail.
 #
 # Builds the Go binary in place, then:
-#   1. If the `entire` CLI is on $PATH, registers the binary as both `entire
-#      tail` and `entire wtf` plugins.
-#   2. Always also drops `entire-tail` and `entire-wtf` symlinks in
-#      ~/.local/bin. The latter selects the dashboard from argv[0].
+#   1. If the `entire` CLI is on $PATH, registers tail, wtf, and trails plugins.
+#   2. Drops entire-tail, entire-wtf, and entire-trails symlinks in ~/.local/bin.
+#      Dashboard symlinks select their command from argv[0].
 #   3. Links amp-plugin/entire-tail.ts into ~/.config/amp/plugins.
 #
 # The binary embeds its themes (go:embed), so it is self-contained — the
@@ -32,6 +31,8 @@ ln -sf "$BIN" "$LOCAL_BIN/entire-tail"
 echo "Linked: $LOCAL_BIN/entire-tail -> $BIN"
 ln -sf "$BIN" "$LOCAL_BIN/entire-wtf"
 echo "Linked: $LOCAL_BIN/entire-wtf -> $BIN"
+ln -sf "$BIN" "$LOCAL_BIN/entire-trails"
+echo "Linked: $LOCAL_BIN/entire-trails -> $BIN"
 
 # ── Amp plugin: live feed so Amp tails skip `amp threads export` polling ─────
 AMP_PLUGINS="$HOME/.config/amp/plugins"
@@ -43,8 +44,9 @@ echo "Linked: $AMP_PLUGINS/entire-tail.ts (loads in Amp sessions started from no
 if command -v entire >/dev/null 2>&1; then
   # --force so a re-install replaces existing entries instead of erroring.
   if entire plugin install "$LOCAL_BIN/entire-tail" --force 2>&1 &&
-     entire plugin install "$LOCAL_BIN/entire-wtf" --force 2>&1; then
-    echo "Registered as entire plugins: invoke with 'entire tail' or 'entire wtf'."
+     entire plugin install "$LOCAL_BIN/entire-wtf" --force 2>&1 &&
+     entire plugin install "$LOCAL_BIN/entire-trails" --force 2>&1; then
+    echo "Registered as entire plugins: 'entire tail', 'entire wtf', 'entire trails'."
   else
     echo "warn: 'entire plugin install' failed — falling back to the ~/.local/bin symlink." >&2
   fi

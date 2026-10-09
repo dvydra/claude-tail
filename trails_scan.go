@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ type trailsCursor struct {
 	Path         string          `json:"path,omitempty"`
 	Inode        uint64          `json:"inode,omitempty"`
 	Offset       int64           `json:"offset,omitempty"`
+	TailHash     string          `json:"tailHash,omitempty"`
 	LastActivity int64           `json:"lastActivity,omitempty"`
 	Fallback     int64           `json:"fallback,omitempty"`
 	ExportAt     int64           `json:"exportAt,omitempty"`
@@ -42,6 +44,8 @@ type trailsScanDeps struct {
 	Lookup    func(context.Context, string, string, bool) (trailsEntry, error)
 }
 
+var errTrailsDeferred = errors.New("metadata queued")
+
 func scanTrails(ctx context.Context, prior trailsCatalog, d trailsScanDeps) (trailsCatalog, error) {
 	c := prior
 	c.Trails, c.Sessions = maps.Clone(prior.Trails), maps.Clone(prior.Sessions)
@@ -60,11 +64,12 @@ func scanTrails(ctx context.Context, prior trailsCatalog, d trailsScanDeps) (tra
 	now := d.Now().Unix()
 	sessions, err := d.Inventory(ctx)
 	if err != nil {
-		return prior, err
-	}
-	for id, s := range c.Sessions {
-		s.Active = false
-		c.Sessions[id] = s
+		c.Errors = append(c.Errors, "inventory: "+err.Error())
+	} else {
+		for id, s := range c.Sessions {
+			s.Active = false
+			c.Sessions[id] = s
+		}
 	}
 	for _, s := range sessions {
 		if err := ctx.Err(); err != nil {
@@ -106,6 +111,9 @@ func scanTrails(ctx context.Context, prior trailsCatalog, d trailsScanDeps) (tra
 			cached := c.Branches[key]
 			if cached.RetryAt <= now {
 				tr, e := d.Lookup(ctx, s.Repo, s.Branch, true)
+				if errors.Is(e, errTrailsDeferred) {
+					continue
+				}
 				cached = trailsBranchCache{RetryAt: now + 60}
 				if e != nil {
 					cached.Error = e.Error()
@@ -132,7 +140,9 @@ func scanTrails(ctx context.Context, prior trailsCatalog, d trailsScanDeps) (tra
 				continue
 			}
 			fresh, e := d.Lookup(ctx, repo, number, false)
-			if e != nil {
+			if errors.Is(e, errTrailsDeferred) {
+				// Keep the entry due for the next scan.
+			} else if e != nil {
 				tr.Attempts++
 				tr.MetadataError = e.Error()
 				tr.RetryAt = now + min(int64(3600), int64(60)<<min(tr.Attempts-1, 6))
@@ -200,7 +210,7 @@ func observeTrailsFile(s wtfSession, path string, c trailsCursor) ([]trailsObser
 		return nil, c, err
 	}
 	inode := st.Sys().(*syscall.Stat_t).Ino
-	if c.Path != path || c.Inode != inode || st.Size() < c.Offset {
+	if c.Path != path || c.Inode != inode || st.Size() < c.Offset || (c.TailHash != "" && c.TailHash != trailsFileHash(f, c.Offset)) {
 		c.Path, c.Inode, c.Offset = path, inode, 0
 	}
 	if c.Fallback == 0 {
@@ -225,7 +235,20 @@ func observeTrailsFile(s wtfSession, path string, c trailsCursor) ([]trailsObser
 		c.Offset += int64(len(line))
 		out = append(out, trailsLine(s.Agent, line, &c)...)
 	}
+	c.TailHash = trailsFileHash(f, c.Offset)
 	return out, c, nil
+}
+
+func trailsFileHash(f *os.File, offset int64) string {
+	if offset == 0 {
+		return ""
+	}
+	b := make([]byte, min(offset, 256))
+	n, err := f.ReadAt(b, offset-int64(len(b)))
+	if err != nil || n != len(b) {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
 
 func trailsLine(agent Agent, line []byte, c *trailsCursor) []trailsObservation {
@@ -312,16 +335,28 @@ func newTrailsScanDeps(home string) (trailsScanDeps, func()) {
 	watcher := startAmpTop()
 	var today []handoverItem
 	var inventoryAt time.Time
+	var inventoryErr error
+	lookups := 0
 	type repoFact struct {
 		repo, defaultBranch string
 		at                  time.Time
 	}
 	repos := map[string]repoFact{}
-	d := trailsScanDeps{Now: time.Now, Lookup: trailsLookup}
+	d := trailsScanDeps{Now: time.Now, Lookup: func(ctx context.Context, repo, selector string, branch bool) (trailsEntry, error) {
+		if lookups >= 4 {
+			return trailsEntry{}, errTrailsDeferred
+		}
+		lookups++
+		return trailsLookup(ctx, repo, selector, branch)
+	}}
 	d.Inventory = func(ctx context.Context) ([]wtfSession, error) {
+		lookups = 0
 		now := time.Now()
 		if inventoryAt.IsZero() || now.Sub(inventoryAt) >= 30*time.Second {
-			today = todaysSessions(home, now.Unix(), now.Location())
+			tree := buildClaudeTree(home, "", 2, now.Unix(), nil)
+			amp, ampErr := buildAmpTree(home, "", 2, now.Unix(), false)
+			inventoryErr = ampErr
+			today = flattenToday(mergeAgentTrees(tree, amp), localMidnight(now.Unix(), now.Location()), home)
 			inventoryAt = now
 		}
 		active, available := watcher.snapshot()
@@ -350,7 +385,7 @@ func newTrailsScanDeps(home string) (trailsScanDeps, func()) {
 				s.Branch = ""
 			}
 		}
-		return sessions, ctx.Err()
+		return sessions, errors.Join(inventoryErr, ctx.Err())
 	}
 	d.Observe = func(ctx context.Context, s wtfSession, c trailsCursor) ([]trailsObservation, trailsCursor, error) {
 		if s.Agent != AgentAmp {
@@ -369,7 +404,7 @@ func newTrailsScanDeps(home string) (trailsScanDeps, func()) {
 		hasFeed := isFile(feed)
 		var out []trailsObservation
 		var exportErr error
-		if c.ExportAt == 0 || (!hasFeed && time.Now().Unix()-c.ExportAt >= 10) {
+		if c.ExportAt == 0 || (!hasFeed && (s.Active || s.LastActivity > c.LastActivity) && time.Now().Unix()-c.ExportAt >= 10) {
 			ex, e := ampExportThreadWithin(home, s.ID, hasFeed, 5*time.Second)
 			exportErr = e
 			if ex.ID != "" {

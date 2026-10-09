@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-09-trails-today-design.md` (approved).
 
+## Execution record
+
+Implemented locally on `feat/trails-today`. Tasks 3 and 4 share one commit because the TUI requires exclusive collection from its first runnable version. `Observe` takes and returns a persisted cursor rather than keeping offsets in closures. Metadata lookups have a four-request scan budget; remaining entries stay due for subsequent scans.
+
+Verification: full Go suite, race detector, vet, Amp plugin tests, build, shell syntax, and whitespace checks passed. Disposable-HOME PTY checks exercised populated/search/session-picker states, a real child tail and return, resizing, degraded sources, empty state, and clean exit. Captured terminal-emulator images were inspected. The 40-column check caught hidden quit instructions and now has compact hints and a regression assertion. Transcript rewriting, partial lines, Amp completion dedupe, branch-only discovery, identity rejection, degraded inventory, installer registration, lock contention, and persistence failure have targeted tests.
+
+No actual LaunchAgent, authenticated live API integration, or remote publication was exercised. Installer and launchctl tests use stubs. Historical browsing, Codex/Antigravity harvesting, and remote branch identity without a local repository remain outside this implementation. The original checklist below records the planned approach, not a claim that every listed test scenario ran separately.
+
 ## Global constraints
 
 - Keep `wtf` unchanged.

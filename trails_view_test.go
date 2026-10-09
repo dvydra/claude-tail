@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +60,9 @@ func TestTrailsRenderBoundsAndUntrustedText(t *testing.T) {
 	ui.Width, ui.Height = 40, 12
 	ui, _ = updateTrails(ui, kNone, 0, now)
 	out := renderTrails(ui, now)
+	if !strings.Contains(out, "q quit") {
+		t.Fatal("narrow view hides quit hint")
+	}
 	if strings.Contains(out, "\x1b[2J") || strings.Count(out, "\n") >= 12 {
 		t.Fatalf("unsafe/overflow: %q", out)
 	}
@@ -72,5 +77,23 @@ func TestTrailsDispatch(t *testing.T) {
 	c, action, err := parseCLI(commandArgs("/bin/entire-trails", []string{"status"}), func(string) string { return "" }, savedPrefs{})
 	if err != nil || action != ActionTrails || strings.Join(c.TrailsArgs, " ") != "status" {
 		t.Fatal(c, action, err)
+	}
+}
+
+func TestTrailsSessionAvailability(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "session.jsonl")
+	s := wtfSession{Agent: AgentClaude, Transcript: p}
+	if _, err := trailsTailArgs(s); err == nil {
+		t.Fatal("accepted missing transcript")
+	}
+	if err := os.WriteFile(p, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	args, err := trailsTailArgs(s)
+	if err != nil || args[len(args)-1] != p || !strings.Contains(strings.Join(args, " "), "--no-hook-install --no-pane-link") {
+		t.Fatal(args, err)
+	}
+	if _, err := trailsTailArgs(wtfSession{Agent: AgentAmp, ID: "invalid"}); err == nil {
+		t.Fatal("accepted invalid thread")
 	}
 }
