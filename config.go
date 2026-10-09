@@ -37,6 +37,7 @@ type Config struct {
 	TapArgs          []string
 	LinkArgs         []string
 	WTFArgs          []string
+	TrailsArgs       []string
 }
 
 // The workspace panes and `handover` launch an agent; which binary that is is a
@@ -75,6 +76,7 @@ const (
 	ActionTap            // `entire-tail tap <start|status|stop|install|uninstall>`
 	ActionLink           // `entire-tail link <start|install|uninstall|stop|status>`
 	ActionWTF            // `entire-tail wtf`: today's session dashboard
+	ActionTrails         // `entire-tail trails`: trail-first today view
 )
 
 // envTrue reports whether an env var holds a truthy value (1/true/yes/on),
@@ -188,6 +190,10 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 	if len(args) > 0 && args[0] == "wtf" {
 		c.WTFArgs = append([]string(nil), args[1:]...)
 		return c, ActionWTF, nil
+	}
+	if len(args) > 0 && args[0] == "trails" {
+		c.TrailsArgs = append([]string(nil), args[1:]...)
+		return c, ActionTrails, nil
 	}
 	if len(args) > 0 && args[0] == "install-hooks" {
 		return c, ActionInstallHooks, nil
