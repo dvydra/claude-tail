@@ -645,6 +645,7 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `q` abort). Pure `updateHandoverPick` reducer + `renderHandoverPick` + the
   `buildGroups` collapse, split from the tty driver `runHandoverPicker` — same
   reduce/render/driver split as `tree.go`.
+- `trails.go` / `trails_scan.go` / `trails_view.go` / `trailsdaemon.go`: the independent `entire trails` command, limited to Right now and Today. Canonical URLs retain forge identity; sessions are agent-qualified. Link mentions never establish active ownership: that requires matching repository and branch. Source cursors and associations persist together so failed saves do not skip events. Amp dedupes complete message IDs across exports and the live feed. One persistent `flock` file serializes foreground and daemon writers; never unlink it. `r` writes a unique request token acknowledged only after persistence. LaunchAgent `io.entire.entire-tail.trails` is opt-in and all launchctl operations have test seams. Tests must never load a real agent. It reuses inventory helpers but never invokes WTF scans or notifications.
 - `wtf.go` / `wtf_scan.go` / `wtf_summary.go` / `wtf_view.go` — the foreground
   `entire wtf` / `entire-tail wtf` dashboard. It loads the durable registry,
   reconciles exact Claude/Amp sessions, trail claims, worktrees and findings,

@@ -51,11 +51,10 @@ newest matching Claude session or Amp thread for `$PWD`. Force one source with
 The script does three things in one shot:
 
 1. Builds the Go binary in place (requires the [Go toolchain](https://go.dev/dl/)).
-2. Symlinks `entire-tail` into `~/.local/bin/` so the standalone command
-   works.
+2. Symlinks `entire-tail`, `entire-wtf`, and `entire-trails` into `~/.local/bin/`.
 3. Registers it via `entire plugin install` if the [`entire`](https://docs.entire.io)
    CLI is on `$PATH`, so you can invoke it as `entire tail` or open the dashboard
-   directly with `entire wtf`.
+   directly with `entire wtf` or `entire trails`.
 
 The binary embeds its themes, so it's self-contained — the symlink works from
 anywhere. After editing source or themes, re-run `./install.sh` (or
@@ -69,6 +68,18 @@ without live markers.
 On **macOS 26+** the `i` card's AI summary uses Apple's built-in Foundation
 Models CLI (`fm`, `/usr/bin/fm`) on the on-device model — no build step, no extra
 dependency. When `fm` is absent the card falls back to metadata only.
+
+## Where are my trails?
+
+`entire trails` (standalone: `entire-trails`, or `entire-tail trails`) shows trails associated with your Claude and Amp sessions. **Right now** lists trails backed by an active session on the matching repository and branch. **Earlier today** keeps trails mentioned or worked on since local midnight, including stopped sessions and merged trails. A link alone is labelled `mentioned`, not proof that a session owns the branch.
+
+Use `/` to search titles, repositories, trail numbers, and session names. Arrow keys select a trail; Enter opens its canonical Entire URL. `s` tails an associated session, offering a choice when there are several; quitting the tail returns to the same search and selection. `r` requests a scan and `q` exits.
+
+Collection runs while the view is open. For collection while it is closed, explicitly enable `entire trails install`; `entire trails status` reports collector health, and `entire trails uninstall` stops background collection without deleting history. Installation requires a stable binary outside a worktree. The main installer registers commands but does not enable monitoring.
+
+The catalog lives at `~/Library/Application Support/entire-tail/trails/catalog.json`. Claude transcripts are read incrementally; Amp uses its CLI exports and the local live feed when present. Trail titles, status, and branch matches need the authenticated `entire` CLI. Unavailable metadata retains the last known title with a stale marker. Remote sessions without a locally resolvable repository remain mention-only unless repository and branch identity can be established. Scans are serialized, with cached inventory and bounded metadata requests; a cold catalog can take several scans to fill.
+
+This command does not run WTF conflict checks, send notifications, or modify trails or sessions. Codex and Antigravity harvesting are not included.
 
 ## Usage
 

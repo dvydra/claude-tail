@@ -60,6 +60,11 @@ func main() {
 			die(err.Error())
 		}
 		return
+	case ActionTrails:
+		if err := runTrails(cfg); err != nil {
+			die(err.Error())
+		}
+		return
 	case ActionUninstallHooks:
 		if err := uninstallHooks(firstNonEmpty(os.Getenv("HOME"), mustHome())); err != nil {
 			die("uninstall-hooks: " + err.Error())
@@ -72,10 +77,13 @@ func main() {
 }
 
 func commandArgs(argv0 string, args []string) []string {
-	if filepath.Base(argv0) != "entire-wtf" {
-		return args
+	switch filepath.Base(argv0) {
+	case "entire-wtf":
+		return append([]string{"wtf"}, args...)
+	case "entire-trails":
+		return append([]string{"trails"}, args...)
 	}
-	return append([]string{"wtf"}, args...)
+	return args
 }
 
 func run(cfg Config) {
