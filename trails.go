@@ -11,10 +11,13 @@ import (
 )
 
 type trailsCatalog struct {
-	Version   int                    `json:"version"`
-	UpdatedAt int64                  `json:"updatedAt"`
-	Trails    map[string]trailsEntry `json:"trails"`
-	Sessions  map[string]wtfSession  `json:"sessions"`
+	Version   int                          `json:"version"`
+	UpdatedAt int64                        `json:"updatedAt"`
+	Trails    map[string]trailsEntry       `json:"trails"`
+	Sessions  map[string]wtfSession        `json:"sessions"`
+	Cursors   map[string]trailsCursor      `json:"cursors,omitempty"`
+	Branches  map[string]trailsBranchCache `json:"branches,omitempty"`
+	Errors    []string                     `json:"errors,omitempty"`
 }
 
 type trailsEntry struct {
