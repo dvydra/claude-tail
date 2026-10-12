@@ -662,10 +662,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	lastEventAt := time.Now()
 	lastTurns := r.turnsRendered
 	pendingNow := false
-	// wrapOff is the `w` toggle: wrapping suspended so a mouse drag-select copies
-	// whole paragraphs. Kept separate from cfg.NoWrap so a resize while it's on
-	// doesn't re-wrap behind the user's back — every wrapWidth call ORs the two.
-	wrapOff := false
+	// wrapOff is the live wrap state the `w` toggle flips: off, a mouse
+	// drag-select copies whole paragraphs. It starts from cfg.NoWrap (off by
+	// default) and is the only thing wrapWidth reads after startup, so `w` can
+	// turn wrap on even when the config said off.
+	wrapOff := cfg.NoWrap
 	// settingsDirty is what the `?` panel changed while it was open, so the
 	// transcript is re-rendered once on the way out rather than under an
 	// alt-screen nobody can see.
@@ -697,7 +698,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			return r.toggleMrkdwn()
 		case setWrap:
 			wrapOff = !wrapOff
-			r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff))
+			r.setWrap(wrapWidth(os.Stdout, wrapOff))
 			msg := "wrap: on"
 			if wrapOff {
 				msg = "wrap: off — drag-select copies whole paragraphs"
@@ -856,7 +857,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				// is one logical line the terminal soft-wraps and rejoins on copy.
 				// So: press w, drag out the paragraph you want, press w again.
 				wrapOff = !wrapOff
-				r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff))
+				r.setWrap(wrapWidth(os.Stdout, wrapOff))
 				msg = "wrap: on"
 				if wrapOff {
 					msg = "wrap: off — drag-select now copies whole paragraphs"
@@ -958,7 +959,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				// any re-rendered transcript starts scrolling underneath it. The
 				// repaint itself rides the status.update at the end of this tick.
 				status.resize()
-				if r.setWrap(wrapWidth(os.Stdout, cfg.NoWrap || wrapOff)) {
+				if r.setWrap(wrapWidth(os.Stdout, wrapOff)) {
 					rerender("⟳ resized")
 				}
 			}
@@ -1031,7 +1032,8 @@ func winchSettled(winchAt, now time.Time) bool {
 
 // wrapWidth is the column limit for the live renderer: the terminal's width when
 // stdout is one, and 0 (no wrap) otherwise — piped output has no width to wrap
-// to, which is also how the goldens are generated. `--no-wrap` forces 0 as well:
+// to, which is also how the goldens are generated. Wrap off (the default, or
+// `--no-wrap`) forces 0 as well:
 // unwrapped, each paragraph is a single logical line the terminal soft-wraps, so
 // the terminal rejoins it on copy and a mouse drag-select yields one unbroken
 // paragraph. Wrapping trades that for breaks that land between words.
@@ -1585,12 +1587,14 @@ OPTIONS:
       --no-status           Don't reserve the bottom row for the status bar.
                             The bar shrinks the terminal's scrolling region by
                             one row; use this if that upsets your terminal.
-      --no-wrap             Don't wrap prose to the terminal width; emit each
-                            paragraph as one long line and let the terminal
-                            soft-wrap it. Breaks land mid-word, but the terminal
-                            rejoins its own soft wraps on copy, so a mouse
-                            drag-select yields unbroken paragraphs. (Piped
-                            output is never wrapped either way.)
+      --wrap                Wrap prose to the terminal width, breaking between
+                            words. Off by default: each paragraph is one long
+                            line the terminal soft-wraps (breaks land mid-word)
+                            and rejoins on copy, so a mouse drag-select yields
+                            unbroken paragraphs. (Piped output is never wrapped
+                            either way.)
+      --no-wrap             Don't wrap (the default); overrides a saved
+                            preference.
       --claude-bin BIN      Which binary the workspace panes and 'handover'
                             launch. Default 'claude'. Pass any claude-compatible
                             wrapper instead ('happy' for mobile control, a shim
@@ -1616,10 +1620,11 @@ LIVE KEYS (while following, on an interactive terminal):
   m                         Toggle agent text between rendered markdown and
                             Slack mrkdwn source (so a mouse-select copies
                             mrkdwn).
-  w                         Toggle word wrap. Off, each paragraph is one long
-                            logical line the terminal soft-wraps and rejoins on
-                            copy — so press w, drag out the paragraph you want,
-                            press w again. The bar shows 'nowrap' meanwhile.
+  w                         Toggle word wrap (off by default). Off, each
+                            paragraph is one long logical line the terminal
+                            soft-wraps and rejoins on copy, so a drag-select
+                            gets whole paragraphs. The bar shows 'wrap' while
+                            it's on.
   y                         Copy the last agent message to the clipboard as
                             Slack mrkdwn. Press again within 3s to add the
                             message before it.

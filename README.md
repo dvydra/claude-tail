@@ -98,7 +98,7 @@ entire tail --tool-style dots              # show tool calls as colored dots
 entire tail --tool-style full              # Claude-style: ⏺ Update(main.go) + ⎿ diff
 entire tail --collapse 10                  # collapse user pastes over 10 lines
 entire tail --no-collapse                  # show every user message in full
-entire tail --no-wrap                      # don't wrap prose; let the terminal soft-wrap it
+entire tail --wrap                         # wrap prose between words (default: terminal soft-wrap)
 entire tail --list                         # static ls-style dump of every session
 entire tail --list --days 3                # ...only sessions from the last 3 days
 entire tail --live                         # only the sessions running right now
@@ -210,7 +210,7 @@ events show as they stream:
 | `?`            | **settings** — a live panel of everything you can change, with its current value; see below |
 | `y`            | **copy the last agent message as Slack mrkdwn** — press again within 3s to add the one before it |
 | `m`            | toggle agent text between rendered markdown and **Slack mrkdwn source** |
-| `w`            | toggle **word wrap** — off, each paragraph is one long logical line, so a mouse drag-select copies it unbroken (the bar shows `nowrap`) |
+| `w`            | toggle **word wrap** (off by default) — off, each paragraph is one long logical line, so a mouse drag-select copies it unbroken (the bar shows `wrap` while it's on) |
 | `t`            | cycle tool-call rendering: **full → dots → hidden**           |
 | `T`            | cycle the color **theme** — steps through the bundled themes and re-renders the whole transcript in the new theme |
 | `c`            | toggle collapsing of long user pastes                         |
@@ -1231,20 +1231,21 @@ renderer.
   Codex `reasoning`, Antigravity `thinking` field on `PLANNER_RESPONSE`).
 - `tool_result` blocks are summarized as `↩ tool_result (×N)` in `lines`
   mode and dropped in `dots` mode (1:1 with the preceding tool_use).
-- Prose is wrapped to your terminal width (one column short of it), so lines
+- Prose is **not wrapped by default**: each paragraph goes out as one long
+  logical line your terminal soft-wraps, which splits words at the column edge,
+  but the terminal rejoins its own soft wraps on copy, so a mouse drag-select
+  gives you unbroken paragraphs.
+- `--wrap` (or **`w`** live, or the `?` panel, which remembers it) wraps prose
+  to your terminal width (one column short of it), so lines
   break between words — and only between words: a token too long for the line
   (a URL, a `--flag=value`) goes out whole and is soft-wrapped by the terminal,
   so it still pastes as one piece. Wrapped list items and block quotes indent
   their continuations under themselves; tables and rules are left alone.
   Resizing re-wraps: the transcript is re-rendered once the drag settles, and
   only when the width actually changed. Piped output is never wrapped.
-- `--no-wrap` turns wrapping off for the session, and **`w`** toggles it live.
-  Unwrapped, each paragraph goes out as one long logical line your terminal
-  soft-wraps, which splits words at the column edge — but the terminal rejoins
-  its own soft wraps on copy, so a mouse drag-select gives you unbroken
-  paragraphs. There's no way to have both at once: any break entire-tail emits is
-  a real newline your clipboard will keep. So the copy workflow is **press `w`,
-  drag out the paragraph, press `w` again** — or skip it entirely, since `y` and
+- There's no way to have both at once: any break entire-tail emits is
+  a real newline your clipboard will keep. So with wrap on, the copy workflow is
+  **press `w`, drag out the paragraph, press `w` again** — or skip it entirely, since `y` and
   `m` convert from the raw markdown rather than the screen and are unaffected by
   either setting.
 

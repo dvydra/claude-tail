@@ -96,8 +96,24 @@ func TestNoPrefsKeepsTheOldDefaults(t *testing.T) {
 	if c.Theme != "tokyo-night" || c.ToolStyle != "dots" || c.Collapse != "5" {
 		t.Errorf("defaults moved: %+v", c)
 	}
-	if c.NoWrap || c.NoStatus {
-		t.Errorf("wrap/status defaulted off: NoWrap=%v NoStatus=%v", c.NoWrap, c.NoStatus)
+	// Wrap is the one default that moved: off, so a drag-select copies whole
+	// paragraphs.
+	if !c.NoWrap || c.NoStatus {
+		t.Errorf("want wrap off and status on: NoWrap=%v NoStatus=%v", c.NoWrap, c.NoStatus)
+	}
+}
+
+func TestWrapFlagTurnsWrapOn(t *testing.T) {
+	c, _, err := parseCLI([]string{"--wrap"}, envFunc(nil), savedPrefs{Wrap: boolPtr(false)})
+	if err != nil {
+		t.Fatalf("parseCLI: %v", err)
+	}
+	if c.NoWrap {
+		t.Error("--wrap did not beat the saved wrap=off")
+	}
+	c, _, _ = parseCLI([]string{"--wrap", "--no-wrap"}, envFunc(nil), savedPrefs{})
+	if !c.NoWrap {
+		t.Error("a later --no-wrap did not win")
 	}
 }
 

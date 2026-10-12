@@ -34,16 +34,17 @@ func TestStatusLineShowsSessionAndModes(t *testing.T) {
 	}
 }
 
-// The `w` toggle is an off-normal mode: prose suddenly running off the right
-// edge is exactly what you'd otherwise read as a bug, so the bar says so.
-func TestStatusLineNoWrapFlag(t *testing.T) {
+// Wrap is off by default, so the bar names it only when it's on: line breaks
+// in a drag-select copy are what you'd otherwise read as a bug.
+func TestStatusLineWrapFlag(t *testing.T) {
 	info := testStatusInfo()
-	if got := stripANSI(statusLine(info, "", 120, statusNowTime())); strings.Contains(got, "nowrap") {
-		t.Errorf("nowrap shown while wrapping: %q", got)
-	}
 	info.NoWrap = true
-	if got := stripANSI(statusLine(info, "", 120, statusNowTime())); !strings.Contains(got, "nowrap") {
-		t.Errorf("nowrap not shown while suspended: %q", got)
+	if got := stripANSI(statusLine(info, "", 120, statusNowTime())); strings.Contains(got, "wrap") {
+		t.Errorf("wrap shown while off: %q", got)
+	}
+	info.NoWrap = false
+	if got := stripANSI(statusLine(info, "", 120, statusNowTime())); !strings.Contains(got, " wrap ") {
+		t.Errorf("wrap not shown while on: %q", got)
 	}
 }
 
