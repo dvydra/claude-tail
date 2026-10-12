@@ -1067,8 +1067,14 @@ cache/offline behavior, and capability flags. Rendering remains shared.
   The collapse marker's wording is `Renderer.collapseHint`, chosen in `run`
   before backfill (so the whole screen agrees): `press c to expand` on a
   terminal, and the flag on a pipe — which is what the goldens pin.
-- **Word wrap is on for a tty, off everywhere else** — and the "everywhere else"
-  half is load-bearing. `wrapWidth` (main.go) returns 0 unless stdout is a char
+- **Word wrap is OFF by default, and when turned on (`--wrap`, `w`, the saved
+  pref) it applies only to a tty.** It was on by default from #60 until the
+  default was flipped back: drag-select copying whole paragraphs won over
+  word-boundary breaks. `wrapOff` in the live loop starts from `cfg.NoWrap` and
+  is the ONLY thing the `w`/panel/resize paths read; it used to be ORed with
+  `cfg.NoWrap`, which meant `w` could never turn wrap on once config said off.
+  The status bar labels the non-default state, so it shows `wrap` (not
+  `nowrap`). The tty-only half is load-bearing. `wrapWidth` (main.go) returns 0 unless stdout is a char
   device, so piped runs and the whole golden suite render exactly as they did
   before wrap existed; that's the only reason turning wrap on didn't rewrite
   every `testdata/*.golden`. On a tty it's `wrapWidthFor` = terminal width **minus

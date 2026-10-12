@@ -309,12 +309,12 @@ func statusRights(info statusInfo) []string {
 	if info.Collapse > 0 {
 		collapse = "collapse " + fmt.Sprint(info.Collapse)
 	}
-	// nowrap rides beside mrkdwn down to the narrowest variant: both are
-	// off-normal modes you've toggled into, and prose suddenly running off the
-	// right edge is exactly the thing you'd otherwise mistake for a bug.
+	// wrap rides beside mrkdwn down to the narrowest variant: both are
+	// off-normal modes you've toggled into (wrap is off by default), and line
+	// breaks in a drag-select copy are what you'd otherwise mistake for a bug.
 	nowrap := ""
-	if info.NoWrap {
-		nowrap = "nowrap"
+	if !info.NoWrap {
+		nowrap = "wrap"
 	}
 	var out []string
 	for _, fields := range [][]string{

@@ -33,7 +33,7 @@ type Config struct {
 	NoTap            bool   // --no-tap: ignore the API-stream tap even when its daemon is up
 	NoPaneLink       bool   // --no-pane-link: never register this pane, never offer the iTerm tab link
 	NoStatus         bool   // --no-status: don't reserve the bottom row for the status bar
-	NoWrap           bool   // --no-wrap: don't wrap bodies; let the terminal soft-wrap (clean drag-select copy)
+	NoWrap           bool   // default; --wrap clears it. Don't wrap bodies; let the terminal soft-wrap (clean drag-select copy)
 	TapArgs          []string
 	LinkArgs         []string
 	WTFArgs          []string
@@ -118,8 +118,9 @@ func defaultConfig(getenv func(string) string, prefs savedPrefs) Config {
 		Days:             getenv("ENTIRE_TAIL_DAYS"),
 		MarkContinuation: envTrue(getenv("ENTIRE_TAIL_MARK_CONTINUATION")),
 		// Both flags are negative and both preferences are positive, so the
-		// saved value is inverted on the way in.
-		NoWrap:       prefBool(getenv("ENTIRE_TAIL_NO_WRAP"), negBool(prefs.Wrap), false),
+		// saved value is inverted on the way in. Wrap defaults OFF: unwrapped,
+		// a drag-select copies whole paragraphs.
+		NoWrap:       prefBool(getenv("ENTIRE_TAIL_NO_WRAP"), negBool(prefs.Wrap), true),
 		NoStatus:     prefBool("", negBool(prefs.StatusBar), false),
 		ClaudeBin:    firstNonEmpty(getenv("ENTIRE_TAIL_CLAUDE_BIN"), defaultClaudeBin),
 		ClaudeBinSet: getenv("ENTIRE_TAIL_CLAUDE_BIN") != "",
@@ -318,6 +319,8 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 			c.NoStatus = true
 		case a == "--no-wrap":
 			c.NoWrap = true
+		case a == "--wrap":
+			c.NoWrap = false
 		case a == "--claude-bin":
 			v, err := needValue(i, a)
 			if err != nil {
