@@ -950,6 +950,27 @@ Off iTerm (or non-macOS), `Enter` likewise falls back to tailing in place, same
 as `t`. `-w`/`--workspace` just forces the picker (it's already the default).
 tmux / other terminals are a possible follow-up.
 
+### Restore after a reboot
+
+After a reboot iTerm brings back every tab, but nothing runs in them. To get the workspaces back:
+
+```sh
+entire-tail restore
+```
+
+It reopens every tab that was open before the reboot, each in a new window: Claude tabs resume their session with a tail beside it, Amp tabs continue their thread, and plain shell tabs open in their old folder. It prints one line per tab, then asks `close the restored windows? y/N`. Only windows where every pane is an idle shell are closed.
+
+This works because every running tail saves the iTerm layout every 30 seconds to `~/.claude/entire-tail/layout/<boot>/snapshot.json`. Restore reads the snapshot from the previous boot, so only layouts saved after this feature shipped can be restored, and only if a tail was running.
+
+After a reboot the tree's footer shows `⟲ N tabs from before the reboot · R to restore`, and `R` runs the same restore.
+
+| Flag | Effect |
+| --- | --- |
+| `--dry-run` | print the plan, open nothing |
+| `--pick` | choose one saved window by number |
+| `--force` | restore again after a restore already ran |
+| `--dismiss` | mark the snapshot restored without opening anything |
+
 ## Search
 
 Can't find the session where you said *"fire socks"*? `--search` (or `-S`) finds

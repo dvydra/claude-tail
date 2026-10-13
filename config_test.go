@@ -316,3 +316,10 @@ func TestValidateToolStyle(t *testing.T) {
 		t.Error("expected error for invalid tool style")
 	}
 }
+
+func TestParseCLIRestore(t *testing.T) {
+	c, act, err := parseCLI([]string{"restore", "--force"}, func(string) string { return "" }, savedPrefs{})
+	if err != nil || act != ActionRestore || len(c.RestoreArgs) != 1 || c.RestoreArgs[0] != "--force" {
+		t.Errorf("parseCLI restore = %v %v %v", c.RestoreArgs, act, err)
+	}
+}

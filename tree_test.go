@@ -748,3 +748,24 @@ func TestStyleRowHighlightsCursorRow(t *testing.T) {
 		t.Fatalf("non-cursor row highlighted: %q", other)
 	}
 }
+
+func TestTreeRestoreKey(t *testing.T) {
+	ui := treeUI{RestoreTabs: 7}
+	ui = updateTree(ui, kRune, 'R')
+	if !ui.Restore {
+		t.Error("R with a pending restore must request it")
+	}
+	ui = updateTree(treeUI{}, kRune, 'R')
+	if ui.Restore {
+		t.Error("R with nothing to restore must do nothing")
+	}
+}
+
+func TestTreeFooterRestoreHint(t *testing.T) {
+	if f := composeFooter(treeUI{RestoreTabs: 7}); !strings.Contains(f, "⟲ 7 tabs from before the reboot · R to restore") {
+		t.Errorf("footer = %q", f)
+	}
+	if f := composeFooter(treeUI{}); strings.Contains(f, "⟲") {
+		t.Errorf("no hint without a pending restore: %q", f)
+	}
+}
