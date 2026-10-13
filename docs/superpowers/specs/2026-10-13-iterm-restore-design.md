@@ -95,7 +95,7 @@ A window with any running agent, tail, or other foreground process is never clos
 
 ### Flags
 
-- `--pick`: list saved windows from the newest pre-reboot snapshot (tabs as `repo · branch · agent · title`), choose one, restore only that window.
+- `--pick`: list saved windows from the newest pre-reboot snapshot (tabs as `repo · branch · agent · title`), choose one by number, restore only that window.
 - `--force`: ignore the `restored` marker.
 - `--dismiss`: write the marker without restoring.
 - `--dry-run`: print the plan, open nothing.
