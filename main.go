@@ -770,6 +770,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	// Save the iTerm layout while we run, so `entire-tail restore` can rebuild
+	// these tabs after a reboot (layoutsnap.go). One process writes per 30s.
+	if itermAvailable() {
+		defer startLayoutSaver(home)()
+	}
 	idle := 0 // consecutive ticks the current Claude file hasn't grown
 	// winchAt is the last SIGWINCH; zero when there's no re-wrap owed.
 	var winchAt time.Time

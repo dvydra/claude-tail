@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -159,5 +161,70 @@ func TestReadLayoutSnapshot(t *testing.T) {
 	}
 	if _, ok := readLayoutSnapshot(t.TempDir()); ok {
 		t.Error("missing snapshot must read as not ok")
+	}
+}
+
+func stubLayoutIO(t *testing.T, osa, ps string) {
+	t.Helper()
+	o1, o2, o3, o4, o5 := layoutOsa, layoutPS, layoutCwd, layoutAgents, layoutBoot
+	t.Cleanup(func() { layoutOsa, layoutPS, layoutCwd, layoutAgents, layoutBoot = o1, o2, o3, o4, o5 })
+	layoutOsa = func(string) (string, error) { return osa, nil }
+	layoutPS = func() (string, error) { return ps, nil }
+	layoutCwd = func(pid int) string { return "/r/" + strconv.Itoa(pid) }
+	layoutAgents = func(string) map[string]string {
+		return map[string]string{"A1": "claude:11111111-1111-4111-8111-111111111111"}
+	}
+	layoutBoot = func() int64 { return 900 }
+}
+
+func TestSaveLayoutSnapshotWrites(t *testing.T) {
+	home := t.TempDir()
+	stubLayoutIO(t, "7\t1\tA1\t/dev/ttys001\n7\t1\tB1\t/dev/ttys002\n",
+		"  1 ttys001 -zsh\n 10 ttys001 claude\n  2 ttys002 -zsh\n")
+	now := time.Unix(1000, 0)
+	wrote, err := saveLayoutSnapshot(home, now)
+	if err != nil || !wrote {
+		t.Fatalf("save = %v %v", wrote, err)
+	}
+	snap, ok := readLayoutSnapshot(filepath.Join(layoutRoot(home), "900"))
+	if !ok || snap.Boot != 900 || len(snap.Windows) != 1 {
+		t.Fatalf("snapshot = %#v %v", snap, ok)
+	}
+	tab := snap.Windows[0].Tabs[0]
+	if tab.Session != "11111111-1111-4111-8111-111111111111" || tab.Cwd != "/r/1" {
+		t.Errorf("tab = %#v", tab)
+	}
+}
+
+func TestSaveLayoutSnapshotSkipsFreshAndEmpty(t *testing.T) {
+	home := t.TempDir()
+	stubLayoutIO(t, "7\t1\tA1\t/dev/ttys001\n", "  1 ttys001 -zsh\n")
+	now := time.Now()
+	if wrote, _ := saveLayoutSnapshot(home, now); !wrote {
+		t.Fatal("first save should write")
+	}
+	if wrote, _ := saveLayoutSnapshot(home, now.Add(10*time.Second)); wrote {
+		t.Error("a snapshot under 30s old must not be rewritten")
+	}
+
+	home2 := t.TempDir()
+	stubLayoutIO(t, "", "")
+	if wrote, _ := saveLayoutSnapshot(home2, now); wrote {
+		t.Error("zero windows (iTerm not running) must not write")
+	}
+}
+
+func TestSaveLayoutSnapshotKeepsGoodSnapshotOnError(t *testing.T) {
+	home := t.TempDir()
+	stubLayoutIO(t, "7\t1\tA1\t/dev/ttys001\n", "  1 ttys001 -zsh\n")
+	if wrote, _ := saveLayoutSnapshot(home, time.Unix(1000, 0)); !wrote {
+		t.Fatal("first save should write")
+	}
+	layoutOsa = func(string) (string, error) { return "", errors.New("osascript died") }
+	if wrote, err := saveLayoutSnapshot(home, time.Unix(2000, 0)); wrote || err == nil {
+		t.Errorf("osascript failure: wrote=%v err=%v", wrote, err)
+	}
+	if snap, ok := readLayoutSnapshot(filepath.Join(layoutRoot(home), "900")); !ok || len(snap.Windows) != 1 {
+		t.Error("the good snapshot must survive a failed save")
 	}
 }
