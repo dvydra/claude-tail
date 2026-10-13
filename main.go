@@ -65,6 +65,11 @@ func main() {
 			die(err.Error())
 		}
 		return
+	case ActionRestore:
+		if err := runRestore(cfg.RestoreArgs, cfg, firstNonEmpty(os.Getenv("HOME"), mustHome()), os.Stdin, os.Stdout); err != nil {
+			die("restore: " + err.Error())
+		}
+		return
 	case ActionUninstallHooks:
 		if err := uninstallHooks(firstNonEmpty(os.Getenv("HOME"), mustHome())); err != nil {
 			die("uninstall-hooks: " + err.Error())

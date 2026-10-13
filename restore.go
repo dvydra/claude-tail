@@ -1,7 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -130,4 +137,166 @@ func closeWindowsScript(ids []int) string {
 	}
 	b.WriteString("end tell")
 	return b.String()
+}
+
+var (
+	restoreOsa    = osaOut
+	restorePS     = func() (string, error) { return layoutPS() }
+	restoreOwnTTY = func() string {
+		b, err := exec.Command("ps", "-o", "tty=", "-p", strconv.Itoa(os.Getpid())).Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(b))
+	}
+)
+
+const restoredMarker = "restored"
+
+// pendingRestore is the previous boot's snapshot dir and its tab count, or 0
+// tabs when there is none or it was already restored or dismissed.
+func pendingRestore(home string) (string, int) {
+	dir, ok := previousBootDir(layoutRoot(home), layoutBoot())
+	if !ok {
+		return "", 0
+	}
+	if _, err := os.Stat(filepath.Join(dir, restoredMarker)); err == nil {
+		return dir, 0
+	}
+	snap, ok := readLayoutSnapshot(dir)
+	if !ok {
+		return dir, 0
+	}
+	n := 0
+	for _, w := range snap.Windows {
+		n += len(w.Tabs)
+	}
+	return dir, n
+}
+
+func runRestore(args []string, cfg Config, home string, in io.Reader, out io.Writer) error {
+	var force, dismiss, dry, pick bool
+	for _, a := range args {
+		switch a {
+		case "--force":
+			force = true
+		case "--dismiss":
+			dismiss = true
+		case "--dry-run":
+			dry = true
+		case "--pick":
+			pick = true
+		default:
+			return fmt.Errorf("unknown option %s (try --force, --pick, --dry-run, --dismiss)", a)
+		}
+	}
+	dir, ok := previousBootDir(layoutRoot(home), layoutBoot())
+	if !ok {
+		fmt.Fprintln(out, "entire-tail: no saved layout from before the last reboot.")
+		return nil
+	}
+	marker := filepath.Join(dir, restoredMarker)
+	if dismiss {
+		return os.WriteFile(marker, nil, 0o600)
+	}
+	if _, err := os.Stat(marker); err == nil && !force {
+		fmt.Fprintln(out, "entire-tail: already restored (--force to redo).")
+		return nil
+	}
+	snap, ok := readLayoutSnapshot(dir)
+	if !ok || len(snap.Windows) == 0 {
+		return errors.New("the saved layout is unreadable")
+	}
+	r := bufio.NewReader(in)
+	windows := snap.Windows
+	if pick {
+		w, ok := pickSavedWindow(windows, home, r, out)
+		if !ok {
+			return nil
+		}
+		windows = []layoutWindow{w}
+	}
+
+	// The windows open BEFORE we create any: only these may be offered for
+	// closing. A dry run lists nothing and opens nothing.
+	before := ""
+	if !dry {
+		before, _ = restoreOsa(layoutListScript())
+	}
+	env := restoreEnv{
+		Home: home, Self: selfPath(),
+		ClaudeBin: paneBin(resolveClaudeBin(cfg, exec.LookPath, os.Stderr)),
+		AmpBin:    paneBin("amp"),
+		TapEnv:    tapEnvPrefix(tapBaseURL(home)),
+		PathForID: func(id string) string { return localPathForID(home, id) },
+		DirExists: isDir,
+	}
+	sh := paneShell()
+	for wi, w := range windows {
+		tabs := make([]restoreTab, 0, len(w.Tabs))
+		for _, t := range w.Tabs {
+			tabs = append(tabs, planTab(t, env))
+		}
+		fmt.Fprintf(out, "window %d of %d\n", wi+1, len(windows))
+		script := restoreWindowScript(sh, tabs)
+		var err error
+		if script != "" && !dry {
+			_, err = restoreOsa(script)
+		}
+		for _, t := range tabs {
+			switch {
+			case t.Skip != "":
+				fmt.Fprintf(out, "  skipped: %s  %s\n", t.Skip, t.Label)
+			case err != nil:
+				fmt.Fprintf(out, "  skipped: iTerm error  %s\n", t.Label)
+			case dry:
+				fmt.Fprintf(out, "  would open  %s\n", t.Label)
+			default:
+				fmt.Fprintf(out, "  ✔ %s\n", t.Label)
+			}
+		}
+	}
+	if dry {
+		return nil
+	}
+	if !pick {
+		if err := os.WriteFile(marker, nil, 0o600); err != nil {
+			return err
+		}
+	}
+
+	psOut, _ := restorePS()
+	idle := idleWindows(parseItermPanes(before), procsByTTY(parsePSProcs(psOut)), restoreOwnTTY())
+	if len(idle) == 0 {
+		return nil
+	}
+	fmt.Fprintf(out, "close the restored windows (%d)? y/N ", len(idle))
+	line, _ := r.ReadString('\n')
+	if strings.EqualFold(strings.TrimSpace(line), "y") {
+		_, err := restoreOsa(closeWindowsScript(idle))
+		return err
+	}
+	return nil
+}
+
+// pickSavedWindow lists the saved windows and reads a number. Plain stdin, not
+// the tree TUI: this is the rare path, and a numbered list is enough.
+func pickSavedWindow(windows []layoutWindow, home string, r *bufio.Reader, out io.Writer) (layoutWindow, bool) {
+	for i, w := range windows {
+		fmt.Fprintf(out, "%d) %d tabs\n", i+1, len(w.Tabs))
+		for _, t := range w.Tabs {
+			label := tildify(t.Cwd, home)
+			if t.Session != "" {
+				label += " · " + string(t.Agent) + " · " + shortID(t.Session)
+			}
+			fmt.Fprintf(out, "     %s\n", label)
+		}
+	}
+	fmt.Fprint(out, "restore which window? ")
+	line, _ := r.ReadString('\n')
+	n, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil || n < 1 || n > len(windows) {
+		return layoutWindow{}, false
+	}
+	return windows[n-1], true
 }

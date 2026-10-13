@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,5 +108,121 @@ func TestCloseWindowsScript(t *testing.T) {
 	s := closeWindowsScript([]int{3, 1})
 	if !strings.Contains(s, "close (windows whose id is 3)") || strings.Index(s, "id is 3") > strings.Index(s, "id is 1") {
 		t.Errorf("close script keeps order:\n%s", s)
+	}
+}
+
+func seedPreviousBoot(t *testing.T, home string, tabs []layoutTab) string {
+	t.Helper()
+	dir := filepath.Join(layoutRoot(home), "100")
+	snap := layoutSnapshot{Boot: 100, Windows: []layoutWindow{{ITermWindow: 5, Tabs: tabs}}}
+	if err := writeJSONAtomic(filepath.Join(dir, "snapshot.json"), snap); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func stubRestoreIO(t *testing.T) *[]string {
+	t.Helper()
+	var scripts []string
+	o1, o2, o3, o4 := restoreOsa, restorePS, restoreOwnTTY, layoutBoot
+	t.Cleanup(func() { restoreOsa, restorePS, restoreOwnTTY, layoutBoot = o1, o2, o3, o4 })
+	restoreOsa = func(s string) (string, error) {
+		scripts = append(scripts, s)
+		if strings.Contains(s, "create window") {
+			return "77\n", nil
+		}
+		if strings.Contains(s, "unique id of s") {
+			return "5\t1\tR\t/dev/ttys009\n77\t1\tN\t/dev/ttys010\n", nil
+		}
+		return "", nil
+	}
+	restorePS = func() (string, error) { return "  1 ttys009 -zsh\n  2 ttys010 -zsh\n  3 ttys010 claude\n", nil }
+	restoreOwnTTY = func() string { return "ttys009" }
+	layoutBoot = func() int64 { return 200 }
+	return &scripts
+}
+
+func TestRunRestoreOpensWindowAndMarks(t *testing.T) {
+	home := t.TempDir()
+	dir := seedPreviousBoot(t, home, []layoutTab{{Cwd: home, Panes: []string{"shell"}}})
+	scripts := stubRestoreIO(t)
+	var out bytes.Buffer
+	if err := runRestore(nil, Config{}, home, strings.NewReader("n\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "✔") {
+		t.Errorf("report:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "restored")); err != nil {
+		t.Error("restored marker not written")
+	}
+	for _, s := range *scripts {
+		if strings.Contains(s, "close (windows") {
+			t.Error("answered n: nothing may be closed")
+		}
+	}
+}
+
+func TestRunRestoreRefusesTwiceWithoutForce(t *testing.T) {
+	home := t.TempDir()
+	seedPreviousBoot(t, home, []layoutTab{{Cwd: home, Panes: []string{"shell"}}})
+	stubRestoreIO(t)
+	var out bytes.Buffer
+	_ = runRestore(nil, Config{}, home, strings.NewReader("n\n"), &out)
+	out.Reset()
+	scripts := stubRestoreIO(t)
+	if err := runRestore(nil, Config{}, home, strings.NewReader("n\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "already restored") || len(*scripts) != 0 {
+		t.Errorf("second run must refuse: %q, %d scripts", out.String(), len(*scripts))
+	}
+	out.Reset()
+	if err := runRestore([]string{"--force"}, Config{}, home, strings.NewReader("n\n"), &out); err != nil || len(*scripts) == 0 {
+		t.Errorf("--force must restore again: %v", err)
+	}
+}
+
+func TestRunRestoreClosesOnYes(t *testing.T) {
+	home := t.TempDir()
+	seedPreviousBoot(t, home, []layoutTab{{Cwd: home, Panes: []string{"shell"}}})
+	scripts := stubRestoreIO(t)
+	var out bytes.Buffer
+	if err := runRestore(nil, Config{}, home, strings.NewReader("y\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	last := (*scripts)[len(*scripts)-1]
+	if !strings.Contains(last, "close (windows whose id is 5)") || strings.Contains(last, "id is 77") {
+		t.Errorf("must close only the old idle window 5:\n%s", last)
+	}
+}
+
+func TestRunRestoreDryRunAndDismiss(t *testing.T) {
+	home := t.TempDir()
+	dir := seedPreviousBoot(t, home, []layoutTab{{Cwd: home, Panes: []string{"shell"}}})
+	scripts := stubRestoreIO(t)
+	var out bytes.Buffer
+	_ = runRestore([]string{"--dry-run"}, Config{}, home, strings.NewReader(""), &out)
+	if len(*scripts) != 0 {
+		t.Error("--dry-run must not run osascript")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "restored")); err == nil {
+		t.Error("--dry-run must not mark")
+	}
+	_ = runRestore([]string{"--dismiss"}, Config{}, home, strings.NewReader(""), &out)
+	if _, tabs := pendingRestore(home); tabs != 0 {
+		t.Error("--dismiss must clear the pending restore")
+	}
+}
+
+func TestRunRestoreNothingToDo(t *testing.T) {
+	home := t.TempDir()
+	stubRestoreIO(t)
+	var out bytes.Buffer
+	if err := runRestore(nil, Config{}, home, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "no saved layout") {
+		t.Errorf("out = %q", out.String())
 	}
 }
