@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,9 @@ func TestCloseWindowsScript(t *testing.T) {
 func seedPreviousBoot(t *testing.T, home string, tabs []layoutTab) string {
 	t.Helper()
 	dir := filepath.Join(layoutRoot(home), "100")
+	// A snapshot with no session has nothing to restore (layoutHasSession), so
+	// every fixture also carries an Amp tab, which needs no transcript on disk.
+	tabs = append(tabs, layoutTab{Agent: AgentAmp, Session: "T-01a131ed-1c68-776f-8255-616e9ccc86b0", Cwd: home, Panes: []string{"agent", "shell", "tail"}})
 	snap := layoutSnapshot{Boot: 100, Windows: []layoutWindow{{ITermWindow: 5, Tabs: tabs}}}
 	if err := writeJSONAtomic(filepath.Join(dir, "snapshot.json"), snap); err != nil {
 		t.Fatal(err)
@@ -124,8 +128,9 @@ func seedPreviousBoot(t *testing.T, home string, tabs []layoutTab) string {
 func stubRestoreIO(t *testing.T) *[]string {
 	t.Helper()
 	var scripts []string
-	o1, o2, o3, o4 := restoreOsa, restorePS, restoreOwnTTY, layoutBoot
-	t.Cleanup(func() { restoreOsa, restorePS, restoreOwnTTY, layoutBoot = o1, o2, o3, o4 })
+	o1, o2, o3, o4, o5 := restoreOsa, restorePS, restoreOwnTTY, layoutBoot, restoreRunning
+	t.Cleanup(func() { restoreOsa, restorePS, restoreOwnTTY, layoutBoot, restoreRunning = o1, o2, o3, o4, o5 })
+	restoreRunning = func(string) map[string]bool { return map[string]bool{} }
 	restoreOsa = func(s string) (string, error) {
 		scripts = append(scripts, s)
 		if strings.Contains(s, "create window") {
@@ -224,5 +229,80 @@ func TestRunRestoreNothingToDo(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no saved layout") {
 		t.Errorf("out = %q", out.String())
+	}
+}
+
+func TestRunRestoreNoCloseOfferWhenPSFails(t *testing.T) {
+	home := t.TempDir()
+	seedPreviousBoot(t, home, []layoutTab{{Cwd: home, Panes: []string{"shell"}}})
+	scripts := stubRestoreIO(t)
+	restorePS = func() (string, error) { return "", errors.New("ps died") }
+	var out bytes.Buffer
+	if err := runRestore(nil, Config{}, home, strings.NewReader("y\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "close the restored windows") {
+		t.Errorf("no process list means no idea what is busy; must not offer to close:\n%s", out.String())
+	}
+	for _, s := range *scripts {
+		if strings.Contains(s, "close (windows") {
+			t.Error("closed windows without a process list")
+		}
+	}
+}
+
+func TestRunRestoreNoMarkerWhenEveryWindowFails(t *testing.T) {
+	home := t.TempDir()
+	dir := seedPreviousBoot(t, home, []layoutTab{{Cwd: home, Panes: []string{"shell"}}})
+	stubRestoreIO(t)
+	restoreOsa = func(s string) (string, error) {
+		if strings.Contains(s, "create window") {
+			return "", errors.New("not authorized to send Apple events")
+		}
+		return "", nil
+	}
+	var out bytes.Buffer
+	_ = runRestore(nil, Config{}, home, strings.NewReader("n\n"), &out)
+	if _, err := os.Stat(filepath.Join(dir, "restored")); err == nil {
+		t.Error("nothing opened, so the snapshot must stay restorable")
+	}
+}
+
+func TestPlanTabsDedupesAndRespectsRunning(t *testing.T) {
+	env, id := testRestoreEnv(t)
+	other := "33333333-3333-4333-8333-333333333333"
+	env.Running = func(key string) bool { return key == paneSessionKey(AgentClaude, other) }
+	tabs := []layoutTab{
+		{Agent: AgentClaude, Session: id, Cwd: "/r/one", Panes: []string{"agent", "shell", "tail"}},
+		{Agent: AgentClaude, Session: id, Cwd: "/r/one", Panes: []string{"agent", "shell"}},
+		{Agent: AgentClaude, Session: id, Cwd: "/r/one", Panes: []string{"shell", "tail"}},
+		{Agent: AgentClaude, Session: other, Cwd: "/r/one", Panes: []string{"agent"}},
+	}
+	got := planTabs(tabs, env, map[string]bool{})
+	if got[0].Skip != "" || got[0].Agent == "" {
+		t.Errorf("first agent tab resumes: %#v", got[0])
+	}
+	if got[1].Skip != "duplicate of an earlier tab" {
+		t.Errorf("second agent tab for the same session must not resume it again: %#v", got[1])
+	}
+	if got[2].Skip != "" || got[2].Agent != "" || !strings.Contains(got[2].Shell, "--follow-session '"+id+"'") {
+		t.Errorf("a tail-only tab reopens as a tail only: %#v", got[2])
+	}
+	if got[3].Skip != "already running" {
+		t.Errorf("a session already running must not be resumed: %#v", got[3])
+	}
+}
+
+func TestRunRestoreDryRunShowsRunning(t *testing.T) {
+	home := t.TempDir()
+	seedPreviousBoot(t, home, nil)
+	stubRestoreIO(t)
+	restoreRunning = func(string) map[string]bool {
+		return map[string]bool{paneSessionKey(AgentAmp, "T-01a131ed-1c68-776f-8255-616e9ccc86b0"): true}
+	}
+	var out bytes.Buffer
+	_ = runRestore([]string{"--dry-run"}, Config{}, home, strings.NewReader(""), &out)
+	if !strings.Contains(out.String(), "skipped: already running") {
+		t.Errorf("a dry run must show what a real run would skip:\n%s", out.String())
 	}
 }

@@ -132,7 +132,7 @@ func TestPreviousBootDir(t *testing.T) {
 	write := func(boot string) {
 		d := filepath.Join(root, boot)
 		_ = os.MkdirAll(d, 0o700)
-		_ = os.WriteFile(filepath.Join(d, "snapshot.json"), []byte(`{"boot":1}`), 0o600)
+		_ = os.WriteFile(filepath.Join(d, "snapshot.json"), []byte(`{"boot":1,"windows":[{"tabs":[{"agent":"claude","session":"s","panes":["agent"]}]}]}`), 0o600)
 	}
 	write("100")
 	write("300")
@@ -226,5 +226,51 @@ func TestSaveLayoutSnapshotKeepsGoodSnapshotOnError(t *testing.T) {
 	}
 	if snap, ok := readLayoutSnapshot(filepath.Join(layoutRoot(home), "900")); !ok || len(snap.Windows) != 1 {
 		t.Error("the good snapshot must survive a failed save")
+	}
+}
+
+func TestFollowFromArgv(t *testing.T) {
+	if a, id := followFromArgv("/x/entire-tail --follow-session abc"); a != AgentClaude || id != "abc" {
+		t.Errorf("claude tail = %q %q", a, id)
+	}
+	if a, id := followFromArgv("/x/entire-tail --agent amp --follow-session T-1"); a != AgentAmp || id != "T-1" {
+		t.Errorf("amp tail = %q %q", a, id)
+	}
+	if _, id := followFromArgv("/x/entire-tail --live"); id != "" {
+		t.Errorf("no --follow-session: %q", id)
+	}
+}
+
+func TestSaveLayoutSnapshotTailArgvFallback(t *testing.T) {
+	home := t.TempDir()
+	stubLayoutIO(t, "7\t1\tT1\t/dev/ttys001\n", "  1 ttys001 -zsh\n 20 ttys001 entire-tail\n")
+	layoutAgents = func(string) map[string]string { return nil }
+	o := layoutArgv
+	t.Cleanup(func() { layoutArgv = o })
+	layoutArgv = func(pid int) string {
+		if pid == 20 {
+			return "/x/entire-tail --follow-session 11111111-1111-4111-8111-111111111111"
+		}
+		return ""
+	}
+	if wrote, err := saveLayoutSnapshot(home, time.Unix(1000, 0)); !wrote || err != nil {
+		t.Fatalf("save = %v %v", wrote, err)
+	}
+	snap, _ := readLayoutSnapshot(filepath.Join(layoutRoot(home), "900"))
+	if tab := snap.Windows[0].Tabs[0]; tab.Agent != AgentClaude || tab.Session != "11111111-1111-4111-8111-111111111111" {
+		t.Errorf("a tail-only tab with pane link off must still carry its session: %#v", tab)
+	}
+}
+
+func TestPreviousBootDirSkipsSessionlessSnapshots(t *testing.T) {
+	root := t.TempDir()
+	write := func(boot string, snap layoutSnapshot) {
+		_ = writeJSONAtomic(filepath.Join(root, boot, "snapshot.json"), snap)
+	}
+	write("100", layoutSnapshot{Windows: []layoutWindow{{Tabs: []layoutTab{{Agent: AgentClaude, Session: "s", Panes: []string{"agent"}}}}}})
+	write("300", layoutSnapshot{Windows: []layoutWindow{{Tabs: []layoutTab{{Cwd: "/x", Panes: []string{"shell"}}}}}})
+	dir, ok := previousBootDir(root, 500)
+	if !ok || filepath.Base(dir) != "100" {
+		t.Errorf("a boot that only saw idle restored shells must not hide the real layout: %q %v", dir, ok)
 	}
 }

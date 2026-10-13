@@ -21,6 +21,7 @@ type restoreEnv struct {
 	Home, Self, ClaudeBin, AmpBin, TapEnv string
 	PathForID                             func(string) string
 	DirExists                             func(string) bool
+	Running                               func(string) bool // session key (paneSessionKey) → an agent already runs it
 }
 
 // restoreTab is one tab to open. Skip non-empty means it is reported, not
@@ -140,8 +141,25 @@ func closeWindowsScript(ids []int) string {
 }
 
 var (
-	restoreOsa    = osaOut
-	restorePS     = func() (string, error) { return layoutPS() }
+	restoreOsa     = osaOut
+	restorePS      = func() (string, error) { return layoutPS() }
+	// restoreRunning is every session an agent is running right now. Claude's
+	// own registry (live.go) is exact, pid → session id; runningAgentPanes
+	// guesses from cwd and misses a session that moved into a worktree, so it
+	// only adds to the set.
+	restoreRunning = func(home string) map[string]bool {
+		out := map[string]bool{}
+		for _, key := range runningAgentPanes(home) {
+			out[key] = true
+		}
+		for _, s := range collectLiveSessions(liveRoots(home), liveAlive) {
+			out[paneSessionKey(AgentClaude, s.SessionID)] = true
+		}
+		for _, s := range collectLiveAmpSessions(home) {
+			out[paneSessionKey(AgentAmp, s.SessionID)] = true
+		}
+		return out
+	}
 	restoreOwnTTY = func() string {
 		b, err := exec.Command("ps", "-o", "tty=", "-p", strconv.Itoa(os.Getpid())).Output()
 		if err != nil {
@@ -219,7 +237,10 @@ func runRestore(args []string, cfg Config, home string, in io.Reader, out io.Wri
 
 	// The windows open BEFORE we create any: only these may be offered for
 	// closing. A dry run lists nothing and opens nothing.
+	// Which sessions already have an agent is read even on a dry run (ps and
+	// lsof only), so the preview skips what a real run would skip.
 	before := ""
+	running := restoreRunning(home)
 	if !dry {
 		before, _ = restoreOsa(layoutListScript())
 	}
@@ -230,18 +251,20 @@ func runRestore(args []string, cfg Config, home string, in io.Reader, out io.Wri
 		TapEnv:    tapEnvPrefix(tapBaseURL(home)),
 		PathForID: func(id string) string { return localPathForID(home, id) },
 		DirExists: isDir,
+		Running:   func(key string) bool { return running[key] },
 	}
 	sh := paneShell()
+	seen := map[string]bool{}
+	opened := 0
 	for wi, w := range windows {
-		tabs := make([]restoreTab, 0, len(w.Tabs))
-		for _, t := range w.Tabs {
-			tabs = append(tabs, planTab(t, env))
-		}
+		tabs := planTabs(w.Tabs, env, seen)
 		fmt.Fprintf(out, "window %d of %d\n", wi+1, len(windows))
 		script := restoreWindowScript(sh, tabs)
 		var err error
 		if script != "" && !dry {
-			_, err = restoreOsa(script)
+			if _, err = restoreOsa(script); err == nil {
+				opened++
+			}
 		}
 		for _, t := range tabs {
 			switch {
@@ -259,13 +282,20 @@ func runRestore(args []string, cfg Config, home string, in io.Reader, out io.Wri
 	if dry {
 		return nil
 	}
-	if !pick {
+	// Mark only when something opened: a run where iTerm refused every window
+	// (Automation permission not granted yet, say) must stay restorable.
+	if !pick && opened > 0 {
 		if err := os.WriteFile(marker, nil, 0o600); err != nil {
 			return err
 		}
 	}
 
-	psOut, _ := restorePS()
+	// Without a process list nothing can be shown to be idle, and offering to
+	// close then risks closing windows with live agents in them.
+	psOut, err := restorePS()
+	if err != nil {
+		return nil
+	}
 	idle := idleWindows(parseItermPanes(before), procsByTTY(parsePSProcs(psOut)), restoreOwnTTY())
 	if len(idle) == 0 {
 		return nil
@@ -299,4 +329,46 @@ func pickSavedWindow(windows []layoutWindow, home string, r *bufio.Reader, out i
 		return layoutWindow{}, false
 	}
 	return windows[n-1], true
+}
+
+// planTabs plans tabs in order, sharing seen across every window restored in one
+// run, so a session is resumed at most once. Two claudes appending to one
+// transcript is what this guards against: an agent already running it
+// (Running), an earlier tab already resuming it (seen), or a tab that only ever
+// held its tail, as in the pane-link layout where agents and tails live in
+// different windows. That tab reopens as just the tail.
+func planTabs(tabs []layoutTab, env restoreEnv, seen map[string]bool) []restoreTab {
+	out := make([]restoreTab, 0, len(tabs))
+	for _, t := range tabs {
+		key := paneSessionKey(t.Agent, t.Session)
+		tailOnly := tabHas(t, "tail") && !tabHas(t, "agent")
+		if t.Session != "" && !tailOnly && env.Running != nil && env.Running(key) {
+			out = append(out, restoreTab{Label: tildify(t.Cwd, env.Home) + " · " + shortID(t.Session), Skip: "already running"})
+			continue
+		}
+		rt := planTab(t, env)
+		if t.Session == "" || rt.Skip != "" || rt.Agent == "" {
+			out = append(out, rt)
+			continue
+		}
+		switch {
+		case tailOnly:
+			rt = restoreTab{Label: rt.Label + " · tail", Shell: rt.Tail}
+		case seen[key]:
+			rt = restoreTab{Label: rt.Label, Skip: "duplicate of an earlier tab"}
+		default:
+			seen[key] = true
+		}
+		out = append(out, rt)
+	}
+	return out
+}
+
+func tabHas(t layoutTab, role string) bool {
+	for _, p := range t.Panes {
+		if p == role {
+			return true
+		}
+	}
+	return false
 }

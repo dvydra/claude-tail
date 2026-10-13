@@ -29,6 +29,7 @@ var (
 	layoutCwd    = lsofCwd
 	layoutAgents = runningAgentPanes
 	layoutBoot   = bootSec
+	layoutArgv   = psCommand
 )
 
 // bootSec identifies this boot. iTerm reuses small window ids across boots, so
@@ -90,6 +91,19 @@ func saveLayoutSnapshot(home string, now time.Time) (bool, error) {
 		}
 	}
 	registry := prunePanes(readPaneRegistry(home), pidAlive)
+	for _, p := range panes {
+		if _, ok := registry[p.UUID]; ok {
+			continue
+		}
+		for _, pr := range byTTY[p.TTY] {
+			if procName(pr.Comm) != "entire-tail" {
+				continue
+			}
+			if a, id := followFromArgv(layoutArgv(pr.PID)); id != "" {
+				registry[p.UUID] = paneEntry{Follow: id, Agent: a, Pid: pr.PID}
+			}
+		}
+	}
 	snap := layoutSnapshot{Boot: boot, Taken: now.UTC(), Windows: buildLayout(panes, byTTY, cwds, layoutAgents(home), registry)}
 	if err := writeJSONAtomic(path, snap); err != nil {
 		return false, err

@@ -208,8 +208,8 @@ func layoutRoot(home string) string {
 	return filepath.Join(home, ".claude", "entire-tail", "layout")
 }
 
-// previousBootDir is the newest boot directory older than currentBoot that holds
-// a snapshot. The current boot's own snapshot is never a restore source: it
+// previousBootDir is the newest boot directory older than currentBoot whose
+// snapshot holds at least one session. The current boot's own snapshot is never a restore source: it
 // describes the windows that are open right now.
 func previousBootDir(root string, currentBoot int64) (string, bool) {
 	ents, err := os.ReadDir(root)
@@ -222,7 +222,7 @@ func previousBootDir(root string, currentBoot int64) (string, bool) {
 		if err != nil || !e.IsDir() || b >= currentBoot {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(root, e.Name(), "snapshot.json")); err == nil {
+		if s, ok := readLayoutSnapshot(filepath.Join(root, e.Name())); ok && layoutHasSession(s) {
 			boots = append(boots, b)
 		}
 	}
@@ -243,4 +243,39 @@ func readLayoutSnapshot(dir string) (layoutSnapshot, bool) {
 		return layoutSnapshot{}, false
 	}
 	return s, true
+}
+
+// followFromArgv reads what a tail was started to follow from its command line:
+// the fallback for a tab whose tail has no pane-link registration (pane link is
+// opt-in) and whose agent pane couldn't be resolved. It can name an ancestor
+// after a lineage fork, which still resumes into the same conversation.
+func followFromArgv(argv string) (Agent, string) {
+	toks := strings.Fields(argv)
+	agent, id := AgentClaude, ""
+	for i := 0; i+1 < len(toks); i++ {
+		switch toks[i] {
+		case "--follow-session":
+			id = toks[i+1]
+		case "--agent":
+			agent = Agent(toks[i+1])
+		}
+	}
+	if id == "" {
+		return "", ""
+	}
+	return agent, id
+}
+
+// layoutHasSession reports whether any tab carries a session. A boot that only
+// ever saw idle restored shells has nothing to restore, and must not hide the
+// boot before it.
+func layoutHasSession(s layoutSnapshot) bool {
+	for _, w := range s.Windows {
+		for _, t := range w.Tabs {
+			if t.Session != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
