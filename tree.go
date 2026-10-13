@@ -659,6 +659,8 @@ type treeUI struct {
 	ChosenAcc         string      // account owning the selection (which credentials to resume with)
 	ChosenAgent       Agent
 	Workspace         bool // selection should open the iTerm workspace, not tail
+	RestoreTabs       int  // tabs in the pre-reboot layout snapshot not yet restored (restore.go)
+	Restore           bool // 'R' → run `entire-tail restore`; ends the loop
 }
 
 type treeKey int
@@ -764,6 +766,8 @@ func updateTree(ui treeUI, k treeKey, r rune) treeUI {
 			ui.selectSession(false) // tail in-place, no windowing
 		case 'q', 'Q':
 			ui.Quit = true
+		case 'R':
+			ui.Restore = ui.RestoreTabs > 0
 		case '/':
 			ui.Filtering = true
 		}
@@ -1088,6 +1092,9 @@ func composeFooter(ui treeUI) string {
 	if tab {
 		out += " · ◀ runs in this tab"
 	}
+	if ui.RestoreTabs > 0 {
+		out += fmt.Sprintf(" · ⟲ %d tabs from before the reboot · R to restore", ui.RestoreTabs)
+	}
 	return out
 }
 
@@ -1181,6 +1188,7 @@ const (
 	treeNewWorkspace                   // fresh session workspace in $PWD (n)
 	treeQuit
 	treeNone
+	treeRestore // rebuild the pre-reboot iTerm tabs (R)
 )
 
 // treeChoice is what the tree hands back: the picked session plus the folder cwd,
@@ -1231,6 +1239,9 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 	defer io.WriteString(tty, "\x1b[?25h\x1b[?1049l")
 
 	ui := treeUI{Tree: tree, Theme: theme}
+	if itermAvailable() {
+		_, ui.RestoreTabs = pendingRestore(home)
+	}
 	ui.Rows = flattenRows(ui.Tree, "")
 	ui.Cursor = initialCursor(ui)
 
@@ -1252,6 +1263,9 @@ func runTreeTUI(home string, tree sessionTree, theme Theme) treeChoice {
 		ui = updateTree(ui, k, r)
 		if ui.Quit {
 			return treeChoice{Result: treeQuit}
+		}
+		if ui.Restore {
+			return treeChoice{Result: treeRestore}
 		}
 		if ui.SummaryReq {
 			ui.SummaryReq = false

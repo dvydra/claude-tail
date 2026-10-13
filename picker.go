@@ -167,6 +167,11 @@ func filterTreeAgents(tree *sessionTree, agents []Agent) {
 // a note rather than tailing something unrelated.
 func resolveTreeChoice(home, claudeBin string, c treeChoice) (string, bool) {
 	switch c.Result {
+	case treeRestore:
+		if err := runRestore(nil, Config{ClaudeBin: claudeBin, ClaudeBinSet: claudeBin != ""}, home, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "entire-tail: restore: "+err.Error())
+		}
+		os.Exit(0)
 	case treeNewWorkspace:
 		if itermAvailable() {
 			if c.Agent == AgentAmp {
