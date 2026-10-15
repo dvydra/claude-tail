@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -11,7 +12,7 @@ import (
 // every default it never meant to.
 func TestPrefsRoundTrip(t *testing.T) {
 	home := t.TempDir()
-	in := savedPrefs{Theme: "nord", ToolStyle: "full", Collapse: "0", Wrap: boolPtr(false)}
+	in := savedPrefs{Theme: "nord", ToolStyle: "full", Collapse: "0", StatusBar: boolPtr(false)}
 	if err := savePrefs(home, in); err != nil {
 		t.Fatalf("savePrefs: %v", err)
 	}
@@ -19,9 +20,10 @@ func TestPrefsRoundTrip(t *testing.T) {
 	if got.Theme != "nord" || got.ToolStyle != "full" || got.Collapse != "0" {
 		t.Errorf("strings did not round-trip: %+v", got)
 	}
-	if got.Wrap == nil || *got.Wrap {
-		t.Errorf("Wrap = %v, want a saved false", got.Wrap)
+	if got.StatusBar == nil || *got.StatusBar {
+		t.Errorf("StatusBar = %v, want a saved false", got.StatusBar)
 	}
+	got = loadPrefs(t.TempDir())
 	if got.StatusBar != nil {
 		t.Errorf("StatusBar = %v, want unset", *got.StatusBar)
 	}
@@ -58,7 +60,7 @@ func TestSavePrefsLeavesNoTempFile(t *testing.T) {
 // built-in default. A preference is what you want when you haven't said
 // otherwise, and `--theme dracula` is saying otherwise.
 func TestPrefsSitBelowEnvAndFlags(t *testing.T) {
-	prefs := savedPrefs{Theme: "nord", ToolStyle: "full", Collapse: "0", Wrap: boolPtr(false), StatusBar: boolPtr(false)}
+	prefs := savedPrefs{Theme: "nord", ToolStyle: "full", Collapse: "0", StatusBar: boolPtr(false)}
 
 	c, _, err := parseCLI(nil, envFunc(nil), prefs)
 	if err != nil {
@@ -67,8 +69,8 @@ func TestPrefsSitBelowEnvAndFlags(t *testing.T) {
 	if c.Theme != "nord" || c.ToolStyle != "full" || c.Collapse != "0" {
 		t.Errorf("saved preferences ignored: theme=%q tools=%q collapse=%q", c.Theme, c.ToolStyle, c.Collapse)
 	}
-	if !c.NoWrap || !c.NoStatus {
-		t.Errorf("saved wrap/status off not applied: NoWrap=%v NoStatus=%v", c.NoWrap, c.NoStatus)
+	if !c.NoStatus {
+		t.Errorf("saved status bar off not applied: NoStatus=%v", c.NoStatus)
 	}
 
 	env := map[string]string{"ENTIRE_TAIL_THEME": "dracula", "ENTIRE_TAIL_NO_WRAP": "0"}
@@ -77,7 +79,7 @@ func TestPrefsSitBelowEnvAndFlags(t *testing.T) {
 		t.Errorf("env did not beat the saved theme: %q", c.Theme)
 	}
 	if c.NoWrap {
-		t.Error("an explicitly false env var did not beat the saved wrap=off")
+		t.Error("an explicitly false env var did not beat the wrap-off default")
 	}
 
 	c, _, _ = parseCLI([]string{"--theme", "gruvbox"}, envFunc(env), prefs)
@@ -104,12 +106,12 @@ func TestNoPrefsKeepsTheOldDefaults(t *testing.T) {
 }
 
 func TestWrapFlagTurnsWrapOn(t *testing.T) {
-	c, _, err := parseCLI([]string{"--wrap"}, envFunc(nil), savedPrefs{Wrap: boolPtr(false)})
+	c, _, err := parseCLI([]string{"--wrap"}, envFunc(nil), savedPrefs{})
 	if err != nil {
 		t.Fatalf("parseCLI: %v", err)
 	}
 	if c.NoWrap {
-		t.Error("--wrap did not beat the saved wrap=off")
+		t.Error("--wrap did not beat the wrap-off default")
 	}
 	c, _, _ = parseCLI([]string{"--wrap", "--no-wrap"}, envFunc(nil), savedPrefs{})
 	if !c.NoWrap {
@@ -151,5 +153,36 @@ func TestRememberPrefKeepsOtherFields(t *testing.T) {
 	}
 	if got.ToolStyle != "full" {
 		t.Errorf("rememberPref clobbered toolStyle: %q", got.ToolStyle)
+	}
+}
+
+// Wrap is not a preference: it's a mode you turn on to read a paragraph and off
+// again to copy one, and a wrap that came back pinned on the next morning read
+// as "wrap won't turn off". So the file never carries it. An old file that does
+// (the panel used to write `"wrap": true`) is ignored on the way in and dropped
+// on the next write, so the stale key can't keep flipping the default.
+func TestWrapIsNeverASavedPreference(t *testing.T) {
+	home := t.TempDir()
+	path := prefsPath(home)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte(`{"theme":"nord","wrap":true}`+"\n"), 0o644)
+
+	c, _, err := parseCLI(nil, envFunc(nil), loadPrefs(home))
+	if err != nil {
+		t.Fatalf("parseCLI: %v", err)
+	}
+	if !c.NoWrap {
+		t.Error("a saved wrap=true turned wrap on; the file must not be able to")
+	}
+	if c.Theme != "nord" {
+		t.Errorf("the rest of the file was dropped with it: theme=%q", c.Theme)
+	}
+
+	if err := rememberPref(home, func(p *savedPrefs) { p.Theme = "dracula" }); err != nil {
+		t.Fatalf("rememberPref: %v", err)
+	}
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "wrap") {
+		t.Errorf("the stale wrap key survived a rewrite:\n%s", b)
 	}
 }

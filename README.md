@@ -246,7 +246,7 @@ have scrolled the banner away:
 │ ▸ theme         ████████████████  tokyo-night                    │
 │   tools         dots                                             │
 │   collapse      user pastes > 5 lines                            │
-│   wrap          on, 99 columns                                   │
+│   wrap          on, 99 columns  · this session only              │
 │   bodies        rendered markdown  · this session only           │
 │   status bar    on                                               │
 │   prompt hooks  installed  · writes ~/.claude/settings.json      │
@@ -270,18 +270,21 @@ previews a palette before the transcript is redrawn in it. The session
 context, the key map and the dot legend live below the settings in the same
 scroll, so nothing the old help card showed was lost.
 
-**Changes are remembered.** Theme, tool style, collapse, wrap and the status bar
+**Changes are remembered.** Theme, tool style, collapse and the status bar
 are written to `~/.claude/entire-tail/settings.json` and picked up next launch.
 They sit *below* flags and env vars in precedence — `--theme dracula` still wins
 for that run — and the file is created only once you change something, so an
 install that never opens the panel behaves exactly as it always did. Delete the
 file to go back to the defaults.
 
-Two rows are different:
+Not every row is remembered:
 
-- **bodies** (the `m` mrkdwn view) is a mode you flip to copy something out, not
-  a preference, so it isn't remembered — coming back tomorrow to raw mrkdwn
-  would read as a broken renderer.
+- **wrap** and **bodies** (the `w` word wrap and the `m` mrkdwn view) are modes
+  you flip for a moment, to read or to copy something out, not preferences, so
+  neither is remembered. A wrap that came back pinned on the next morning read
+  as "wrap won't turn off", and coming back tomorrow to raw mrkdwn would read as
+  a broken renderer. (Older versions did save wrap; a leftover `"wrap"` key in
+  the file is ignored and dropped on the next write.)
 - **prompt hooks** and **api tap** reach outside this process (they edit
   `~/.claude/settings.json` and load a launchd agent), so they don't move on a
   stray arrow key: `⏎` arms the row, a second `⏎` does it, and any other key
@@ -1256,7 +1259,7 @@ renderer.
   logical line your terminal soft-wraps, which splits words at the column edge,
   but the terminal rejoins its own soft wraps on copy, so a mouse drag-select
   gives you unbroken paragraphs.
-- `--wrap` (or **`w`** live, or the `?` panel, which remembers it) wraps prose
+- `--wrap` (or **`w`** live, or the `?` panel, for this run only) wraps prose
   to your terminal width (one column short of it), so lines
   break between words — and only between words: a token too long for the line
   (a URL, a `--flag=value`) goes out whole and is soft-wrapped by the terminal,

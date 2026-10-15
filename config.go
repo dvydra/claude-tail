@@ -119,10 +119,11 @@ func defaultConfig(getenv func(string) string, prefs savedPrefs) Config {
 		Pick:             firstNonEmpty(getenv("ENTIRE_TAIL_PICK"), "auto"),
 		Days:             getenv("ENTIRE_TAIL_DAYS"),
 		MarkContinuation: envTrue(getenv("ENTIRE_TAIL_MARK_CONTINUATION")),
-		// Both flags are negative and both preferences are positive, so the
-		// saved value is inverted on the way in. Wrap defaults OFF: unwrapped,
-		// a drag-select copies whole paragraphs.
-		NoWrap:       prefBool(getenv("ENTIRE_TAIL_NO_WRAP"), negBool(prefs.Wrap), true),
+		// Wrap has no saved preference (see savedPrefs): flag, env, or the
+		// built-in default, which is OFF so a drag-select copies whole
+		// paragraphs. The status bar's flag is negative and its preference
+		// positive, so the saved value is inverted on the way in.
+		NoWrap:       prefBool(getenv("ENTIRE_TAIL_NO_WRAP"), nil, true),
 		NoStatus:     prefBool("", negBool(prefs.StatusBar), false),
 		ClaudeBin:    firstNonEmpty(getenv("ENTIRE_TAIL_CLAUDE_BIN"), defaultClaudeBin),
 		ClaudeBinSet: getenv("ENTIRE_TAIL_CLAUDE_BIN") != "",

@@ -38,6 +38,27 @@ func TestSettingsRowsShowLiveValues(t *testing.T) {
 	}
 }
 
+// Wrap and bodies are modes you flip for a moment (to read, to copy), not
+// preferences, and the panel has to say so on the row: a wrap that came back
+// pinned on the next morning read as "wrap won't turn off".
+func TestWrapAndBodiesRowsSaySessionOnly(t *testing.T) {
+	rows := settingsRowsFor(testHelpInfo(), t.TempDir())
+	notes := map[settingID]string{}
+	for _, r := range rows {
+		notes[r.ID] = r.Note
+	}
+	for _, id := range []settingID{setWrap, setBodies} {
+		if notes[id] != "this session only" {
+			t.Errorf("row %d note = %q, want %q", id, notes[id], "this session only")
+		}
+	}
+	for _, id := range []settingID{setTheme, setTools, setCollapse, setStatusBar} {
+		if notes[id] != "" {
+			t.Errorf("remembered row %d carries a note %q", id, notes[id])
+		}
+	}
+}
+
 func TestAmpSettingsHideClaudeOnlyRows(t *testing.T) {
 	info := testHelpInfo()
 	info.Agent = AgentAmp

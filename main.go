@@ -702,13 +702,15 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// broken renderer.
 			return r.toggleMrkdwn()
 		case setWrap:
+			// Not remembered either, and it used to be: a wrap turned on here
+			// to read one session came back pinned on the next, which read as
+			// "wrap won't turn off". Like bodies, it's a mode for this run.
 			wrapOff = !wrapOff
 			r.setWrap(wrapWidth(os.Stdout, wrapOff))
-			msg := "wrap: on"
 			if wrapOff {
-				msg = "wrap: off — drag-select copies whole paragraphs"
+				return "wrap: off — drag-select copies whole paragraphs"
 			}
-			return msg + savedNote(rememberPref(home, func(p *savedPrefs) { p.Wrap = boolPtr(!wrapOff) }))
+			return "wrap: on"
 		case setStatusBar:
 			// The bar owns a scrolling region, so turning it off has to hand the
 			// region back before the bar is dropped, and turning it on has to
@@ -1603,8 +1605,9 @@ OPTIONS:
                             and rejoins on copy, so a mouse drag-select yields
                             unbroken paragraphs. (Piped output is never wrapped
                             either way.)
-      --no-wrap             Don't wrap (the default); overrides a saved
-                            preference.
+      --no-wrap             Don't wrap (the default); wins over an
+                            ENTIRE_TAIL_NO_WRAP=0 in the environment. Wrap is
+                            never saved as a preference.
       --claude-bin BIN      Which binary the workspace panes and 'handover'
                             launch. Default 'claude'. Pass any claude-compatible
                             wrapper instead ('happy' for mobile control, a shim
