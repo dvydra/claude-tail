@@ -309,7 +309,7 @@ func settingsRowsFor(info helpInfo, home string) []settingRow {
 		{ID: setTheme, Label: "theme", Value: info.Theme, Swatch: info.ThemeSwatch},
 		{ID: setTools, Label: "tools", Value: info.Tools.label()},
 		{ID: setCollapse, Label: "collapse", Value: collapse},
-		{ID: setWrap, Label: "wrap", Value: wrap},
+		{ID: setWrap, Label: "wrap", Value: wrap, Note: "this session only"},
 		{ID: setBodies, Label: "bodies", Value: bodies, Note: "this session only"},
 		{ID: setStatusBar, Label: "status bar", Value: onOff(info.StatusBar)},
 	}

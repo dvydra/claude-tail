@@ -558,8 +558,9 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   said otherwise. The bools are `*bool` because "saved as off" and "never saved"
   have to be different answers — collapse them and a preference file pins every
   default it never meant to. `negBool` keeps that tri-state while inverting the
-  positive prefs (`wrap`, `statusBar`) onto the negative Config fields
-  (`NoWrap`, `NoStatus`). Load is best-effort and silent (a viewer must start
+  positive pref (`statusBar`) onto the negative Config field (`NoStatus`).
+  Wrap has NO field here on purpose; see the panel note under "load-bearing"
+  below. Load is best-effort and silent (a viewer must start
   even when its own preference file is nonsense); writes are temp+rename, and
   `rememberPref` is read-modify-write so a second entire-tail changing a
   different setting isn't clobbered
@@ -962,11 +963,18 @@ cache/offline behavior, and capability flags. Rendering remains shared.
   the symlink with a real file and silently fork the two accounts' configs (the
   exact hazard `setup-claude-personal.sh`'s README warns about). Don't
   "modernize" that write to an atomic rename without handling the symlink.
-- **Only ONE setting the panel shows isn't remembered, and that's deliberate.**
+- **Two settings the panel shows aren't remembered, and that's deliberate.**
   `bodies` (the `m` mrkdwn view) is a mode you flip to copy something out, not a
   preference: persisting it would mean opening tomorrow's session to raw mrkdwn,
-  which reads as a broken renderer rather than a setting you chose. The row says
-  so (`· this session only`). Everything else the panel changes goes through
+  which reads as a broken renderer rather than a setting you chose. `wrap`
+  joined it after a spell of being saved: a wrap turned on from the panel to
+  read one session came back pinned on the next, and with the default
+  documented as off that read as "wrap won't turn off" (2026-10-15, a
+  `"wrap": true` written by the panel two hours earlier). `savedPrefs` has no
+  field for it, so an old file's `wrap` key is ignored on load and dropped by
+  the next `rememberPref` rewrite (`TestWrapIsNeverASavedPreference`); `--wrap`
+  and `ENTIRE_TAIL_NO_WRAP` still work for a run. Both rows say so
+  (`· this session only`). Everything else the panel changes goes through
   `rememberPref`.
 - **This is the first feature that writes global config** (`~/.claude/settings.json`),
   opt-in and reversible. `shouldOfferHookInstall` gates the offer so it fires
@@ -1068,9 +1076,10 @@ cache/offline behavior, and capability flags. Rendering remains shared.
   The collapse marker's wording is `Renderer.collapseHint`, chosen in `run`
   before backfill (so the whole screen agrees): `press c to expand` on a
   terminal, and the flag on a pipe — which is what the goldens pin.
-- **Word wrap is OFF by default, and when turned on (`--wrap`, `w`, the saved
-  pref) it applies only to a tty.** It was on by default from #60 until the
-  default was flipped back: drag-select copying whole paragraphs won over
+- **Word wrap is OFF by default, and when turned on (`--wrap`, `w`, the `?`
+  panel; never a saved pref) it applies only to a tty.** It was on by default
+  from #60 until the default was flipped back: drag-select copying whole
+  paragraphs won over
   word-boundary breaks. `wrapOff` in the live loop starts from `cfg.NoWrap` and
   is the ONLY thing the `w`/panel/resize paths read; it used to be ORed with
   `cfg.NoWrap`, which meant `w` could never turn wrap on once config said off.

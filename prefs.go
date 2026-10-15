@@ -23,12 +23,14 @@ import (
 // next run would refuse.
 
 // savedPrefs is the on-disk shape. Only the settings the panel can change are
-// here; the rest of Config is a per-run choice, not a preference.
+// here; the rest of Config is a per-run choice, not a preference. Wrap and
+// bodies are deliberately absent: both are modes you flip for a moment, and a
+// wrap that came back pinned on the next morning read as "wrap won't turn off".
+// An old file's `wrap` key is ignored on load and dropped on the next write.
 type savedPrefs struct {
 	Theme     string `json:"theme,omitempty"`
 	ToolStyle string `json:"toolStyle,omitempty"`
 	Collapse  string `json:"collapse,omitempty"` // "5", or "0" for off
-	Wrap      *bool  `json:"wrap,omitempty"`
 	StatusBar *bool  `json:"statusBar,omitempty"`
 }
 
@@ -92,9 +94,9 @@ func prefBool(env string, saved *bool, def bool) bool {
 // boolPtr wraps a live value for storing in a savedPrefs.
 func boolPtr(b bool) *bool { return &b }
 
-// negBool flips a tri-state, keeping "unset" unset. The preferences are stored
-// positively (wrap, statusBar) while the Config fields they feed are negative
-// (--no-wrap, --no-status), and inverting a nil pointer to `false` would turn
+// negBool flips a tri-state, keeping "unset" unset. The preference is stored
+// positively (statusBar) while the Config field it feeds is negative
+// (--no-status), and inverting a nil pointer to `false` would turn
 // "never saved" into "saved as on".
 func negBool(b *bool) *bool {
 	if b == nil {
