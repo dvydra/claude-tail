@@ -23,8 +23,12 @@ func TestPrefsRoundTrip(t *testing.T) {
 	if got.StatusBar == nil || *got.StatusBar {
 		t.Errorf("StatusBar = %v, want a saved false", got.StatusBar)
 	}
-	got = loadPrefs(t.TempDir())
-	if got.StatusBar != nil {
+	// And never-set stays never-set through the same trip: omitempty on a nil
+	// pointer writes no key, so nothing reads back as a saved value.
+	if err := savePrefs(home, savedPrefs{Theme: "nord"}); err != nil {
+		t.Fatalf("savePrefs: %v", err)
+	}
+	if got = loadPrefs(home); got.StatusBar != nil {
 		t.Errorf("StatusBar = %v, want unset", *got.StatusBar)
 	}
 }
