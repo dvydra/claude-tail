@@ -62,6 +62,43 @@ func keyActionFor(b byte) keyAction {
 	return keyNone
 }
 
+// liveKey turns one tty read into an action, and only a read holding exactly
+// ONE keypress counts: a single byte, or a single complete escape sequence.
+// Anything longer is a burst nobody typed key by key — a paste, or the arrow
+// keys iTerm sends to move the cursor on a click — and acting on its first byte
+// misfires. Measured live: ~14 KB of `ESC [ D`, read 16 bytes at a time, splits
+// on a 3-byte stride, so every third read began with a bare `D` and the tail
+// ran drift checks back to back for minutes. A human can't type two keys
+// inside one blocking read, so dropping multi-key reads costs nothing.
+func liveKey(b []byte) keyAction {
+	switch {
+	case len(b) == 1:
+		return keyActionFor(b[0])
+	case singleEscape(b):
+		if k, _ := decodeKey(b); k == kRight {
+			return keyFocus
+		}
+	}
+	return keyNone
+}
+
+// singleEscape reports whether b is exactly one CSI/SS3 sequence: ESC, `[` or
+// `O`, parameter bytes, and a final byte that is the last byte of b.
+func singleEscape(b []byte) bool {
+	if len(b) < 3 || b[0] != 0x1b || (b[1] != '[' && b[1] != 'O') {
+		return false
+	}
+	for i, c := range b[2:] {
+		if c >= 0x40 && c <= 0x7e {
+			return i == len(b)-3
+		}
+		if c < 0x20 || c > 0x3f {
+			return false
+		}
+	}
+	return false
+}
+
 // openControlTTY opens the controlling terminal in cbreak mode (single-key, no
 // echo, but output processing and signals left intact, so the stream doesn't
 // staircase and Ctrl-C still signals). Returns ok=false when there's no usable
@@ -119,20 +156,14 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 			if n == 0 {
 				continue
 			}
-			// Multi-byte escape sequence (arrow keys): → enters the subagent
-			// focus overlay. We hand the tty to the render goroutine (which runs
-			// the alt-screen overlay) and PARK here until it signals done, so
-			// there's never two readers on the tty. Other arrows are ignored.
-			if n >= 3 && buf[0] == 0x1b {
-				if k, _ := decodeKey(buf[:n]); k == kRight {
-					// Hand the tty to the render goroutine's overlay and park
-					// until it's done — one tty reader at a time.
-					overlayCh <- keyFocus
-					<-resumeCh
-				}
-				continue
-			}
-			switch act := keyActionFor(buf[0]); act {
+			switch act := liveKey(buf[:n]); act {
+			case keyFocus:
+				// → enters the subagent focus overlay. We hand the tty to the
+				// render goroutine (which runs the alt-screen overlay) and PARK
+				// here until it signals done, so there's never two readers on
+				// the tty.
+				overlayCh <- keyFocus
+				<-resumeCh
 			case keyQuit:
 				codeCh <- 0
 				return
