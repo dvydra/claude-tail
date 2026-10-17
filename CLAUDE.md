@@ -463,11 +463,7 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   because the child now holds the real pty), while one that CRASHES leaves the
   terminal answering every mouse move with an escape sequence fed straight into
   our keyboard reader, which reads as a possessed tail curable only by `reset`.
-  Sent unconditionally, since disabling a mode nothing enabled is a no-op, and
-  sent from `runHunk` rather than `status.resume()` (where it was first
-  suggested) because a nil bar — `--no-status`, and the piped path — makes
-  `resume` inert, so the mode would survive exactly the run with no bar to
-  redraw. The alt screen is deliberately NOT in it: undoing `?1049` when the
+  Sent unconditionally, since disabling a mode nothing enabled is a no-op. The alt screen is deliberately NOT in it: undoing `?1049` when the
   child already left it restores a saved cursor and would move ours. (2) **`planHunk`
   decides everything KNOWABLE before the screen is handed over**, which is what
   keeps the two no-op cases (hunk not installed; the session's cwd deleted, the
@@ -578,55 +574,30 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   transcript, which would otherwise buffer every turn twice
 - `mdtable.go` — **wide markdown tables → sectioned blocks**, for the mrkdwn
   conversion only; see the load-bearing note below
-- `status.go` — the **bottom status bar**. The tail is a streaming view, so a
-  row pinned to the bottom has to come from the terminal rather than from us
-  repainting: `DECSTBM` (`ESC [ 1 ; h-1 r`) shrinks the scrolling region and the
-  transcript scrolls underneath a row we own. Four things there are
-  load-bearing. (1) **DECSTBM homes the cursor** — every region change is wrapped
-  in `ESC 7`/`ESC 8` or the next line of transcript overwrites the backfill.
-  (2) **The row must be free before the region shrinks**: after a full-screen
-  backfill the cursor is ON the last row, which is about to stop scrolling, so
-  `reserveRow` asks the terminal where the cursor is (DSR `ESC [ 6 n`) and
-  scrolls one line if needed — and that query is why `openControlTTY` is split
-  from `startKeyboardOn`, since a running reader goroutine would swallow the
-  reply. It also means `r.endLine()` runs before the bar is created (the only
-  place the deferred trailing newline is settled early). (3) **`close()` before
-  restoring the terminal modes**, or the shell inherits a terminal that can only
-  scroll h-1 rows. The alt-screen overlays get the whole screen back via
-  `suspend`/`resume`. (4) **Giving a row up means ERASING it** (`eraseRow`), not
-  just `clearRegion` — `ESC [ r` hands the rows back to the scrolling region and
-  leaves every glyph where it was, and a terminal resets DECSTBM on resize
-  anyway, so the abandoned bar scrolls up the transcript as a ghost. It shipped
-  without that for a while and the symptom is unmistakable: a column of stale
-  bars marching up the screen, each a little wider than the last, because
-  `resize` ran per SIGWINCH and a window drag fires dozens. **Both** halves of
-  the fix matter — the erase, and the debounce that moved `status.resize()` into
-  the same `winchSettled` branch as the re-wrap, so a drag costs one row move
-  rather than one per size step (each also spends a blank line on
-  `scrollUpOneRow`). Erasing by remembered row is best-effort: a width change
-  reflows, so the row can have shifted — accepted because that path re-renders
-  the transcript below it anyway, and a wrongly-blanked line beats a permanent
-  ghost. Pure `statusLine`/`statusLefts`/`statusRights` (widest variant that fits
-  — the render settings give way before the session id) and `parseCursorReport`
-  are unit-tested, and `out`/`size` are fields (not `s.tty` directly) purely so
-  the row arithmetic is testable without a terminal; a nil `*statusBar` is inert,
-  which is the piped / `--no-status` path
+- **There is no status bar, on purpose.** A pinned bottom row (`status.go`,
+  `DECSTBM` shrinking the scrolling region) shipped and was removed on
+  2026-10-17. A terminal resets the region on resize and on some redraws, and
+  every time it did, the old bar row scrolled up into the transcript as a stale
+  copy. Two rounds of fixes (erase on give-up, debounced resize) did not stop it
+  in real use. Everything it showed is in the `?` panel; keypress results go to
+  stderr via `note`. `--no-status` is still accepted and does nothing, so old
+  launch lines keep working, and an old `statusBar` key in settings.json is
+  ignored and dropped on the next write. Don't re-add a pinned row
 - `theme.go` / `config.go` / `main.go` — themes, flags+env, wiring
 - `keyboard.go` — live single-key controls via cbreak. **The keyboard only ever
   signals; the render goroutine does all of it.** Every display key
   (`t`/`T`/`c`/`m`/`w`/`r`/`y`) goes to `actionCh` and the live loop applies it, then
-  re-renders and writes the status bar — the keyboard used to flip the atomic
-  toggles itself and print to stderr, which stopped working the moment those keys
-  had to re-render (a theme swap rebuilds the non-atomic glamour fn + header
-  strings) and write a bar (only one goroutine may touch the screen). `actionCh`
+  re-renders — the keyboard used to flip the atomic toggles itself, which
+  stopped working the moment those keys had to re-render (a theme swap rebuilds
+  the non-atomic glamour fn + header strings; only one goroutine may touch the
+  screen). `actionCh`
   is buffered but NEVER coalesced: two `t` presses are two steps through the
   cycle and a second `y` means one more message, so a dropped press lands on the
   wrong state. The two alt-screen overlays (`→` focus, `?` help) go to
   `overlayCh` and the goroutine parks on `resumeCh` (single tty reader), and
   `Ctrl-X` (0x18) signals `treeCh` and STOPS reading so `tailSession` returns and
   `run`'s picker↔tail loop re-enters the tree (Claude/Amp only, gated by
-  `treeEnabled`; a no-op on codex/agy). `openControlTTY` is split from
-  `startKeyboardOn` for the status bar's DSR query — see `status.go`
+  `treeEnabled`; a no-op on codex/agy).
 - `jqutil.go` — tiny JSON-value-to-string helpers (replaces shelling out to `jq`)
 - `handover.go` — the `entire-tail handover` subcommand: `todaysSessions`
   enumerates Claude sessions and Amp threads active since local midnight
@@ -1070,9 +1041,7 @@ cache/offline behavior, and capability flags. Rendering remains shared.
   the only thing a clear can destroy is output this very call is about to
   reprint, so the cap that was removed above is also what makes this possible.
   Two more: it is a **tty-only** prefix (a pipe gets "", so the goldens and every
-  `--no-pick` run are byte-identical — the `wrapWidth` rule again), and `ESC [ 2 J`
-  erases the status bar's row along with everything else, which is fine only
-  because `note` redraws the bar immediately after every action.
+  `--no-pick` run are byte-identical — the `wrapWidth` rule again).
   The collapse marker's wording is `Renderer.collapseHint`, chosen in `run`
   before backfill (so the whole screen agrees): `press c to expand` on a
   terminal, and the flag on a pipe — which is what the goldens pin.
@@ -1083,8 +1052,7 @@ cache/offline behavior, and capability flags. Rendering remains shared.
   word-boundary breaks. `wrapOff` in the live loop starts from `cfg.NoWrap` and
   is the ONLY thing the `w`/panel/resize paths read; it used to be ORed with
   `cfg.NoWrap`, which meant `w` could never turn wrap on once config said off.
-  The status bar labels the non-default state, so it shows `wrap` (not
-  `nowrap`). The tty-only half is load-bearing. `wrapWidth` (main.go) returns 0 unless stdout is a char
+  The tty-only half is load-bearing. `wrapWidth` (main.go) returns 0 unless stdout is a char
   device, so piped runs and the whole golden suite render exactly as they did
   before wrap existed; that's the only reason turning wrap on didn't rewrite
   every `testdata/*.golden`. On a tty it's `wrapWidthFor` = terminal width **minus
@@ -1130,8 +1098,7 @@ cache/offline behavior, and capability flags. Rendering remains shared.
 - **The resize re-render is debounced, and only on a width change.** SIGWINCH
   fires continuously while a window edge is dragged, and printed lines can't be
   rewrapped in place — the only way to apply a new width is to re-render, which
-  costs a full transcript walk. So the winch case just records the time (and lets
-  the status bar reclaim its row, which is cheap), and the ticker performs the
+  costs a full transcript walk. So the winch case just records the time, and the ticker performs the
   re-wrap once the signals have been quiet for `winchSettle` (300ms — longer than
   `pollInterval`, so a drag still in flight always pushes it out another tick).
   `setWrap` returns whether the WIDTH actually moved, so dragging the bottom edge

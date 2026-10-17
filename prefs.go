@@ -31,7 +31,6 @@ type savedPrefs struct {
 	Theme     string `json:"theme,omitempty"`
 	ToolStyle string `json:"toolStyle,omitempty"`
 	Collapse  string `json:"collapse,omitempty"` // "5", or "0" for off
-	StatusBar *bool  `json:"statusBar,omitempty"`
 }
 
 // prefsPath is where the file lives — beside the other entire-tail state
@@ -89,18 +88,4 @@ func prefBool(env string, saved *bool, def bool) bool {
 		return *saved
 	}
 	return def
-}
-
-// boolPtr wraps a live value for storing in a savedPrefs.
-func boolPtr(b bool) *bool { return &b }
-
-// negBool flips a tri-state, keeping "unset" unset. The preference is stored
-// positively (statusBar) while the Config field it feeds is negative
-// (--no-status), and inverting a nil pointer to `false` would turn
-// "never saved" into "saved as on".
-func negBool(b *bool) *bool {
-	if b == nil {
-		return nil
-	}
-	return boolPtr(!*b)
 }

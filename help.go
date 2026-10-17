@@ -27,7 +27,6 @@ type helpInfo struct {
 	Collapse    int  // current paste-collapse threshold (0 = off)
 	Mrkdwn      bool // agent bodies rendering as Slack mrkdwn source
 	Wrap        int  // current wrap column limit (0 = unwrapped)
-	StatusBar   bool // the bottom row is currently reserved
 	TreeEnabled bool // Ctrl-X is available for Claude and Amp
 }
 
