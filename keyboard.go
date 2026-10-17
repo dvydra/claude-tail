@@ -103,11 +103,6 @@ func singleEscape(b []byte) bool {
 // echo, but output processing and signals left intact, so the stream doesn't
 // staircase and Ctrl-C still signals). Returns ok=false when there's no usable
 // tty.
-//
-// Split from startKeyboardOn because the status bar has to talk to the terminal
-// (a DSR query, and it needs the answer) in the window after cbreak is on and
-// before the reader goroutine exists — with a reader running, the terminal's
-// reply is swallowed by it.
 func openControlTTY() (tty *os.File, saved string, ok bool) {
 	if !isCharDevice(os.Stdin) {
 		return nil, "", false
@@ -192,7 +187,7 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 			case keyNone:
 			default:
 				// Every display toggle is applied by the RENDER goroutine: each one
-				// now re-renders the history and writes the status bar, and only
+				// now re-renders the history, and only
 				// that goroutine may touch the screen. Never coalesced — a second
 				// `y` means "one more message", and two `t` presses are two steps
 				// through the cycle, so a dropped press would land on the wrong

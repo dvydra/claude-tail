@@ -384,9 +384,8 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	}
 	// On a terminal the collapse marker names the key that expands it. Decided
 	// here, before backfill, so every marker on screen says the same thing — the
-	// control tty isn't opened until the live phase (the status bar's DSR query
-	// has to run after cbreak), and half a screen of stale advice would be worse
-	// than none.
+	// control tty isn't opened until the live phase, and half a screen of stale
+	// advice would be worse than none.
 	if isCharDevice(os.Stdout) {
 		r.collapseHint = "press c to expand"
 	}
@@ -410,31 +409,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	overlayCh := make(chan keyAction, 1) // '→' focus / '?' help; both park the keyboard
 	treeCh := make(chan struct{}, 1)     // keyboard Ctrl-X; back to the tree picker
 	resumeCh := make(chan struct{})      // handed back to unpark the keyboard after the overlay
-	winchCh := installWinch()            // terminal resized → the status bar re-claims its row
+	winchCh := installWinch()            // terminal resized → re-wrap once it settles
 	treeEnabled := agent == AgentClaude || agent == AgentAmp
 
-	// The status bar has to run its DSR query on the tty after cbreak is on but
-	// before the reader goroutine could swallow the reply, so the tty is opened
-	// here rather than inside startKeyboardOn.
 	kbTTY, ttySaved, haveTTY := openControlTTY()
-	var status *statusBar
-	restoreTTY := func() {}
+	restoreTerm := func() {}
 	if haveTTY {
-		if !cfg.NoStatus && isCharDevice(os.Stdout) {
-			// The bar claims a row, which means knowing the cursor isn't already
-			// on it — so settle the backfill's deferred trailing newline first and
-			// start the live phase on a line of its own. (Without a bar the line
-			// is deliberately left open, so a dot streak can ride it.)
-			r.endLine()
-			out.Flush()
-			status = newStatusBar(kbTTY)
-		}
-		restoreTTY = startKeyboardOn(kbTTY, ttySaved, treeEnabled, codeCh, actionCh, overlayCh, treeCh, resumeCh)
+		restoreTerm = startKeyboardOn(kbTTY, ttySaved, treeEnabled, codeCh, actionCh, overlayCh, treeCh, resumeCh)
 	}
-	// restoreTerm always runs the status bar's teardown FIRST: it has to hand the
-	// full scrolling region back before the terminal modes are restored, or the
-	// shell inherits a terminal that can only scroll h-1 rows.
-	restoreTerm := func() { status.close(); restoreTTY() }
 	defer restoreTerm() // panic safety; the normal paths restore explicitly below
 
 	emit := func(line []byte) {
@@ -661,12 +643,6 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		return true
 	}
 
-	// Status-bar state. lastEventAt answers the question a tail is actually for
-	// — "when did anything last happen" — so it moves on transcript growth, not
-	// on wall-clock ticks. pendingNow mirrors the pending-prompt marker.
-	lastEventAt := time.Now()
-	lastTurns := r.turnsRendered
-	pendingNow := false
 	// wrapOff is the live wrap state the `w` toggle flips: off, a mouse
 	// drag-select copies whole paragraphs. It starts from cfg.NoWrap (off by
 	// default) and is the only thing wrapWidth reads after startup, so `w` can
@@ -679,7 +655,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// applySetting performs one row of the `?` panel and returns its result for
 	// the footer. It runs on the render goroutine (the panel holds the tty while
 	// the keyboard is parked), which is what lets it touch the renderer's
-	// non-atomic state and the status bar directly.
+	// non-atomic state directly.
 	applySetting := func(id settingID, dir int) string {
 		settingsDirty = true
 		switch id {
@@ -711,21 +687,6 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				return "wrap: off — drag-select copies whole paragraphs"
 			}
 			return "wrap: on"
-		case setStatusBar:
-			// The bar owns a scrolling region, so turning it off has to hand the
-			// region back before the bar is dropped, and turning it on has to
-			// re-run the DSR query — safe here and nowhere else, because the
-			// keyboard goroutine is parked and can't swallow the reply.
-			on := status == nil
-			if on {
-				status = newStatusBar(kbTTY)
-				on = status != nil
-			} else {
-				status.close()
-				status = nil
-			}
-			return boolLabel(on, "status bar") +
-				savedNote(rememberPref(home, func(p *savedPrefs) { p.StatusBar = boolPtr(on) }))
 		case setHooks:
 			settingsDirty = false // nothing on screen changed
 			if hookInstalledFor(home) {
@@ -747,33 +708,12 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		}
 		return ""
 	}
-	statusNow := func() statusInfo {
-		return statusInfo{
-			Agent:    agent,
-			Repo:     statusRepo(pwd),
-			Session:  sessionIDFromPath(cur),
-			Turns:    r.turnsRendered,
-			LastAt:   lastEventAt,
-			Pending:  pendingNow,
-			Tools:    toolStyleKind(r.toolStyle.Load()),
-			Theme:    theme.Name,
-			Collapse: int(r.collapse.Load()),
-			Mrkdwn:   r.mrkdwn.Load(),
-			NoWrap:   wrapOff,
-		}
-	}
-	// note shows a keypress result. With a status bar it's the yellow transient
-	// line; without one (piped output, --no-status) it falls back to stderr,
-	// which is where these messages used to go.
+	// note shows a keypress result on stderr. There used to be a status bar
+	// for this; it was removed because a pinned bottom row kept leaving copies
+	// of itself in the scrollback, and everything it showed is in the ? panel.
 	note := func(msg string) {
-		if status == nil {
-			fmt.Fprintln(os.Stderr, "entire-tail: "+msg)
-			return
-		}
-		status.setMessage(msg, time.Now())
-		status.update(statusNow(), time.Now())
+		fmt.Fprintln(os.Stderr, "entire-tail: "+msg)
 	}
-	status.update(statusNow(), time.Now())
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -849,7 +789,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// render. Each applies its change, re-renders the history so the whole
 			// transcript reflects it (this is a streaming view — already-printed
 			// lines can't be repainted in place, so "apply" means "append a fresh
-			// copy"), and reports through the status bar.
+			// copy"), and reports on stderr.
 			msg := ""
 			switch act {
 			case keyCycleTools:
@@ -884,17 +824,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				// renderer's message buffer and may write OSC 52 to the tty.
 				msg = r.yank(kbTTY, time.Now())
 			}
-			// Flush the transcript before the bar: the bar goes straight to the
-			// tty, so a buffered re-render still sitting in `out` would land after
-			// it and the two would interleave.
+			// Flush the transcript before the note: it goes to stderr, so a
+			// buffered re-render still sitting in `out` would land after it.
 			out.Flush()
 			note(msg)
 		case act := <-overlayCh:
 			// The keyboard goroutine is parked on resumeCh; we're the sole tty
-			// owner. The overlays draw full-height, so the status bar hands the
-			// scrolling region back for the duration.
+			// owner.
 			out.Flush()
-			status.suspend()
 			overlayMsg := ""
 			switch act {
 			case keyFocus:
@@ -925,7 +862,6 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 						Collapse:    int(r.collapse.Load()),
 						Mrkdwn:      r.mrkdwn.Load(),
 						Wrap:        r.wrap,
-						StatusBar:   status != nil,
 						TreeEnabled: treeEnabled,
 					}
 				}
@@ -938,7 +874,6 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					Apply:   applySetting,
 				}, theme)
 			}
-			status.resume()
 			// A change made in the panel lands on the transcript only now: while
 			// the panel was up it was covered by an alt-screen, and re-rendering
 			// underneath it would have been work nobody could see.
@@ -949,16 +884,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			if overlayMsg != "" {
 				note(overlayMsg)
 			}
-			status.update(statusNow(), time.Now())
 			resumeCh <- struct{}{}
 		case <-winchCh:
-			// BOTH halves of a resize wait for the ticker, and for the same
-			// reason: SIGWINCH fires continuously while a window edge is dragged.
-			// The re-wrap is the expensive one (a full transcript re-render), but
-			// moving the bar isn't free either — every move gives a row back and
-			// claims another, which costs a blank line (scrollUpOneRow) and, if
-			// the erase lands a row off after a reflow, a stale bar. Reacting per
-			// signal walked a column of both up the screen on one slow drag.
+			// The re-wrap waits for the ticker: SIGWINCH fires continuously
+			// while a window edge is dragged, and each re-wrap is a full
+			// transcript re-render.
 			winchAt = time.Now()
 		case <-ticker.C:
 			// A resize changes the wrap width, and printed lines can't be
@@ -967,10 +897,6 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// edge (height only) costs nothing.
 			if winchSettled(winchAt, time.Now()) {
 				winchAt = time.Time{}
-				// The bar takes its row back first, so the region is right before
-				// any re-rendered transcript starts scrolling underneath it. The
-				// repaint itself rides the status.update at the end of this tick.
-				status.resize()
 				if r.setWrap(wrapWidth(os.Stdout, wrapOff)) {
 					rerender("⟳ resized")
 				}
@@ -1018,15 +944,8 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					}
 				}
 				lastMarkerKey = key
-				pendingNow = ok
 			}
 			out.Flush()
-			// The bar is written straight to the tty, so the transcript writer
-			// has to be flushed first or the two interleave.
-			if offset != before || r.turnsRendered != lastTurns {
-				lastEventAt, lastTurns = time.Now(), r.turnsRendered
-			}
-			status.update(statusNow(), time.Now())
 		}
 	}
 }
@@ -1055,8 +974,7 @@ func winchSettled(winchAt, now time.Time) bool {
 // screen up, which is the whole complaint.
 //
 // A pipe gets nothing, so the goldens and every `--no-pick` run are byte-identical
-// to before. The status bar redraws itself right after (`note`), since `ESC [ 2 J`
-// erases the whole display including the row the bar owns.
+// to before.
 func rerenderPrefix(tty bool) string {
 	if !tty {
 		return ""
@@ -1596,9 +1514,6 @@ OPTIONS:
                             through it (see the 'tap' subcommand) — a blocked
                             question then shows the card alone, with its
                             preamble arriving after you answer.
-      --no-status           Don't reserve the bottom row for the status bar.
-                            The bar shrinks the terminal's scrolling region by
-                            one row; use this if that upsets your terminal.
       --wrap                Wrap prose to the terminal width, breaking between
                             words. Off by default: each paragraph is one long
                             line the terminal soft-wraps (breaks land mid-word)
@@ -1664,12 +1579,8 @@ LIVE KEYS (while following, on an interactive terminal):
   t/T/c/m/w re-render the history themselves, so the whole transcript reflects
   the change. This is a streaming view, not an alt-screen TUI: re-rendering appends
   a fresh copy rather than repainting in place, and your terminal's own
-  scrollback keeps working. r does the same on demand.
-
-  The bottom row is a status bar: which session is being followed, how long it
-  has been quiet (or whether the agent is blocked on you), and the current
-  render settings. A keypress reports there in yellow for three seconds.
-  --no-status turns it off.
+  scrollback keeps working. r does the same on demand. ? shows the session and
+  the current settings.
 
 ENVIRONMENT (lower priority than flags):
   ENTIRE_TAIL_AGENT         Same as --agent.

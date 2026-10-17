@@ -19,7 +19,7 @@ import (
 // signals overlayCh and PARKS, so there is exactly one tty reader — with one
 // difference that shapes everything here: the thing that owns the screen is a
 // CHILD PROCESS, not our own alt-screen drawing. So the transcript's open line
-// is settled, the status bar gives its row back, and hunk is handed our tty
+// is settled and hunk is handed our tty
 // wholesale. We deliberately do NOT touch the terminal modes around it: hunk
 // sets up its own raw mode and restores what it inherited (our cbreak), which
 // is exactly the state the keyboard reader needs back; a restore-to-cooked-then-
@@ -80,7 +80,7 @@ func planHunk(bin, dir string, dirOK bool, pane string) hunkPlan {
 }
 
 // hunkOutcome is what actually happened while hunk had the screen — which is
-// the only honest source for the line the status bar shows afterwards.
+// the only honest source for the note shown afterwards.
 //
 // The plan can't supply it. Whether the agent was told anything depends on the
 // daemon registering a session that hasn't been started yet when the plan is
@@ -310,7 +310,7 @@ func hunkNotifyScript(pane, prompt string) string {
 // agent's first move is `hunk session get --repo .` and the daemon only knows
 // about the session once the TUI has started. It stays best-effort — a prompt
 // that never lands leaves a perfectly good review on screen — but the outcome
-// is reported rather than assumed, so the status bar can't claim the agent was
+// is reported rather than assumed, so the note can't claim the agent was
 // told something it wasn't.
 func runHunk(tty *os.File, p hunkPlan) hunkOutcome {
 	if p.Bin == "" {
@@ -376,9 +376,6 @@ func runHunk(tty *os.File, p hunkPlan) hunkOutcome {
 //
 // Sent unconditionally after the child, because disabling a mode that was never
 // enabled is a no-op — cheaper than working out which ones hunk actually used.
-// It goes HERE rather than in status.resume(), which is where it was first
-// suggested: a nil status bar (--no-status, and the piped path) makes resume
-// inert, and the mode would survive exactly the run that had no bar to redraw.
 // Deliberately NOT included: the alt screen (`?1049l`). Undoing that when the
 // child already left it restores a saved cursor position and would move ours.
 const inputModeReset = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?2004l"
