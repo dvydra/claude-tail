@@ -25,12 +25,11 @@ func TestSettingsRowsShowLiveValues(t *testing.T) {
 		got[r.ID] = r.Value
 	}
 	for id, want := range map[settingID]string{
-		setTheme:     "tokyo-night",
-		setTools:     "dots",
-		setCollapse:  "user pastes > 5 lines",
-		setWrap:      "on, 119 columns",
-		setBodies:    "rendered markdown",
-		setStatusBar: "on",
+		setTheme:    "tokyo-night",
+		setTools:    "dots",
+		setCollapse: "user pastes > 5 lines",
+		setWrap:     "on, 119 columns",
+		setBodies:   "rendered markdown",
 	} {
 		if got[id] != want {
 			t.Errorf("row %d value = %q, want %q", id, got[id], want)
@@ -52,7 +51,7 @@ func TestWrapAndBodiesRowsSaySessionOnly(t *testing.T) {
 			t.Errorf("row %d note = %q, want %q", id, notes[id], "this session only")
 		}
 	}
-	for _, id := range []settingID{setTheme, setTools, setCollapse, setStatusBar} {
+	for _, id := range []settingID{setTheme, setTools, setCollapse} {
 		if notes[id] != "" {
 			t.Errorf("remembered row %d carries a note %q", id, notes[id])
 		}
@@ -80,14 +79,14 @@ func TestAmpSettingsHideClaudeOnlyRows(t *testing.T) {
 // you chose.
 func TestSettingsRowsReflectTheOffStates(t *testing.T) {
 	info := testHelpInfo()
-	info.Wrap, info.Collapse, info.Tools, info.StatusBar = 0, 0, toolNone, false
+	info.Wrap, info.Collapse, info.Tools = 0, 0, toolNone
 	info.Mrkdwn = true
 	rows := settingsRowsFor(info, t.TempDir())
 	joined := ""
 	for _, r := range rows {
 		joined += r.Label + "=" + r.Value + "\n"
 	}
-	for _, want := range []string{"wrap=off", "collapse=off", "tools=hidden", "status bar=off", "bodies=slack mrkdwn source"} {
+	for _, want := range []string{"wrap=off", "collapse=off", "tools=hidden", "bodies=slack mrkdwn source"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q:\n%s", want, joined)
 		}

@@ -7,29 +7,17 @@ import (
 	"testing"
 )
 
-// A round trip has to preserve the tri-state: "saved as off" and "never saved"
-// are different answers, and collapsing them would let a preference file pin
-// every default it never meant to.
+func boolPtr(b bool) *bool { return &b }
+
 func TestPrefsRoundTrip(t *testing.T) {
 	home := t.TempDir()
-	in := savedPrefs{Theme: "nord", ToolStyle: "full", Collapse: "0", StatusBar: boolPtr(false)}
+	in := savedPrefs{Theme: "nord", ToolStyle: "full", Collapse: "0"}
 	if err := savePrefs(home, in); err != nil {
 		t.Fatalf("savePrefs: %v", err)
 	}
 	got := loadPrefs(home)
 	if got.Theme != "nord" || got.ToolStyle != "full" || got.Collapse != "0" {
 		t.Errorf("strings did not round-trip: %+v", got)
-	}
-	if got.StatusBar == nil || *got.StatusBar {
-		t.Errorf("StatusBar = %v, want a saved false", got.StatusBar)
-	}
-	// And never-set stays never-set through the same trip: omitempty on a nil
-	// pointer writes no key, so nothing reads back as a saved value.
-	if err := savePrefs(home, savedPrefs{Theme: "nord"}); err != nil {
-		t.Fatalf("savePrefs: %v", err)
-	}
-	if got = loadPrefs(home); got.StatusBar != nil {
-		t.Errorf("StatusBar = %v, want unset", *got.StatusBar)
 	}
 }
 
@@ -64,7 +52,7 @@ func TestSavePrefsLeavesNoTempFile(t *testing.T) {
 // built-in default. A preference is what you want when you haven't said
 // otherwise, and `--theme dracula` is saying otherwise.
 func TestPrefsSitBelowEnvAndFlags(t *testing.T) {
-	prefs := savedPrefs{Theme: "nord", ToolStyle: "full", Collapse: "0", StatusBar: boolPtr(false)}
+	prefs := savedPrefs{Theme: "nord", ToolStyle: "full", Collapse: "0"}
 
 	c, _, err := parseCLI(nil, envFunc(nil), prefs)
 	if err != nil {
@@ -72,9 +60,6 @@ func TestPrefsSitBelowEnvAndFlags(t *testing.T) {
 	}
 	if c.Theme != "nord" || c.ToolStyle != "full" || c.Collapse != "0" {
 		t.Errorf("saved preferences ignored: theme=%q tools=%q collapse=%q", c.Theme, c.ToolStyle, c.Collapse)
-	}
-	if !c.NoStatus {
-		t.Errorf("saved status bar off not applied: NoStatus=%v", c.NoStatus)
 	}
 
 	env := map[string]string{"ENTIRE_TAIL_THEME": "dracula", "ENTIRE_TAIL_NO_WRAP": "0"}
@@ -104,8 +89,8 @@ func TestNoPrefsKeepsTheOldDefaults(t *testing.T) {
 	}
 	// Wrap is the one default that moved: off, so a drag-select copies whole
 	// paragraphs.
-	if !c.NoWrap || c.NoStatus {
-		t.Errorf("want wrap off and status on: NoWrap=%v NoStatus=%v", c.NoWrap, c.NoStatus)
+	if !c.NoWrap {
+		t.Errorf("want wrap off: NoWrap=%v", c.NoWrap)
 	}
 }
 
@@ -132,12 +117,6 @@ func TestPrefBoolAndNegBool(t *testing.T) {
 	}
 	if !prefBool("", nil, true) {
 		t.Error("the default was not used when nothing is set")
-	}
-	if negBool(nil) != nil {
-		t.Error("negBool turned unset into a value")
-	}
-	if got := negBool(boolPtr(true)); got == nil || *got {
-		t.Errorf("negBool(true) = %v, want a false", got)
 	}
 }
 
@@ -188,5 +167,32 @@ func TestWrapIsNeverASavedPreference(t *testing.T) {
 	b, _ := os.ReadFile(path)
 	if strings.Contains(string(b), "wrap") {
 		t.Errorf("the stale wrap key survived a rewrite:\n%s", b)
+	}
+}
+
+// The status bar was removed. A settings file written while it existed still
+// carries a statusBar key; loading must ignore it and the next write drop it.
+func TestStaleStatusBarPrefIsDropped(t *testing.T) {
+	home := t.TempDir()
+	path := prefsPath(home)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte(`{"theme":"nord","statusBar":false}`+"\n"), 0o644)
+
+	if got := loadPrefs(home); got.Theme != "nord" {
+		t.Errorf("the rest of the file was dropped with it: theme=%q", got.Theme)
+	}
+	if err := rememberPref(home, func(p *savedPrefs) { p.Theme = "dracula" }); err != nil {
+		t.Fatalf("rememberPref: %v", err)
+	}
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "statusBar") {
+		t.Errorf("the stale statusBar key survived a rewrite:\n%s", b)
+	}
+}
+
+// --no-status is still accepted, so launch lines that pass it keep working.
+func TestNoStatusFlagStillParses(t *testing.T) {
+	if _, _, err := parseCLI([]string{"--no-status"}, envFunc(nil), savedPrefs{}); err != nil {
+		t.Errorf("--no-status rejected: %v", err)
 	}
 }

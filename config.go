@@ -32,7 +32,6 @@ type Config struct {
 	ClaudeBinSet     bool   // ClaudeBin came from a flag/env, not the built-in default
 	NoTap            bool   // --no-tap: ignore the API-stream tap even when its daemon is up
 	NoPaneLink       bool   // --no-pane-link: never register this pane, never offer the iTerm tab link
-	NoStatus         bool   // --no-status: don't reserve the bottom row for the status bar
 	NoWrap           bool   // default; --wrap clears it. Don't wrap bodies; let the terminal soft-wrap (clean drag-select copy)
 	TapArgs          []string
 	LinkArgs         []string
@@ -121,10 +120,8 @@ func defaultConfig(getenv func(string) string, prefs savedPrefs) Config {
 		MarkContinuation: envTrue(getenv("ENTIRE_TAIL_MARK_CONTINUATION")),
 		// Wrap has no saved preference (see savedPrefs): flag, env, or the
 		// built-in default, which is OFF so a drag-select copies whole
-		// paragraphs. The status bar's flag is negative and its preference
-		// positive, so the saved value is inverted on the way in.
+		// paragraphs.
 		NoWrap:       prefBool(getenv("ENTIRE_TAIL_NO_WRAP"), nil, true),
-		NoStatus:     prefBool("", negBool(prefs.StatusBar), false),
 		ClaudeBin:    firstNonEmpty(getenv("ENTIRE_TAIL_CLAUDE_BIN"), defaultClaudeBin),
 		ClaudeBinSet: getenv("ENTIRE_TAIL_CLAUDE_BIN") != "",
 	}
@@ -323,7 +320,8 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 		case a == "--no-pane-link":
 			c.NoPaneLink = true
 		case a == "--no-status":
-			c.NoStatus = true
+			// The status bar is gone; the flag is still accepted so scripts
+			// and launch lines that pass it keep working.
 		case a == "--no-wrap":
 			c.NoWrap = true
 		case a == "--wrap":

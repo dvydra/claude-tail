@@ -174,32 +174,6 @@ It's strictly additive — nothing gets *un*-marked because no process was found
 near you — and inert off iTerm or without `pgrep`/`lsof`, where the cursor starts
 where it always did.
 
-## The status bar
-
-The bottom row of the terminal is a status bar:
-
-```
- claude · claude-tail · ac2925b3 · 14 turns · 45s ago    dots · tokyo-night · collapse 5 · ? settings
-```
-
-Left is which session you're following and what it's doing — `45s ago` is how
-long since the transcript last grew, and it's replaced by **`⁉ waiting for you`**
-the moment the agent blocks on a question or a permission prompt. Right is how
-it's being rendered. It narrows gracefully: the render settings give way first,
-then the fields on the left, so the session id survives to about 40 columns.
-
-Press `t`, `T`, `c`, `m`, `w` or `y` and the whole row turns **yellow with what just
-happened** for three seconds, then goes back to normal:
-
-```
- copied 2 messages as slack mrkdwn (1.2k chars — press y again to add the one before)
-```
-
-The row is real estate taken from the terminal, not repainted by us: the
-scrolling region is shrunk by one line (`DECSTBM`) so the transcript scrolls
-underneath a row entire-tail owns. Scrollback is untouched. `--no-status` turns
-it off, and it's automatically absent when output is piped.
-
 ## Live keys
 
 While following on an interactive terminal, single keypresses adjust what new
@@ -248,7 +222,6 @@ have scrolled the banner away:
 │   collapse      user pastes > 5 lines                            │
 │   wrap          on, 99 columns  · this session only              │
 │   bodies        rendered markdown  · this session only           │
-│   status bar    on                                               │
 │   prompt hooks  installed  · writes ~/.claude/settings.json      │
 │   api tap       running  · launchd agent                         │
 │                                                                  │
@@ -270,7 +243,7 @@ previews a palette before the transcript is redrawn in it. The session
 context, the key map and the dot legend live below the settings in the same
 scroll, so nothing the old help card showed was lost.
 
-**Changes are remembered.** Theme, tool style, collapse and the status bar
+**Changes are remembered.** Theme, tool style and collapse
 are written to `~/.claude/entire-tail/settings.json` and picked up next launch.
 They sit *below* flags and env vars in precedence — `--theme dracula` still wins
 for that run — and the file is created only once you change something, so an
@@ -419,7 +392,7 @@ markers use — a claude in **another** tab is someone else's work and is never
 typed into. When the tab holds more than one claude (or you're not in iTerm),
 the prompt goes to your clipboard instead, one paste away.
 
-**Nothing happens if hunk isn't installed.** `h` says so in the status bar and
+**Nothing happens if hunk isn't installed.** `h` says so and
 leaves the tail alone rather than blanking it for a beat. entire-tail looks on
 `PATH` and then in `~/.hunk/bin`, where hunk.dev's install script puts a
 standalone binary that isn't added to `PATH`.

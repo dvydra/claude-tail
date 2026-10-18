@@ -17,7 +17,6 @@ func testHelpInfo() helpInfo {
 		Tools:       toolDots,
 		Collapse:    5,
 		Wrap:        119,
-		StatusBar:   true,
 		TreeEnabled: true,
 	}
 }
