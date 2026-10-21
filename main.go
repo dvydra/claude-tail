@@ -870,6 +870,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					Context: settingsContext(info()),
 					Keys:    settingsKeys(treeEnabled),
 					Legend:  strings.TrimSpace(strings.TrimPrefix(bannerLegend(), "  legend:   ")),
+					Resume:  info().Resume,
 					Rows:    func() []settingRow { return settingsRowsFor(info(), home) },
 					Apply:   applySetting,
 				}, theme)

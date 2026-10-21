@@ -814,7 +814,7 @@ to that **session's** folder (wherever it was, not necessarily `$PWD`):
 (Nothing is typed into any pane. B and C are started with their commands, and
 `entire-tail` turns into the agent in the current pane, so that pane becomes A.
 When the agent exits you're back at your shell. The resume command isn't in
-your shell history; press `?` in any tail to see it under `session`.)
+your shell history; press `?` in any tail to see it under `session`, and `c` there to copy it.)
 
 ### Pane link: select one side, the other window follows (opt-in)
 

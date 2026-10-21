@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -258,7 +259,7 @@ func TestSettingsKeysHidesTreeKeyWhenDisabled(t *testing.T) {
 // first — so the second ⏎ isn't a surprise.
 func TestSettingsFooter(t *testing.T) {
 	rows := settingsRowsFor(testHelpInfo(), t.TempDir())
-	if got := settingsFooter(rows, settingsState{cursor: 0}); !strings.Contains(got, "←→ change") {
+	if got := settingsFooter(rows, settingsState{cursor: 0}, ""); !strings.Contains(got, "←→ change") {
 		t.Errorf("ordinary row footer = %q", got)
 	}
 	hooks := 0
@@ -267,13 +268,13 @@ func TestSettingsFooter(t *testing.T) {
 			hooks = i
 		}
 	}
-	if got := settingsFooter(rows, settingsState{cursor: hooks}); !strings.Contains(got, "asks first") {
+	if got := settingsFooter(rows, settingsState{cursor: hooks}, ""); !strings.Contains(got, "asks first") {
 		t.Errorf("confirm row footer = %q", got)
 	}
-	if got := settingsFooter(rows, settingsState{cursor: hooks, armed: setHooks}); !strings.Contains(got, "⏎ again") {
+	if got := settingsFooter(rows, settingsState{cursor: hooks, armed: setHooks}, ""); !strings.Contains(got, "⏎ again") {
 		t.Errorf("armed footer = %q", got)
 	}
-	if got := settingsFooter(rows, settingsState{msg: "theme: nord"}); !strings.Contains(got, "theme: nord") {
+	if got := settingsFooter(rows, settingsState{msg: "theme: nord"}, ""); !strings.Contains(got, "theme: nord") {
 		t.Errorf("result footer = %q", got)
 	}
 }
@@ -366,5 +367,48 @@ func TestSettingsThemeRowShowsSwatch(t *testing.T) {
 	}
 	if w := visWidth(theme); w != visWidth(strings.Replace(theme, info.ThemeSwatch, "", 1))+2 {
 		t.Errorf("swatch should add 2 visible cells, line = %q", theme)
+	}
+}
+
+// `c` asks for the resume line on the clipboard. The reducer only flags it; the
+// driver does the copy, so the reducer stays pure.
+func TestSettingsCopyKeyFlagsCopy(t *testing.T) {
+	rows := settingsRowsFor(testHelpInfo(), t.TempDir())
+	st, id, _ := updateSettings(settingsState{cursor: 1}, rows, kRune, 'c')
+	if !st.copy || id != setNone || st.cursor != 1 || st.closing {
+		t.Errorf("c: state %+v, id %v", st, id)
+	}
+	if st, _, _ := updateSettings(st, rows, kDown, 0); st.copy {
+		t.Error("copy flag survived the next key")
+	}
+}
+
+func TestCopyResume(t *testing.T) {
+	var got string
+	prev := clipboardWrite
+	clipboardWrite = func(s string, _ *os.File) error { got = s; return nil }
+	t.Cleanup(func() { clipboardWrite = prev })
+
+	line := "cd '/x' && claude --resume 'abc'"
+	if msg := copyResume(line, nil); got != line || !strings.Contains(msg, "copied") {
+		t.Errorf("copy: clipboard %q, msg %q", got, msg)
+	}
+	got = ""
+	if msg := copyResume("", nil); got != "" || !strings.Contains(msg, "no resume") {
+		t.Errorf("empty: clipboard %q, msg %q", got, msg)
+	}
+	clipboardWrite = func(string, *os.File) error { return errors.New("no pbcopy") }
+	if msg := copyResume(line, nil); !strings.Contains(msg, "no pbcopy") {
+		t.Errorf("failure msg %q", msg)
+	}
+}
+
+func TestSettingsFooterOffersCopyOnlyWithResume(t *testing.T) {
+	rows := settingsRowsFor(testHelpInfo(), t.TempDir())
+	if got := settingsFooter(rows, settingsState{}, "claude --resume x"); !strings.Contains(got, "c copy resume") {
+		t.Errorf("with resume: %q", got)
+	}
+	if got := settingsFooter(rows, settingsState{}, ""); strings.Contains(got, "copy") {
+		t.Errorf("without resume: %q", got)
 	}
 }
