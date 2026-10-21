@@ -530,7 +530,16 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   back to `\r`, which is what submits. `startSender` batches whatever arrived
   while the last osascript ran (one call per key lags a typist) and holds a
   rune split across reads (`completeUTF8`). `sendRun` is the osascript seam:
-  tests must never type into a real pane. Ctrl-C still signals (ISIG stays on)
+  tests must never type into a real pane. Ctrl-C still signals (ISIG stays on).
+  `sendecho.go` echoes what you type below the transcript (`---` / `> text`):
+  `composeWriter` sits UNDER the renderer's bufio writer and, while send mode is
+  on, wraps every write in erase (`ESC 8 ESC [J`) + write + redraw; `note` goes
+  through `around` for the same reason. Rows are reserved with IND (`ESC D`)
+  and the cursor moved back up BEFORE `ESC 7`, because a saved cursor doesn't
+  follow a scroll, so drawing must never scroll (verified live: output keeps
+  riding an open body line, nothing stale is left in scrollback). The echo is
+  an approximation: escape sequences dropped, Backspace/Ctrl-U edit, Enter
+  clears (the transcript shows the message once it lands)
 - `help.go` — the alt-screen **panel chrome**: `drawPanel` (a centered bordered
   box, title in the top border, caller-supplied hint in the bottom one) plus
   `helpInfo`, `visWidth` and `padVisible`. It used to hold a read-only `?` card;
