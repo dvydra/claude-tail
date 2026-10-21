@@ -191,7 +191,7 @@ events show as they stream:
 | `h`            | **review in hunk** — hand the whole pane to [hunk](https://hunk.dev) for a diff of this session's working tree (see below) |
 | `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
 | `r`            | re-render the whole transcript with current settings (`t`/`T`/`c`/`m`/`w` already do this themselves) |
-| Ctrl-T         | **send mode** — every key goes to the agent pane in this iTerm tab (the one `h` would prompt) while the tail keeps streaming; Ctrl-T again to stop. Ctrl-C still quits the tail, so use Esc to interrupt the agent |
+| Ctrl-T         | **send mode** — every key goes to the agent pane in this iTerm tab (the one `h` would prompt) while the tail keeps streaming, and what you type is echoed under a `---` at the bottom; Ctrl-T again to stop. Ctrl-C still quits the tail, so use Esc to interrupt the agent |
 | Ctrl-X         | **back to the tree** — pop out of a Claude or Amp tail; pick another with `t`, or use `Enter`/`c`/`a` for a workspace |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 

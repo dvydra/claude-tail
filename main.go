@@ -377,7 +377,10 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 
 	printBanner(cfg, agent, session, backfillFrom, total, collapse)
 
-	out := bufio.NewWriter(os.Stdout)
+	// compose keeps send mode's typed line below the transcript (sendecho.go);
+	// a plain pass-through until Ctrl-T starts it.
+	compose := &composeWriter{w: os.Stdout, width: func() int { w, _ := termSize(os.Stdout); return w }}
+	out := bufio.NewWriter(compose)
 	r, err := newRenderer(out, theme, cfg.ToolStyle, collapse, wrapWidth(os.Stdout, cfg.NoWrap))
 	if err != nil {
 		die("cannot init renderer: " + err.Error())
@@ -410,13 +413,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	treeCh := make(chan struct{}, 1)     // keyboard Ctrl-X; back to the tree picker
 	resumeCh := make(chan struct{})      // handed back to unpark the keyboard after the overlay
 	sendPaneCh := make(chan string)      // Ctrl-T: the agent pane for send mode, "" for none
+	echoCh := make(chan []byte, 64)      // send mode: the keys typed, for the compose line
 	winchCh := installWinch()            // terminal resized → re-wrap once it settles
 	treeEnabled := agent == AgentClaude || agent == AgentAmp
 
 	kbTTY, ttySaved, haveTTY := openControlTTY()
 	restoreTerm := func() {}
 	if haveTTY {
-		restoreTerm = startKeyboardOn(kbTTY, ttySaved, treeEnabled, codeCh, actionCh, overlayCh, treeCh, resumeCh, sendPaneCh)
+		restoreTerm = startKeyboardOn(kbTTY, ttySaved, treeEnabled, codeCh, actionCh, overlayCh, treeCh, resumeCh, sendPaneCh, echoCh)
 	}
 	defer restoreTerm() // panic safety; the normal paths restore explicitly below
 
@@ -712,8 +716,15 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	// note shows a keypress result on stderr. There used to be a status bar
 	// for this; it was removed because a pinned bottom row kept leaving copies
 	// of itself in the scrollback, and everything it showed is in the ? panel.
+	//
+	// The last body line is usually still open (render.go defers its newline),
+	// so a note starts on a line of its own rather than being glued to it.
 	note := func(msg string) {
-		fmt.Fprintln(os.Stderr, "entire-tail: "+msg)
+		lead := ""
+		if r.lineOpen {
+			lead = "\n"
+		}
+		compose.around(func() { fmt.Fprintln(os.Stderr, lead+"entire-tail: "+msg) })
 	}
 
 	ticker := time.NewTicker(pollInterval)
@@ -770,7 +781,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// sole writer goroutine (130 for Ctrl-C/SIGINT, 0 for q/Ctrl-D/SIGTERM).
 			restoreTerm()
 			removePaneEntry(home, linkUUID) // os.Exit below skips the defer
-			r.endLine()                     // terminate a deferred body/dots line so exit lands on a fresh row
+			out.Flush()
+			compose.stop()
+			r.endLine() // terminate a deferred body/dots line so exit lands on a fresh row
 			out.Flush()
 			fmt.Fprintln(os.Stderr)
 			os.Exit(code)
@@ -825,19 +838,29 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				// renderer's message buffer and may write OSC 52 to the tty.
 				msg = r.yank(kbTTY, time.Now())
 			case keySendOff:
-				msg = "send mode off"
+				// No note: the compose area disappearing is the answer.
+				out.Flush()
+				compose.stop()
 			}
 			// Flush the transcript before the note: it goes to stderr, so a
 			// buffered re-render still sitting in `out` would land after it.
 			out.Flush()
-			note(msg)
+			if msg != "" {
+				note(msg)
+			}
 		case act := <-overlayCh:
 			if act == keySend {
 				// Not an overlay: the keyboard waits on sendPaneCh, not resumeCh,
 				// and forwards keys itself while we keep rendering.
 				pane := hunkPaneForAgent(home, agent, sessionIDFromPath(cur), cur)
 				out.Flush()
-				note(sendPaneMsg(pane, agent))
+				// Only a refusal gets a note: when it starts, the compose area's
+				// own divider says where the keys go and how to stop.
+				if pane == "" {
+					note(sendPaneMsg(agent))
+				} else {
+					compose.start(theme.DimANSI, theme.UserANSI)
+				}
 				sendPaneCh <- pane
 				break
 			}
@@ -898,6 +921,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				note(overlayMsg)
 			}
 			resumeCh <- struct{}{}
+		case b := <-echoCh:
+			// Send mode: the keys just forwarded, drawn as the compose line.
+			out.Flush()
+			compose.line.apply(b)
+			compose.redraw()
 		case <-winchCh:
 			// The re-wrap waits for the ticker: SIGWINCH fires continuously
 			// while a window edge is dragged, and each re-wrap is a full

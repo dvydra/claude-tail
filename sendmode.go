@@ -139,8 +139,9 @@ func startSender(pane string) (send func([]byte), stop func()) {
 }
 
 // forwardKeys is send mode's read loop, run on the keyboard goroutine. It
-// returns nil when Ctrl-T ends the mode and the read error otherwise.
-func forwardKeys(tty *os.File, pane string) error {
+// returns nil when Ctrl-T ends the mode and the read error otherwise. echo gets
+// a copy of each read's keys, for the render goroutine to draw (sendecho.go).
+func forwardKeys(tty *os.File, pane string, echo func([]byte)) error {
 	send, stop := startSender(pane)
 	defer stop()
 	buf := make([]byte, 256)
@@ -152,6 +153,7 @@ func forwardKeys(tty *os.File, pane string) error {
 		b, toggled := splitAtToggle(buf[:n])
 		if len(b) > 0 {
 			send(sendBytes(b))
+			echo(append([]byte(nil), b...))
 		}
 		if toggled {
 			return nil
@@ -159,10 +161,7 @@ func forwardKeys(tty *os.File, pane string) error {
 	}
 }
 
-// sendPaneMsg is the note for entering send mode, or for why it didn't start.
-func sendPaneMsg(pane string, agent Agent) string {
-	if pane == "" {
-		return "send mode: no " + string(firstNonEmptyAgent(agent, AgentClaude)) + " pane found in this iTerm tab"
-	}
-	return "send mode on: keys go to the " + string(firstNonEmptyAgent(agent, AgentClaude)) + " pane · ctrl-t to stop"
+// sendPaneMsg is the note for why send mode didn't start.
+func sendPaneMsg(agent Agent) string {
+	return "send mode: no " + string(firstNonEmptyAgent(agent, AgentClaude)) + " pane found in this iTerm tab"
 }

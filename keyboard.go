@@ -139,7 +139,7 @@ func openControlTTY() (tty *os.File, saved string, ok bool) {
 // Ctrl-T asks the render goroutine for the agent pane on overlayCh and waits for
 // the answer on sendPaneCh. With a pane, this goroutine forwards keys to it
 // (forwardKeys) until the next Ctrl-T, while rendering carries on.
-func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<- int, actionCh chan<- keyAction, overlayCh chan<- keyAction, treeCh chan<- struct{}, resumeCh <-chan struct{}, sendPaneCh <-chan string) func() {
+func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<- int, actionCh chan<- keyAction, overlayCh chan<- keyAction, treeCh chan<- struct{}, resumeCh <-chan struct{}, sendPaneCh <-chan string, echoCh chan<- []byte) func() {
 	var once sync.Once
 	restore := func() {
 		once.Do(func() {
@@ -198,7 +198,7 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 				if pane == "" {
 					continue // the render goroutine already said why
 				}
-				err := forwardKeys(tty, pane)
+				err := forwardKeys(tty, pane, func(b []byte) { echoCh <- b })
 				actionCh <- keySendOff
 				if err != nil {
 					codeCh <- 0
