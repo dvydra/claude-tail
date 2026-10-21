@@ -489,6 +489,7 @@ func settingsKeys(treeEnabled bool) []string {
 		kv("d", "drift check — what you asked for vs what you're doing"),
 		kv("h", "review this session's changes in hunk (takes the pane)"),
 		kv("→", "focus subagents"),
+		kv("Ctrl-T", "type into the agent pane (Ctrl-T again to stop)"),
 	}
 	if treeEnabled {
 		L = append(L, kv("Ctrl-X", "back to the tree picker"))

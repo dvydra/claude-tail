@@ -409,13 +409,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	overlayCh := make(chan keyAction, 1) // '→' focus / '?' help; both park the keyboard
 	treeCh := make(chan struct{}, 1)     // keyboard Ctrl-X; back to the tree picker
 	resumeCh := make(chan struct{})      // handed back to unpark the keyboard after the overlay
+	sendPaneCh := make(chan string)      // Ctrl-T: the agent pane for send mode, "" for none
 	winchCh := installWinch()            // terminal resized → re-wrap once it settles
 	treeEnabled := agent == AgentClaude || agent == AgentAmp
 
 	kbTTY, ttySaved, haveTTY := openControlTTY()
 	restoreTerm := func() {}
 	if haveTTY {
-		restoreTerm = startKeyboardOn(kbTTY, ttySaved, treeEnabled, codeCh, actionCh, overlayCh, treeCh, resumeCh)
+		restoreTerm = startKeyboardOn(kbTTY, ttySaved, treeEnabled, codeCh, actionCh, overlayCh, treeCh, resumeCh, sendPaneCh)
 	}
 	defer restoreTerm() // panic safety; the normal paths restore explicitly below
 
@@ -823,12 +824,23 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				// here rather than on the keyboard goroutine because it reads the
 				// renderer's message buffer and may write OSC 52 to the tty.
 				msg = r.yank(kbTTY, time.Now())
+			case keySendOff:
+				msg = "send mode off"
 			}
 			// Flush the transcript before the note: it goes to stderr, so a
 			// buffered re-render still sitting in `out` would land after it.
 			out.Flush()
 			note(msg)
 		case act := <-overlayCh:
+			if act == keySend {
+				// Not an overlay: the keyboard waits on sendPaneCh, not resumeCh,
+				// and forwards keys itself while we keep rendering.
+				pane := hunkPaneForAgent(home, agent, sessionIDFromPath(cur), cur)
+				out.Flush()
+				note(sendPaneMsg(pane, agent))
+				sendPaneCh <- pane
+				break
+			}
 			// The keyboard goroutine is parked on resumeCh; we're the sole tty
 			// owner.
 			out.Flush()
