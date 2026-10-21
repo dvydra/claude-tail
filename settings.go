@@ -69,7 +69,10 @@ type settingsEnv struct {
 	Context []string // read-only session context, shown under the settings
 	Keys    []string // the key map, shown under that
 	Legend  string   // the dot legend, last
-	Rows    func() []settingRow
+	// Resume is the session's resume line (sessionResume), which `c` copies.
+	// "" when there's none, and then `c` says so instead of copying nothing.
+	Resume string
+	Rows   func() []settingRow
 	// Apply performs a row's change and returns a one-line result for the
 	// footer. dir is +1 for → / ⏎ and -1 for ←, so a cycle can go backwards.
 	Apply func(id settingID, dir int) string
@@ -81,6 +84,7 @@ type settingsState struct {
 	top     int       // first visible display line
 	msg     string    // footer result of the last change
 	armed   settingID // a Confirm row waiting for its second ⏎
+	copy    bool      // `c` was pressed: the driver copies the resume line
 	closing bool
 }
 
@@ -162,7 +166,7 @@ func settingsLines(env settingsEnv, rows []settingRow, cursor int, theme Theme) 
 // settingsFooter is the hint in the bottom border: what the cursor's row does,
 // or the result of the last change, or the confirmation a Confirm row is
 // waiting on.
-func settingsFooter(rows []settingRow, st settingsState) string {
+func settingsFooter(rows []settingRow, st settingsState, resume string) string {
 	if st.armed != setNone {
 		for _, row := range rows {
 			if row.ID == st.armed {
@@ -173,10 +177,27 @@ func settingsFooter(rows []settingRow, st settingsState) string {
 	if st.msg != "" {
 		return " " + st.msg + " "
 	}
+	change := "←→ change"
 	if st.cursor < len(rows) && rows[st.cursor].Confirm {
-		return " ↑↓ move · ⏎ change (asks first) · q close "
+		change = "⏎ change (asks first)"
 	}
-	return " ↑↓ move · ←→ change · q close "
+	copyHint := ""
+	if resume != "" {
+		copyHint = "c copy resume · "
+	}
+	return " ↑↓ move · " + change + " · " + copyHint + "q close "
+}
+
+// copyResume puts the resume line on the clipboard and returns the footer
+// message. Through clipboardWrite so tests never touch the real clipboard.
+func copyResume(line string, tty *os.File) string {
+	if line == "" {
+		return "no resume command for this session"
+	}
+	if err := clipboardWrite(line, tty); err != nil {
+		return "copy failed: " + err.Error()
+	}
+	return "copied resume command"
 }
 
 // updateSettings is the reducer: one key in, the next state out, plus the row
@@ -187,6 +208,7 @@ func updateSettings(st settingsState, rows []settingRow, k treeKey, r rune) (set
 	armed := st.armed
 	st.armed = setNone
 	st.msg = ""
+	st.copy = false
 
 	change := func(dir int) (settingsState, settingID, int) {
 		if st.cursor >= len(rows) {
@@ -218,6 +240,8 @@ func updateSettings(st settingsState, rows []settingRow, k treeKey, r rune) (set
 		return change(+1)
 	case k == kLeft, k == kRune && r == 'h':
 		return change(-1)
+	case k == kRune && r == 'c':
+		st.copy = true
 	}
 	return st, setNone, 0
 }
@@ -264,7 +288,7 @@ func runSettings(tty *os.File, env settingsEnv, theme Theme) {
 		if st.cursor < len(rowLine) {
 			st.top = scrollTo(st.top, rowLine[st.cursor], body, len(lines))
 		}
-		io.WriteString(tty, drawPanel(lines, st.top, w, h, theme, settingsFooter(rows, st)))
+		io.WriteString(tty, drawPanel(lines, st.top, w, h, theme, settingsFooter(rows, st, env.Resume)))
 
 		n, err := tty.Read(buf)
 		if err != nil {
@@ -281,6 +305,9 @@ func runSettings(tty *os.File, env settingsEnv, theme Theme) {
 		}
 		if id != setNone {
 			st.msg = env.Apply(id, dir)
+		}
+		if st.copy {
+			st.msg = copyResume(env.Resume, tty)
 		}
 	}
 }
