@@ -519,6 +519,18 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `planHunk`/`hunkBin`/`hunkClaudePane`/`hunkNotifyScript`/`tailCwd`/
   `hunkReviewDir` are unit-tested; the spawn and `osascript` are the thin IO
   layer
+- `sendmode.go` — **Ctrl-T: type into the tail, keys land in the agent pane.**
+  Not an overlay: the keyboard goroutine asks the render goroutine for the pane
+  (`overlayCh <- keySend`, answered on `sendPaneCh` with `hunkPaneForAgent`'s
+  pane, "" refuses) and then forwards keys itself (`forwardKeys`) until the next
+  Ctrl-T, so the transcript keeps streaming while you type. Keys go through
+  `write text <expr> newline NO` addressed by session id, control bytes as
+  `character id N` (verified live on iTerm: Esc, Backspace and `\r` arrive as
+  keystrokes). cbreak delivers Enter as `\n` (ICRNL), so `sendBytes` maps it
+  back to `\r`, which is what submits. `startSender` batches whatever arrived
+  while the last osascript ran (one call per key lags a typist) and holds a
+  rune split across reads (`completeUTF8`). `sendRun` is the osascript seam:
+  tests must never type into a real pane. Ctrl-C still signals (ISIG stays on)
 - `help.go` — the alt-screen **panel chrome**: `drawPanel` (a centered bordered
   box, title in the top border, caller-supplied hint in the bottom one) plus
   `helpInfo`, `visWidth` and `padVisible`. It used to hold a read-only `?` card;

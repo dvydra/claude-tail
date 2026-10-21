@@ -26,6 +26,8 @@ const (
 	keyDrift
 	keyHunk
 	keyFocus // not a keyActionFor result: the `→` escape sequence decodes to it
+	keySend
+	keySendOff // sent by the keyboard when send mode ends, so the render goroutine can say so
 )
 
 // keyActionFor maps a raw input byte to an action. Ctrl-C is left to the signal
@@ -58,6 +60,8 @@ func keyActionFor(b byte) keyAction {
 		return keyToggleWrap
 	case 'h', 'H':
 		return keyHunk
+	case sendToggle:
+		return keySend
 	}
 	return keyNone
 }
@@ -131,7 +135,11 @@ func openControlTTY() (tty *os.File, saved string, ok bool) {
 // the caller's live loop restores the tty and re-enters the picker. When false
 // (non-Claude/Amp session or no tree in scope), Ctrl-X is ignored because
 // there's nothing to go back to.
-func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<- int, actionCh chan<- keyAction, overlayCh chan<- keyAction, treeCh chan<- struct{}, resumeCh <-chan struct{}) func() {
+//
+// Ctrl-T asks the render goroutine for the agent pane on overlayCh and waits for
+// the answer on sendPaneCh. With a pane, this goroutine forwards keys to it
+// (forwardKeys) until the next Ctrl-T, while rendering carries on.
+func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<- int, actionCh chan<- keyAction, overlayCh chan<- keyAction, treeCh chan<- struct{}, resumeCh <-chan struct{}, sendPaneCh <-chan string) func() {
 	var once sync.Once
 	restore := func() {
 		once.Do(func() {
@@ -184,6 +192,18 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 				// more here, not less: hunk reads this very fd.
 				overlayCh <- keyHunk
 				<-resumeCh
+			case keySend:
+				overlayCh <- keySend
+				pane := <-sendPaneCh
+				if pane == "" {
+					continue // the render goroutine already said why
+				}
+				err := forwardKeys(tty, pane)
+				actionCh <- keySendOff
+				if err != nil {
+					codeCh <- 0
+					return
+				}
 			case keyNone:
 			default:
 				// Every display toggle is applied by the RENDER goroutine: each one
