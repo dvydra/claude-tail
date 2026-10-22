@@ -194,10 +194,12 @@ func newGlamour(styleJSON []byte, wrap int) (func(string) (string, error), error
 		return nil, err
 	}
 	if wrap == 0 {
-		return md.Render, nil // the golden path, byte for byte
+		return func(s string) (string, error) {
+			return md.Render(escapeLoneTildes(s))
+		}, nil
 	}
 	return func(s string) (string, error) {
-		out, err := md.Render(s)
+		out, err := md.Render(escapeLoneTildes(s))
 		if err != nil {
 			return out, err
 		}
