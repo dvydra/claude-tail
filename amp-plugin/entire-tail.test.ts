@@ -25,6 +25,26 @@ const waitFor = async (condition: () => boolean): Promise<void> => {
   throw new Error("timed out waiting for plugin work");
 };
 
+test("a prompt present at session.start still reaches an already-following tail", async () => {
+  const handlers = new Map<string, (...args: any[]) => unknown>();
+  const thread = {
+    id: "T-start-prompt",
+    messages: async () => [message(2)],
+    state: { subscribe: () => ({ unsubscribe() {} }) },
+  };
+  const ctx = { thread, system: { executor: { kind: "local" } } };
+  entireTail({
+    on: (name: string, handler: (...args: any[]) => unknown) => handlers.set(name, handler),
+    onDispose() {},
+  } as any);
+  handlers.get("session.start")?.({}, ctx);
+  handlers.get("agent.start")?.({ id: "M-2" }, ctx);
+  await handlers.get("tool.result")?.({}, ctx);
+  const feed = join(home, ".cache", "entire-tail", "amp", "live", `${thread.id}.jsonl`);
+  const lines = readFileSync(feed, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+  expect(lines.map((line) => line.message.protocolMessageID)).toEqual(["M-2"]);
+});
+
 test("idle backfills paginated messages when agent.end is absent", async () => {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const disposers: Array<() => void> = [];
@@ -61,11 +81,11 @@ test("idle backfills paginated messages when agent.end is absent", async () => {
   stateSubscriber?.("idle");
 
   const feed = join(home, ".cache", "entire-tail", "amp", "live", `${thread.id}.jsonl`);
-  await waitFor(() => existsSync(feed) && readFileSync(feed, "utf8").trim().split("\n").length === 22);
+  await waitFor(() => existsSync(feed) && readFileSync(feed, "utf8").trim().split("\n").length === 25);
   const lines = readFileSync(feed, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 
   expect(lines.map((line) => line.message.protocolMessageID)).toEqual(
-    Array.from({ length: 22 }, (_, i) => `M-${i + 4}`),
+    Array.from({ length: 25 }, (_, i) => `M-${i + 1}`),
   );
   expect(lines.at(-1).idleFinal).toBe(true);
   expect(calls.slice(1)).toEqual([
@@ -127,5 +147,5 @@ test("reload does not append a message already present in the feed", async () =>
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line).message.protocolMessageID);
-  expect(ids).toEqual(["M-1"]);
+  expect(ids).toEqual(["M-1", "M-2"]);
 });

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"regexp"
@@ -11,8 +13,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
 	"github.com/muesli/termenv"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 // Box-header content (between the color prefix and the reset). Copied verbatim
@@ -178,32 +186,38 @@ func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse, wrap int)
 // paragraph. Rendering unwrapped also means glamour pads nothing, so there's no
 // padding to trim back off.
 func newGlamour(styleJSON []byte, wrap int) (func(string) (string, error), error) {
-	md, err := glamour.NewTermRenderer(
-		glamour.WithStylesFromJSONBytes(styleJSON),
-		glamour.WithWordWrap(0),
-		// Force truecolor in-process. The bash version piped glow and relied on
-		// CLICOLOR_FORCE, which capped rendering at 256 colors; rendering in
-		// our own process lets us emit the theme's exact hex colors.
-		glamour.WithColorProfile(termenv.TrueColor),
-		// glamour defaults code-block syntax highlighting to chroma's
-		// "terminal256"; use the 24-bit formatter so code blocks are truecolor
-		// too (otherwise the markdown is truecolor but the code isn't).
-		glamour.WithChromaFormatter("terminal16m"),
-	)
-	if err != nil {
+	var style ansi.StyleConfig
+	if err := json.Unmarshal(styleJSON, &style); err != nil {
 		return nil, err
 	}
-	if wrap == 0 {
-		return func(s string) (string, error) {
-			return md.Render(escapeLoneTildes(s))
-		}, nil
-	}
+	// Use glamour's parser and ANSI renderer directly so table references can
+	// become ordinary paragraphs before rendering. Its built-in table footer
+	// truncates destinations to zero columns with WordWrap 0.
+	md := goldmark.New(
+		goldmark.WithExtensions(extension.GFM, extension.DefinitionList),
+		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+	)
+	md.SetRenderer(renderer.NewRenderer(renderer.WithNodeRenderers(
+		util.Prioritized(ansi.NewRenderer(ansi.Options{
+			Styles: style, WordWrap: 0, ColorProfile: termenv.TrueColor,
+			ChromaFormatter: "terminal16m",
+		}), 1000),
+	)))
 	return func(s string) (string, error) {
-		out, err := md.Render(escapeLoneTildes(s))
+		source := []byte(escapeLoneTildes(s))
+		doc := md.Parser().Parse(text.NewReader(source))
+		source, err := expandTableReferences(doc, source, style)
 		if err != nil {
-			return out, err
+			return "", err
 		}
-		return wrapANSI(out, wrap), nil
+		var out bytes.Buffer
+		if err := md.Renderer().Render(&out, source, doc); err != nil {
+			return out.String(), err
+		}
+		if wrap > 0 {
+			return wrapANSI(out.String(), wrap), nil
+		}
+		return out.String(), nil
 	}, nil
 }
 
@@ -374,7 +388,17 @@ func (r *Renderer) emit(rec Record) {
 	case KindToolUse:
 		r.toolUse(rec.Name, rec.Summary)
 	case KindToolResult:
-		r.toolResult(rec.Result)
+		// Amp answers arrive as tool results. Correlate by call id, never by
+		// text: a shell command could print the same words as a real answer.
+		if rec.QID != "" && r.seenQuestions[rec.QID] && rec.Result != nil {
+			if len(rec.Result.Output) > 0 {
+				r.emit(Record{Kind: KindUser, Ts: rec.Ts, Body: strings.Join(rec.Result.Output, "\n")})
+			} else if rec.Result.Summary != "" {
+				r.taskNote("Question: " + rec.Result.Summary)
+			}
+		} else {
+			r.toolResult(rec.Result)
+		}
 	case KindAgentSpawn:
 		r.agentSpawn(rec.AgentDesc, rec.AgentType)
 	case KindQuestion:

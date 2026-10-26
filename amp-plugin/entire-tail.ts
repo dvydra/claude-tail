@@ -90,9 +90,10 @@ export default function (amp: PluginAPI) {
     appendFileSync(join(liveDir, `${thread.id}.jsonl`), lines.join("\n") + "\n", { mode: 0o600 });
   };
 
-  // Everything already in the thread when the plugin first sees it belongs to
-  // the export backfill; only `keep` (the prompt that started this turn) is new.
-  const seed = async (thread: PluginThread, keep?: string): Promise<void> => {
+  // Only durable feed entries count as delivered. A tail's export can predate
+  // session.start, so assuming the latest API page was backfilled loses prompts.
+  // The tail deduplicates feed entries against its own export by message id.
+  const seed = async (thread: PluginThread): Promise<void> => {
     if (emitted.has(thread.id)) return;
     const seen = new Set<string>();
     emitted.set(thread.id, seen);
@@ -106,8 +107,6 @@ export default function (amp: PluginAPI) {
         } catch {}
       }
     } catch {}
-    const page = await thread.messages({ full: true, from: "end", limit: pageSize });
-    for (const m of page) if (String(m.id) !== keep) seen.add(String(m.id));
     // An empty feed already switches a waiting tail off export polling.
     mkdirSync(liveDir, { recursive: true, mode: 0o700 });
     appendFileSync(feed, "", { mode: 0o600 });
@@ -149,11 +148,11 @@ export default function (amp: PluginAPI) {
     });
     stateSubscriptions.set(thread.id, subscription);
   };
-  const start = (thread: PluginThread, keep?: string): void => {
+  const start = (thread: PluginThread): void => {
     enqueue(thread, async () => {
-      await seed(thread, keep);
+      await seed(thread);
       watchLog(thread);
-      if (keep !== undefined) await sync(thread, false);
+      await sync(thread, false);
     });
     watchState(thread);
   };
@@ -161,8 +160,8 @@ export default function (amp: PluginAPI) {
   amp.on("session.start", (_event, ctx) => {
     if (local(ctx)) start(ctx.thread);
   });
-  amp.on("agent.start", (event, ctx) => {
-    if (local(ctx)) start(ctx.thread, String(event.id));
+  amp.on("agent.start", (_event, ctx) => {
+    if (local(ctx)) start(ctx.thread);
     return {};
   });
   amp.on("tool.result", async (_event, ctx) => {

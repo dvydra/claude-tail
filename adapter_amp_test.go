@@ -34,6 +34,75 @@ func TestNormalizeAmpTextThinkingAndDone(t *testing.T) {
 	}
 }
 
+func TestAmpSuggestedRepliesStayOutOfDisplayAndYank(t *testing.T) {
+	for _, body := range []string{
+		"Investigation finished.\n\n<suggested-replies>\n**Draft a reply** to Nina\nAdd diagnostics\n</suggested-replies>",
+		"Investigation finished.\n\n<suggested-replies>\nDraft a reply",
+	} {
+		text, _ := json.Marshal(body)
+		line := ampLine(t, `{"role":"assistant","state":{"type":"complete"},"content":[{"type":"text","text":`+string(text)+`}]}`, true)
+		recs := normalizeAmp(line, time.UTC)
+		var buf strings.Builder
+		r := newRendererWith(&buf, testTheme(), "dots", 0, identityRender)
+		for _, rec := range recs {
+			r.emit(rec)
+		}
+		yank, _ := r.yankText(1)
+		if strings.Contains(buf.String(), "Draft a reply") || strings.Contains(yank, "Draft a reply") || !strings.Contains(yank, "Investigation finished.") {
+			t.Fatalf("button text leaked: display=%q yank=%q", buf.String(), yank)
+		}
+	}
+	// Literal markup in code and human messages is not UI metadata.
+	body := "```xml\n<suggested-replies>\nExample\n</suggested-replies>\n```"
+	text, _ := json.Marshal(body)
+	for _, role := range []string{"assistant", "user"} {
+		recs := normalizeAmp(ampLine(t, `{"role":"`+role+`","state":{"type":"complete"},"content":[{"type":"text","text":`+string(text)+`}]}`, false), time.UTC)
+		if len(recs) != 1 || recs[0].Body != body {
+			t.Fatalf("literal changed: %+v", recs)
+		}
+	}
+}
+
+func TestAmpAutomationIsNotAHumanTurn(t *testing.T) {
+	body := "A background subagent you started has ended. This message comes from Amp, not from the user.\nID: TU-123\nDescription: Check credentials\nStatus: completed\nTo continue this subagent, call Task.\n\nResult:\nPrivate plumbing"
+	text, _ := json.Marshal(body)
+	for _, meta := range []string{`,"meta":{"fromAutomation":true}`, "", `,"meta":{"fromAutomation":false}`} {
+		lines := ampMessageLines([]byte(`{"messages":[{"role":"user"` + meta + `,"content":[{"type":"text","text":` + string(text) + `}]}]}`))
+		recs := normalizeAmp(lines[0], time.UTC)
+		if strings.Contains(meta, "false") {
+			if len(recs) != 1 || recs[0].Kind != KindUser || recs[0].Body != body {
+				t.Fatalf("human quote lost: %+v", recs)
+			}
+			continue
+		}
+		out := renderRecords("dots", 0, false, recs...)
+		if strings.Contains(out, "USER") || strings.Contains(out, "Private plumbing") || !strings.Contains(out, "Check credentials") || !strings.Contains(out, "completed") {
+			t.Fatalf("bad automation rendering: %q", out)
+		}
+	}
+}
+
+func TestAmpQuestionAnswersVisibleInEveryToolStyle(t *testing.T) {
+	q := ampLine(t, `{"role":"assistant","state":{"type":"complete"},"content":[{"type":"tool_use","id":"q1","name":"ask_user_choice","input":{"question":"Which transport?","options":["HTTPS","Entire"]}}]}`, false)
+	for _, answer := range []string{"User selected option 2: Entire", "User selected: what do you mean?"} {
+		text, _ := json.Marshal(answer)
+		result := ampLine(t, `{"role":"user","content":[{"type":"tool_result","toolUseID":"q1","run":{"status":"done","result":{"output":`+string(text)+`}}}]}`, false)
+		recs := append(normalizeAmp(q, time.UTC), normalizeAmp(result, time.UTC)...)
+		for _, style := range []string{"dots", "hidden", "full"} {
+			out := renderRecords(style, 0, false, recs...)
+			if strings.Count(out, answer) != 1 || !strings.Contains(out, "USER") {
+				t.Fatalf("%s lost answer: %q", style, out)
+			}
+			// A different tool printing identical words must remain ordinary output.
+			other := strings.ReplaceAll(string(result), `"q1"`, `"shell1"`)
+			out = renderRecords("hidden", 0, false, append(normalizeAmp(q, time.UTC), normalizeAmp([]byte(other), time.UTC)...)...)
+			if strings.Contains(out, answer) {
+				t.Fatalf("unrelated tool became a user: %q", out)
+			}
+		}
+	}
+}
+
 func TestNormalizeAmpToolsQuestionsAndResults(t *testing.T) {
 	line := ampLine(t, `{"role":"assistant","createdAt":"2026-09-25T10:00:01Z","state":{"type":"complete"},"content":[{"type":"tool_use","id":"q1","name":"ask_user_choice","input":{"question":"Ship it?","options":["Yes","No"],"allowOther":true}},{"type":"tool_use","name":"Task","input":{"description":"Check tests","subagent_type":"reviewer"}},{"type":"tool_use","name":"shell_command","input":{"command":"go test ./..."}}]}`, false)
 	got := normalizeAmp(line, time.UTC)

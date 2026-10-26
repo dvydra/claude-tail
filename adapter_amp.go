@@ -71,6 +71,9 @@ type ampMessage struct {
 	ProtocolMessageID string          `json:"protocolMessageID"`
 	State             ampMessageState `json:"state"`
 	Content           []ampBlock      `json:"content"`
+	Meta              *struct {
+		FromAutomation bool `json:"fromAutomation"`
+	} `json:"meta,omitempty"`
 }
 
 type ampMessageState struct {
@@ -96,9 +99,8 @@ func normalizeAmp(line []byte, loc *time.Location) []Record {
 	}
 	m := env.Message
 	ts := formatTS(m.CreatedAt, loc)
-	// Amp user messages and tool-result messages are immutable and currently
-	// omit state. Assistant messages carry state while streaming, so only those
-	// need the completion gate.
+	// Only assistant messages carry a message-level completion state. Tool
+	// results have their own run.status gate below, including pending answers.
 	if m.Role == "assistant" && m.State.Type != "complete" {
 		return nil
 	}
@@ -108,9 +110,22 @@ func normalizeAmp(line []byte, loc *time.Location) []Record {
 		for _, b := range m.Content {
 			switch b.Type {
 			case "text":
-				out = append(out, Record{Kind: KindUser, Ts: ts, Body: markPastes(b.Text)})
+				// Exports carry origin metadata. The plugin API omits it, so old
+				// feeds need the exact Amp notification preamble as a fallback.
+				automation := m.Meta != nil && m.Meta.FromAutomation
+				if m.Meta == nil && strings.HasPrefix(b.Text, ampSubagentNotice) {
+					automation = true
+				}
+				if automation {
+					out = append(out, Record{Kind: KindTaskNote, Ts: ts, Body: ampAutomationSummary(b.Text)})
+				} else {
+					out = append(out, Record{Kind: KindUser, Ts: ts, Body: markPastes(b.Text)})
+				}
 			case "tool_result":
-				out = append(out, Record{Kind: KindToolResult, N: 1, Result: ampToolResult(b.Run)})
+				if ampRunPending(b.Run) {
+					continue
+				}
+				out = append(out, Record{Kind: KindToolResult, Ts: ts, QID: b.ToolUseID, N: 1, Result: ampToolResult(b.Run)})
 			}
 		}
 	case "assistant":
@@ -118,7 +133,11 @@ func normalizeAmp(line []byte, loc *time.Location) []Record {
 		for _, b := range m.Content {
 			switch b.Type {
 			case "text":
-				out = append(out, Record{Kind: KindAssistant, Ts: ts, Body: b.Text, Done: done, MsgID: m.ProtocolMessageID})
+				body := ampVisibleText(b.Text)
+				if strings.TrimSpace(body) == "" {
+					continue
+				}
+				out = append(out, Record{Kind: KindAssistant, Ts: ts, Body: body, Done: done, MsgID: m.ProtocolMessageID})
 				done = false
 			case "tool_use":
 				switch b.Name {
@@ -136,6 +155,46 @@ func normalizeAmp(line []byte, loc *time.Location) []Record {
 		}
 	}
 	return out
+}
+
+const ampSubagentNotice = "A background subagent you started has ended. This message comes from Amp, not from the user.\n"
+
+func ampAutomationSummary(body string) string {
+	if !strings.HasPrefix(body, ampSubagentNotice) {
+		return "Amp automation notification"
+	}
+	var fields []string
+	for _, line := range strings.Split(body, "\n") {
+		if line == "Result:" {
+			break
+		}
+		if strings.HasPrefix(line, "Description: ") || strings.HasPrefix(line, "Status: ") {
+			_, value, _ := strings.Cut(line, ": ")
+			fields = append(fields, value)
+		}
+	}
+	return "Subagent: " + truncRunes(strings.Join(fields, " · "), taskNoteMaxRunes)
+}
+
+// Suggested replies are Amp UI controls, not assistant prose. Only recognize
+// a standalone opening tag outside code; preserve examples and human quotes.
+func ampVisibleText(body string) string {
+	var fence string
+	offset := 0
+	for _, line := range strings.SplitAfter(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if fence != "" {
+			if strings.HasPrefix(trimmed, fence) && strings.Trim(trimmed, fence[:1]+" \t") == "" {
+				fence = ""
+			}
+		} else if f := fenceMarker(trimmed); f != "" {
+			fence = f
+		} else if strings.TrimRight(line, "\r\n") == "<suggested-replies>" {
+			return strings.TrimRight(body[:offset], " \t\r\n")
+		}
+		offset += len(line)
+	}
+	return body
 }
 
 func ampExportIdle(raw json.RawMessage) bool {
@@ -273,6 +332,12 @@ func findAmpThreadID(v any) string {
 		}
 	}
 	return ""
+}
+
+func ampRunPending(raw json.RawMessage) bool {
+	var run struct{ Status string }
+	_ = json.Unmarshal(raw, &run)
+	return run.Status == "pending" || run.Status == "running"
 }
 
 func ampToolResult(raw json.RawMessage) *ToolResult {

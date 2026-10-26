@@ -9,6 +9,74 @@ import (
 // state machine without glamour's color-dependent output.
 func identityRender(s string) (string, error) { return s, nil }
 
+func TestTableURLsRemainVisible(t *testing.T) {
+	th, err := loadTheme("tokyo-night", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := "file:///Users/example/screenshots/dots-mode.png"
+	remote := "https://example.com/results/full-mode.png?run=42"
+	for _, width := range []int{0, 60} {
+		render, err := newGlamour(th.StyleJSON, width)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := render("| Screenshot | Report |\n|---|---|\n| ![Dots](" + local + ") | [Full report](" + remote + ") |\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		plain := stripANSI(out)
+		for _, ref := range []string{"Dots[1]", "Full report[1]", "[1]: Image: Dots →", "[1]: Full report"} {
+			if !strings.Contains(plain, ref) {
+				t.Errorf("width %d: missing table reference %q:\n%s", width, ref, plain)
+			}
+		}
+		for _, url := range []string{local, remote} {
+			if strings.Count(plain, url) != 1 {
+				t.Errorf("width %d: full URL %q missing or duplicated:\n%s", width, url, plain)
+			}
+			for _, line := range strings.Split(plain, "\n") {
+				if strings.Contains(line, url) && strings.Contains(line, "│") {
+					t.Errorf("URL belongs below the table, not in a cell: %s", line)
+				}
+			}
+		}
+	}
+}
+
+func TestTableReferencesKeepDestinationsAndNumbering(t *testing.T) {
+	th, err := loadTheme("tokyo-night", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	render, err := newGlamour(th.StyleJSON, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A repeated reference shares a number, distinct destinations don't, and
+	// numbering restarts at the next table. Fenced examples stay literal.
+	source := "| Shots |\n|---|\n| ![Same][one] ![Same][one] ![Same][two] |\n\n" +
+		"[one]: https://example.com/one.png\n[two]: https://example.com/two.png\n\n" +
+		"| Next |\n|---|\n| [Report](https://example.com/report?a=1&b=2) |\n\n" +
+		"```markdown\n| Example |\n|---|\n| ![Literal](https://example.com/literal.png) |\n```\n"
+	out, err := render(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := stripANSI(out)
+	for expected, count := range map[string]int{
+		"Same[1]": 2, "Same[2]": 1, "Report[1]": 1,
+		"[1]: Image: Same → https://example.com/one.png": 1,
+		"[2]: Image: Same → https://example.com/two.png": 1,
+		"[1]: Report https://example.com/report?a=1&b=2": 1,
+		"![Literal](https://example.com/literal.png)":    1,
+	} {
+		if strings.Count(plain, expected) != count {
+			t.Errorf("want %d occurrences of %q:\n%s", count, expected, plain)
+		}
+	}
+}
+
 func testTheme() Theme {
 	return Theme{Name: "t", UserANSI: "U:", ClaudeANSI: "C:", DimANSI: "D:"}
 }

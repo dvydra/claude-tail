@@ -451,6 +451,35 @@ func TestMergeLiveAmpSessionsKeepsFollowedRenderFile(t *testing.T) {
 	}
 }
 
+func TestAmpLiveKeepsAnswerToPendingExportQuestion(t *testing.T) {
+	for _, status := range []string{"pending", "running"} {
+		t.Run(status, func(t *testing.T) {
+			dir := t.TempDir()
+			live, render := filepath.Join(dir, "live.jsonl"), filepath.Join(dir, "render.jsonl")
+			pending := ampLine(t, `{"role":"user","protocolMessageID":"answer","content":[{"type":"tool_result","toolUseID":"q1","run":{"status":"`+status+`"}}]}`, false)
+			answer := ampLine(t, `{"role":"user","protocolMessageID":"answer","content":[{"type":"tool_result","toolUseID":"q1","run":{"status":"done","result":{"output":"User selected: explain it"}}}]}`, false)
+			if err := os.WriteFile(render, append(pending, '\n'), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(live, append(answer, '\n'), 0600); err != nil {
+				t.Fatal(err)
+			}
+			stop, done := make(chan struct{}), make(chan struct{})
+			go func() { defer close(done); followAmpLive(live, render, pending, stop) }()
+			defer func() { close(stop); <-done }()
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				data, _ := os.ReadFile(render)
+				if bytes.Contains(data, []byte("User selected: explain it")) {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Fatal("completed question answer was dropped as already rendered")
+		})
+	}
+}
+
 func TestAmpChildChannelsMaterializeExportedThread(t *testing.T) {
 	home := t.TempDir()
 	child := `{"id":"T-child","title":"Child export","meta":{"lastKnownAgentState":{"state":"idle"}},"messages":[{"role":"assistant","state":{"type":"complete"},"content":[{"type":"text","text":"child answer"}]}]}`
