@@ -14,6 +14,7 @@ func TestKeyActionFor(t *testing.T) {
 		'Q':  keyQuit,
 		0x04: keyQuit,       // Ctrl-D
 		0x18: keyBackToTree, // Ctrl-X
+		0x17: keyWorkspace,  // Ctrl-W
 		'x':  keyNone,       // plain x is not Ctrl-X
 		' ':  keyNone,
 		0x03: keyNone, // Ctrl-C is left to the signal handler

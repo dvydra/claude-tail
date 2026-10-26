@@ -104,6 +104,58 @@ func launchWorkspace(cwd, resumeID, bin string, prof claudeProfile) error {
 	return startWorkspace(workspaceScript(cwd, resumeID, selfPath(), paneBin(bin), accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir()))))
 }
 
+// Keep the tail process and its scrollback. Resolve the owning tab by UUID,
+// not current window: focus can move while the command is being prepared.
+func launchTailWorkspace(cfg Config, agent Agent, home, cur, pwd string) error {
+	pane := ownPaneUUID(os.Getenv)
+	if pane == "" {
+		return errors.New("workspace requires an iTerm pane")
+	}
+	id := sessionIDFromPath(cur)
+	cwd := workspaceCwd(cur)
+	var w workspaceLaunch
+	switch {
+	case agent == AgentClaude && validSessionID(id):
+		bin := resolveClaudeBin(cfg, exec.LookPath, os.Stderr)
+		prof := profileByName(home, profileForPath(home, cur))
+		w = workspaceScript(cwd, id, selfPath(), paneBin(bin), accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(home)))
+	case agent == AgentAmp && validAmpThreadID(id):
+		cwd = pwd
+		bin, err := exec.LookPath("amp")
+		if err != nil {
+			return err
+		}
+		w = ampWorkspaceScript(cwd, id, selfPath(), bin, true)
+	default:
+		return errors.New("workspace requires a resumable Claude or Amp session")
+	}
+	if !isDir(cwd) {
+		return errors.New("session working directory is unavailable")
+	}
+	return osaRun(tailWorkspaceScript(pane, w.Agent, w.Shell))
+}
+
+func tailWorkspaceScript(pane, agent, shell string) string {
+	cmd := func(s string) string { return asEscape(paneCommand(paneShell(), s)) }
+	return fmt.Sprintf(`if application "iTerm2" is not running then error "iTerm is not running"
+tell application "iTerm2"
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with b in sessions of t
+				if unique ID of b is "%s" then
+					if (count of sessions of t) is not 1 then error "Workspace refused: this tab already has split panes"
+					tell b to set a to (split vertically with default profile command "%s")
+					tell a to split horizontally with default profile command "%s"
+					select a
+					return
+				end if
+			end repeat
+		end repeat
+	end repeat
+	error "Tail pane not found"
+end tell`, asEscape(pane), cmd(agent), cmd(shell))
+}
+
 // workspaceLaunch is a workspace split by how each pane gets its command.
 // Script is the AppleScript that creates the other panes, each STARTED with its
 // command (`split … command`), so no pane is ever typed into. Agent is pane A's

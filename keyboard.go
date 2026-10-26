@@ -28,6 +28,7 @@ const (
 	keyFocus // not a keyActionFor result: the `→` escape sequence decodes to it
 	keySend
 	keySendOff // sent by the keyboard when send mode ends, so the render goroutine can say so
+	keyWorkspace
 )
 
 // keyActionFor maps a raw input byte to an action. Ctrl-C is left to the signal
@@ -48,6 +49,8 @@ func keyActionFor(b byte) keyAction {
 		return keyQuit
 	case 0x18: // Ctrl-X
 		return keyBackToTree
+	case 0x17: // Ctrl-W
+		return keyWorkspace
 	case '?':
 		return keyHelp
 	case 'y', 'Y':

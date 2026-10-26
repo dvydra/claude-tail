@@ -6,6 +6,30 @@ import (
 	"testing"
 )
 
+func TestTailWorkspaceScript(t *testing.T) {
+	s := tailWorkspaceScript("tail-uuid", "cd '/tmp/it'\\''s' && claude --resume 'session'", "cd '/tmp/it'\\''s'")
+	for _, want := range []string{
+		`unique ID of b is "tail-uuid"`,
+		`count of sessions of t`,
+		`Workspace refused: this tab already has split panes`,
+		`tell b to set a to (split vertically`,
+		`tell a to split horizontally`,
+		`Tail pane not found`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in %s", want, s)
+		}
+	}
+	if strings.Index(s, "count of sessions") > strings.Index(s, "split vertically") {
+		t.Fatal("pane guard must run before splitting")
+	}
+	for _, forbidden := range []string{"current window", "write text", "create window", "entire-tail"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("unexpected %q in %s", forbidden, s)
+		}
+	}
+}
+
 func TestShQuote(t *testing.T) {
 	cases := map[string]string{
 		"/tmp/x":         "'/tmp/x'",

@@ -832,6 +832,12 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			case keyReload:
 				reload()
 				msg = "re-rendered"
+			case keyWorkspace:
+				if err := launchTailWorkspace(cfg, agent, home, cur, pwd); err != nil {
+					msg = err.Error()
+				} else {
+					msg = "workspace opened"
+				}
 			case keyYank:
 				// No re-render: a yank copies, it doesn't change the view. It runs
 				// here rather than on the keyboard goroutine because it reads the
