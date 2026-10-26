@@ -132,7 +132,22 @@ func launchTailWorkspace(cfg Config, agent Agent, home, cur, pwd string) error {
 	if !isDir(cwd) {
 		return errors.New("session working directory is unavailable")
 	}
-	return osaRun(tailWorkspaceScript(pane, w.Agent, w.Shell))
+	return runTailWorkspace(tailWorkspaceScript(pane, w.Agent, w.Shell))
+}
+
+// Expected refusals are returned as text; genuine automation failures retain
+// their diagnostic output.
+func runTailWorkspace(script string) error {
+	cmd := exec.Command("osascript", "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("osascript failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if msg := strings.TrimSpace(string(out)); msg != "" {
+		return errors.New(msg)
+	}
+	return nil
 }
 
 func tailWorkspaceScript(pane, agent, shell string) string {
@@ -143,7 +158,7 @@ tell application "iTerm2"
 		repeat with t in tabs of w
 			repeat with b in sessions of t
 				if unique ID of b is "%s" then
-					if (count of sessions of t) is not 1 then error "Workspace refused: this tab already has split panes"
+					if (count of sessions of t) is not 1 then return "This tab already has split panes. Open the session in an unsplit tab to use Ctrl-W."
 					tell b to set a to (split vertically with default profile command "%s")
 					tell a to split horizontally with default profile command "%s"
 					select a

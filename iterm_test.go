@@ -1,17 +1,35 @@
 package main
 
 import (
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestRunTailWorkspaceMessages(t *testing.T) {
+	if _, err := exec.LookPath("osascript"); err != nil {
+		t.Skip("osascript unavailable")
+	}
+	// These scripts never address iTerm or change any panes.
+	msg := "This tab already has split panes. Open the session in an unsplit tab to use Ctrl-W."
+	if err := runTailWorkspace(`return "` + msg + `"`); err == nil || err.Error() != msg {
+		t.Fatalf("refusal = %v, want %q", err, msg)
+	}
+	if err := runTailWorkspace(`return`); err != nil {
+		t.Fatalf("success = %v", err)
+	}
+	if err := runTailWorkspace(`error "Automation unavailable"`); err == nil || !strings.Contains(err.Error(), "osascript failed:") || !strings.Contains(err.Error(), "Automation unavailable") {
+		t.Fatalf("lost automation diagnostic: %v", err)
+	}
+}
 
 func TestTailWorkspaceScript(t *testing.T) {
 	s := tailWorkspaceScript("tail-uuid", "cd '/tmp/it'\\''s' && claude --resume 'session'", "cd '/tmp/it'\\''s'")
 	for _, want := range []string{
 		`unique ID of b is "tail-uuid"`,
 		`count of sessions of t`,
-		`Workspace refused: this tab already has split panes`,
+		`return "This tab already has split panes.`,
 		`tell b to set a to (split vertically`,
 		`tell a to split horizontally`,
 		`Tail pane not found`,
