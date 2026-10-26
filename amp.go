@@ -664,6 +664,11 @@ func ampCompleteMessageID(line []byte) string {
 	if env.Message.Role == "assistant" && env.Message.State.Type != "complete" {
 		return ""
 	}
+	for _, block := range env.Message.Content {
+		if block.Type == "tool_result" && ampRunPending(block.Run) {
+			return ""
+		}
+	}
 	return env.Message.ProtocolMessageID
 }
 
