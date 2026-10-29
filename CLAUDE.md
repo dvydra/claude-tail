@@ -595,6 +595,12 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   transcript, which would otherwise buffer every turn twice
 - `mdtable.go` — **wide markdown tables → sectioned blocks**, for the mrkdwn
   conversion only; see the load-bearing note below
+- `termtable.go` — **the terminal's version: a table wider than the pane
+  becomes Claude Code's `Name: value` records** with `───` rules between rows,
+  rewritten in the markdown source before glamour parses it. The width is
+  `Renderer.tableCols`, set whenever stdout is a tty **regardless of wrap** (a
+  too-wide box table is unreadable wrap on or off) and refreshed on resize;
+  a pipe gets 0, so the goldens never flatten
 - **There is no status bar, on purpose.** A pinned bottom row (`status.go`,
   `DECSTBM` shrinking the scrolling region) shipped and was removed on
   2026-10-17. A terminal resets the region on resize and on some redraws, and
