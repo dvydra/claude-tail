@@ -1,9 +1,12 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -160,9 +163,36 @@ func TestWorkspaceScriptsNeverTypeIntoAPane(t *testing.T) {
 // interactive shell afterwards, and quoted to survive iTerm's shell-style split.
 func TestPaneCommand(t *testing.T) {
 	got := paneCommand("/bin/zsh", "cd '/it'\\''s' && x")
-	want := `'/bin/zsh' -lc 'cd '\''/it'\''\'\'''\''s'\'' && x; exec '\''/bin/zsh'\'' -l'`
+	want := `'/bin/zsh' -lc 'trap : INT; cd '\''/it'\''\'\'''\''s'\'' && x; exec '\''/bin/zsh'\'' -l'`
 	if got != want {
 		t.Errorf("paneCommand = %s\nwant           %s", got, want)
+	}
+}
+
+// Ctrl-C signals the pane's whole process group, the wrapper shell included.
+// The wrapper must outlive it and hand over to the interactive shell, or the
+// pane closes instead of dropping to a prompt.
+func TestPaneCommandSurvivesCtrlC(t *testing.T) {
+	for _, sh := range []string{"/bin/sh", "/bin/bash", "/bin/zsh"} {
+		if _, err := os.Stat(sh); err != nil {
+			continue
+		}
+		t.Run(filepath.Base(sh), func(t *testing.T) {
+			// kill -INT 0 is what the tty does on Ctrl-C: every process in the
+			// group, the wrapper too. The final shell reads its input from stdin.
+			line := paneCommand(sh, `sh -c 'kill -INT 0; sleep 1; echo not-interrupted'`)
+			cmd := exec.Command(sh, "-c", line)
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			cmd.Stdin = strings.NewReader("echo dropped-to-shell\n")
+			out, _ := cmd.CombinedOutput()
+			if !strings.Contains(string(out), "dropped-to-shell") {
+				t.Errorf("wrapper died with the command; output:\n%s", out)
+			}
+			// The trap must not be inherited as an ignore: Ctrl-C still stops the tail.
+			if strings.Contains(string(out), "not-interrupted") {
+				t.Errorf("the command ignored SIGINT; output:\n%s", out)
+			}
+		})
 	}
 }
 

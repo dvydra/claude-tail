@@ -229,8 +229,15 @@ func paneShell() string {
 // shell after the tail quits or the agent exits (a started command's pane
 // otherwise closes with it). iTerm splits `command` with shell quoting rules,
 // `'\”` included — verified live on iTerm 3.6.11.
+//
+// `trap : INT` is what makes Ctrl-C drop to that shell. The tty signals the
+// whole foreground process group, and this non-interactive wrapper is in it, so
+// without a handler it dies alongside the tail and the pane closes. It must be a
+// handler and not `trap ''`: a caught signal resets to default across exec, so
+// the command and the final shell still take Ctrl-C normally, while an ignored
+// one would be inherited and the tail could no longer be interrupted.
 func paneCommand(shell, cmd string) string {
-	return shQuote(shell) + " -lc " + shQuote(cmd+"; exec "+shQuote(shell)+" -l")
+	return shQuote(shell) + " -lc " + shQuote("trap : INT; "+cmd+"; exec "+shQuote(shell)+" -l")
 }
 
 // paneBin resolves the agent binary to an absolute path while we still have the
