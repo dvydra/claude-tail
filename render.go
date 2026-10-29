@@ -88,6 +88,10 @@ type Renderer struct {
 	// it: applyTheme (`T`) rebuilds glamour from a new style at the SAME width,
 	// and setWrap (SIGWINCH) rebuilds it from the SAME style at a new width.
 	wrap int
+	// tableCols is the terminal width a table must fit in before it's turned
+	// into records (termtable.go). Unlike wrap it's set whenever stdout is a
+	// terminal, wrap on or off: a too-wide table is unreadable either way.
+	tableCols int
 
 	// Live-mutable display settings (atomic: the keyboard goroutine flips them
 	// while the render goroutine reads them in emit).
@@ -186,6 +190,12 @@ func newRenderer(w io.Writer, theme Theme, toolStyle string, collapse, wrap int)
 // paragraph. Rendering unwrapped also means glamour pads nothing, so there's no
 // padding to trim back off.
 func newGlamour(styleJSON []byte, wrap int) (func(string) (string, error), error) {
+	return newGlamourCols(styleJSON, wrap, 0)
+}
+
+// newGlamourCols is newGlamour plus the terminal width wide tables are
+// flattened at (0 = never).
+func newGlamourCols(styleJSON []byte, wrap, tableCols int) (func(string) (string, error), error) {
 	var style ansi.StyleConfig
 	if err := json.Unmarshal(styleJSON, &style); err != nil {
 		return nil, err
@@ -204,7 +214,7 @@ func newGlamour(styleJSON []byte, wrap int) (func(string) (string, error), error
 		}), 1000),
 	)))
 	return func(s string) (string, error) {
-		source := []byte(escapeLoneTildes(s))
+		source := []byte(escapeLoneTildes(flattenWideTables(s, tableCols)))
 		doc := md.Parser().Parse(text.NewReader(source))
 		source, err := expandTableReferences(doc, source, style)
 		if err != nil {
@@ -228,7 +238,7 @@ func newGlamour(styleJSON []byte, wrap int) (func(string) (string, error), error
 // read concurrently — unlike the atomic t/c toggles, which the keyboard goroutine
 // flips directly. A rebuild failure leaves the current theme untouched.
 func (r *Renderer) applyTheme(t Theme) error {
-	render, err := newGlamour(t.StyleJSON, r.wrap)
+	render, err := newGlamourCols(t.StyleJSON, r.wrap, r.tableCols)
 	if err != nil {
 		return err
 	}
@@ -266,12 +276,27 @@ func (r *Renderer) setWrap(wrap int) bool {
 	if wrap == r.wrap {
 		return false
 	}
-	render, err := newGlamour(r.theme.StyleJSON, wrap)
+	render, err := newGlamourCols(r.theme.StyleJSON, wrap, r.tableCols)
 	if err != nil {
 		return false
 	}
 	r.render = render
 	r.wrap = wrap
+	return true
+}
+
+// setTableCols is setWrap for the table-flattening width: same rebuild, same
+// "did it change" answer so a resize only re-renders when it matters.
+func (r *Renderer) setTableCols(cols int) bool {
+	if cols == r.tableCols {
+		return false
+	}
+	render, err := newGlamourCols(r.theme.StyleJSON, r.wrap, cols)
+	if err != nil {
+		return false
+	}
+	r.render = render
+	r.tableCols = cols
 	return true
 }
 

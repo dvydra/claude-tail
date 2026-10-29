@@ -385,6 +385,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	if err != nil {
 		die("cannot init renderer: " + err.Error())
 	}
+	r.setTableCols(wrapWidth(os.Stdout, false))
 	// On a terminal the collapse marker names the key that expands it. Decided
 	// here, before backfill, so every marker on screen says the same thing — the
 	// control tty isn't opened until the live phase, and half a screen of stale
@@ -944,7 +945,8 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// edge (height only) costs nothing.
 			if winchSettled(winchAt, time.Now()) {
 				winchAt = time.Time{}
-				if r.setWrap(wrapWidth(os.Stdout, wrapOff)) {
+				wrapMoved := r.setWrap(wrapWidth(os.Stdout, wrapOff))
+				if r.setTableCols(wrapWidth(os.Stdout, false)) || wrapMoved {
 					rerender("⟳ resized")
 				}
 			}
