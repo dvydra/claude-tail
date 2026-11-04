@@ -174,6 +174,17 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   *before* taking the last N, because at a six-row budget three seams crowd out
   every line of text. Transcript tails are cached on the transcript's mtime, so
   the tick is a stat per session rather than a re-render
+- `threads*.go`: **`entire-tail threads`: long-running work as folders in the
+  handover vault.** `threads.go`/`threads_store.go` are the files (a `thread.md`
+  with frontmatter, an optional `knowledge.md`, a session registry, one lock) and
+  the agent-facing subcommands live in `threads_cmd.go`. `threads_check.go` looks
+  at reality (worktrees, trails, running sessions) and never blocks the first
+  frame. `threads_view.go` is the pure triage screen, split reduce/render like
+  `tree.go`, and `threads_run.go` is the tty driver plus `threadLaunch`, which
+  turns `⏎` into a resume or a fresh primed session in the 3-pane workspace
+  (unsplit iTerm tab only; otherwise a note). A session is registered before pane
+  A replaces the process. `threadsOsa`/`threadsExec` are seams, so tests never run
+  osascript.
 - `discovery.go` — find the session file for `$PWD` per agent
 - `tree.go` — the interactive session **tree** picker (the DEFAULT): Claude and
   Amp sessions grouped by repo/folder, marked `C`/`A`, arrow-key navigable,

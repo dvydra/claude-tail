@@ -298,7 +298,7 @@ func homeDir() string { return firstNonEmpty(os.Getenv("HOME"), mustHome()) }
 // prof picks the account the new agent runs as — the tree's `n` uses the default
 // one, `@` the personal one. Returns only on failure (see startWorkspace).
 func launchNewWorkspace(cwd, bin string, prof claudeProfile) error {
-	return startWorkspace(newWorkspaceScript(cwd, selfPath(), newSessionID(), paneBin(bin), accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir())), itermSinglePane()))
+	return startWorkspace(newWorkspaceScript(cwd, selfPath(), newSessionID(), paneBin(bin), accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(homeDir())), itermSinglePane(), ""))
 }
 
 func launchAmpWorkspace(cwd, threadID string) error {
@@ -367,7 +367,7 @@ func pinsSessionID(bin string) bool {
 // acctEnv (accountEnvPrefix) leads the assignments so the account decision reads
 // first in the agent's command line; it is "" for the default account, leaving
 // that launch byte-identical to the pre-profiles one.
-func newWorkspaceScript(cwd, self, sessionID, bin, acctEnv, tapEnv string, inPlace bool) workspaceLaunch {
+func newWorkspaceScript(cwd, self, sessionID, bin, acctEnv, tapEnv string, inPlace bool, prompt string) workspaceLaunch {
 	cd := "cd " + shQuote(cwd)
 	a := cd + " && " + acctEnv + tapEnv + shQuote(bin)
 	b := cd + " && " + shQuote(self)
@@ -376,6 +376,9 @@ func newWorkspaceScript(cwd, self, sessionID, bin, acctEnv, tapEnv string, inPla
 		b += " --follow-session " + shQuote(sessionID)
 	} else {
 		b += " --wait-new"
+	}
+	if prompt != "" {
+		a += " " + shQuote(prompt) // pane A only: the agent's first message
 	}
 	return workspaceLaunch{Script: splitScript(a, b, cd, inPlace), Agent: a, Tail: b, Shell: cd, InPlace: inPlace}
 }

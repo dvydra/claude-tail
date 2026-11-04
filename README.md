@@ -954,6 +954,24 @@ recency breaks ties. Each row shows the **matching snippet** so you can see why
 it hit. `Enter`/`t` resume or tail the result like any tree row. Results are
 uncapped; use a narrower query when a common term returns too much.
 
+## Threads (`entire-tail threads`)
+
+A thread is one piece of work that outlives any single agent session. Each lives in its own folder under `$ENTIRE_TAIL_HANDOVER_VAULT/Entire/Threads/<slug>/`, with a `thread.md` (what it is, where it got to, what's in the way) and an optional `knowledge.md`. Closed threads move to `_closed/`.
+
+`entire-tail threads` on a terminal opens a triage view: open threads first, parked ones below. Each row says whether the thread is waiting on someone, whether it needs you, and whether its claims still hold (worktree gone, branch moved, trail state changed, a session already running). Checks run in the background, so the list shows at once and the notes fill in as they arrive.
+
+| Key | Does |
+| --- | --- |
+| `⏎` | open the thread: resume its newest session, or start a fresh one primed with its files, in the 3-pane iTerm workspace (unsplit tab only) |
+| `p` | park, with a reason you type |
+| `u` | unpark |
+| `x` | close |
+| `d` / `k` | details / knowledge |
+| `/` | filter |
+| `q` | quit |
+
+Piped, it prints the list as JSON. The agent-facing subcommands (`new`, `lookup`, `register`, `park`, `begin`, `commit`, and so on) run `entire-tail threads <subcommand>`.
+
 ## Handover docs
 
 `entire-tail handover` turns a day's work into per-project handover notes in your

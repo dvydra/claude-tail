@@ -30,6 +30,13 @@ const (
 func runThreads(cfg Config) {
 	root := threadsRoot(os.Getenv)
 	args := cfg.ThreadsArgs
+	if len(args) == 0 && isCharDevice(os.Stdout) {
+		if err := runThreadsTUI(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "entire-tail threads:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) == 0 {
 		args = []string{"list"}
 	}

@@ -138,8 +138,8 @@ func TestWorkspaceScriptsNeverTypeIntoAPane(t *testing.T) {
 	id := "11111111-2222-4333-8444-555555555555"
 	self := "/usr/local/bin/entire-tail"
 	resume := workspaceScript("/work/proj", id, self, "claude", "", "")
-	here := newWorkspaceScript("/work/proj", self, id, "claude", "", "", true)
-	away := newWorkspaceScript("/work/proj", self, id, "claude", "", "", false)
+	here := newWorkspaceScript("/work/proj", self, id, "claude", "", "", true, "")
+	away := newWorkspaceScript("/work/proj", self, id, "claude", "", "", false, "")
 	for name, w := range map[string]workspaceLaunch{"resume": resume, "fresh here": here, "fresh new window": away} {
 		if strings.Contains(w.Script, "write text") {
 			t.Errorf("%s: a pane is typed into:\n%s", name, w.Script)
@@ -226,7 +226,7 @@ func TestResumeCommand(t *testing.T) {
 }
 
 func TestNewWorkspaceScriptPinsSessionID(t *testing.T) {
-	s := newWorkspaceScript("/work/proj", "/usr/local/bin/entire-tail", "11111111-2222-4333-8444-555555555555", "claude", "", "", true).lines()
+	s := newWorkspaceScript("/work/proj", "/usr/local/bin/entire-tail", "11111111-2222-4333-8444-555555555555", "claude", "", "", true, "").lines()
 	checks := []string{
 		"'claude' --session-id '11111111-2222-4333-8444-555555555555'",                         // A pins the id
 		"'/usr/local/bin/entire-tail' --follow-session '11111111-2222-4333-8444-555555555555'", // B follows that exact id
@@ -254,7 +254,7 @@ func TestWorkspaceScriptsHonorClaudeBin(t *testing.T) {
 	if !strings.Contains(resume, "cd '/work/proj' && 'happy' --resume '"+id+"'") {
 		t.Errorf("resume workspace should launch happy:\n%s", resume)
 	}
-	fresh := newWorkspaceScript("/work/proj", self, id, "happy", "", "", true).lines()
+	fresh := newWorkspaceScript("/work/proj", self, id, "happy", "", "", true, "").lines()
 	if !strings.Contains(fresh, "cd '/work/proj' && 'happy'") {
 		t.Errorf("fresh workspace should launch happy:\n%s", fresh)
 	}
@@ -283,7 +283,7 @@ func TestNewWorkspaceScriptPinsOnlyForClaude(t *testing.T) {
 	id := "11111111-2222-4333-8444-555555555555"
 	self := "/usr/local/bin/entire-tail"
 
-	happy := newWorkspaceScript("/work/proj", self, id, "happy", "", "", true).lines()
+	happy := newWorkspaceScript("/work/proj", self, id, "happy", "", "", true, "").lines()
 	if strings.Contains(happy, "--session-id") {
 		t.Errorf("happy drops --session-id, so the script must not pass it:\n%s", happy)
 	}
@@ -299,7 +299,7 @@ func TestNewWorkspaceScriptPinsOnlyForClaude(t *testing.T) {
 
 	// Plain claude keeps the pinned-id contract, by name or by absolute path.
 	for _, bin := range []string{"claude", "/opt/homebrew/bin/claude"} {
-		s := newWorkspaceScript("/work/proj", self, id, bin, "", "", true).lines()
+		s := newWorkspaceScript("/work/proj", self, id, bin, "", "", true, "").lines()
 		if !strings.Contains(s, shQuote(bin)+" --session-id '"+id+"'") {
 			t.Errorf("%s: fresh workspace must still pin the id:\n%s", bin, s)
 		}
@@ -336,7 +336,7 @@ func TestWorkspaceScriptsTapEnv(t *testing.T) {
 
 	for name, s := range map[string]string{
 		"resume": workspaceScript("/work/proj", id, self, "claude", "", prefix).lines(),
-		"fresh":  newWorkspaceScript("/work/proj", self, id, "claude", "", prefix, true).lines(),
+		"fresh":  newWorkspaceScript("/work/proj", self, id, "claude", "", prefix, true, "").lines(),
 	} {
 		if !strings.Contains(s, "cd '/work/proj' && "+prefix+"'claude'") {
 			t.Errorf("%s: agent pane should carry the tap env:\n%s", name, s)
@@ -356,7 +356,7 @@ func TestWorkspaceScriptsTapEnv(t *testing.T) {
 	// Without a daemon, both scripts must match the pre-tap output exactly.
 	for name, pair := range map[string][2]string{
 		"resume": {workspaceScript("/work/proj", id, self, "claude", "", "").lines(), "cd '/work/proj' && 'claude' --resume '" + id + "'"},
-		"fresh":  {newWorkspaceScript("/work/proj", self, id, "claude", "", "", true).lines(), "cd '/work/proj' && 'claude' --session-id '" + id + "'"},
+		"fresh":  {newWorkspaceScript("/work/proj", self, id, "claude", "", "", true, "").lines(), "cd '/work/proj' && 'claude' --session-id '" + id + "'"},
 	} {
 		if !strings.Contains(pair[0], pair[1]) {
 			t.Errorf("%s: fail-open command changed:\n%s", name, pair[0])
