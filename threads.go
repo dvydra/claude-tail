@@ -1,0 +1,203 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"unicode"
+
+	"gopkg.in/yaml.v3"
+)
+
+// readFile is a seam so tests can stub file reads.
+var readFile = os.ReadFile
+
+type threadStatus string
+
+const (
+	threadOpen   threadStatus = "open"
+	threadParked threadStatus = "parked"
+	threadClosed threadStatus = "closed"
+)
+
+// threadClaim is one checkable statement a thread makes about the world.
+type threadClaim struct {
+	Kind   string `yaml:"kind"` // "worktree" | "trail" | "linear"
+	Path   string `yaml:"path,omitempty"`
+	Branch string `yaml:"branch,omitempty"`
+	Head   string `yaml:"head,omitempty"`  // worktree; "" means unpushed
+	Trail  string `yaml:"trail,omitempty"` // "gh/owner/repo/123" or "et/..."
+	Linear string `yaml:"linear,omitempty"`
+	Expect string `yaml:"expect,omitempty"` // trail/linear state
+}
+
+// threadSessionRef names an agent session that worked on a thread, newest first.
+type threadSessionRef struct {
+	Agent string `yaml:"agent"`
+	ID    string `yaml:"id"`
+}
+
+type threadMeta struct {
+	Name       string             `yaml:"name"`
+	Slug       string             `yaml:"slug,omitempty"`
+	Status     threadStatus       `yaml:"status"`
+	ParkReason string             `yaml:"park_reason,omitempty"`
+	ParkedAt   string             `yaml:"parked_at,omitempty"`
+	WaitingOn  string             `yaml:"waiting_on,omitempty"`
+	NeedsYou   bool               `yaml:"needs_you,omitempty"`
+	Customer   string             `yaml:"customer,omitempty"`
+	Linear     []string           `yaml:"linear,omitempty"`
+	Trails     []string           `yaml:"trails,omitempty"`
+	Claims     []threadClaim      `yaml:"claims,omitempty"`
+	Sessions   []threadSessionRef `yaml:"sessions,omitempty"`
+	Created    string             `yaml:"created,omitempty"`
+	Updated    string             `yaml:"updated,omitempty"`
+	AsOf       map[string]string  `yaml:"as_of,omitempty"` // section heading -> YYYY-MM-DD
+}
+
+type thread struct {
+	Meta     threadMeta
+	Sections map[string]string
+	Dir      string
+	ParseErr error
+}
+
+var threadSections = []string{"What it is", "Where it got to", "What's in the way", "People", "Recent"}
+
+// threadsRoot is where thread directories live, under the handover vault.
+func threadsRoot(getenv func(string) string) string {
+	return filepath.Join(firstNonEmpty(getenv("ENTIRE_TAIL_HANDOVER_VAULT"), defaultHandoverVault), "Entire", "Threads")
+}
+
+// threadSlug lowercases name and collapses every run of non-alphanumerics to one dash.
+func threadSlug(name string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if dash && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			dash = false
+			b.WriteRune(r)
+		} else {
+			dash = true
+		}
+	}
+	return b.String()
+}
+
+func isThreadSection(h string) bool {
+	for _, s := range threadSections {
+		if s == h {
+			return true
+		}
+	}
+	return false
+}
+
+// parseThreadMD splits thread.md into frontmatter and sections. A bad
+// frontmatter returns an error but the sections are still parsed.
+func parseThreadMD(data []byte) (threadMeta, map[string]string, error) {
+	var meta threadMeta
+	var perr error
+	body := string(data)
+	if rest, ok := strings.CutPrefix(body, "---\n"); ok {
+		var fm string
+		switch {
+		case strings.HasPrefix(rest, "---\n"):
+			fm, body = "", rest[4:]
+		case strings.HasSuffix(rest, "\n---"):
+			fm, body = rest[:len(rest)-4], ""
+		default:
+			if i := strings.Index(rest, "\n---\n"); i >= 0 {
+				fm, body = rest[:i], rest[i+5:]
+			} else {
+				perr = errors.New("thread.md: unterminated frontmatter")
+				fm, body = "", rest
+			}
+		}
+		if perr == nil {
+			if err := yaml.Unmarshal([]byte(fm), &meta); err != nil {
+				perr = err
+			}
+		}
+	} else {
+		perr = errors.New("thread.md: missing frontmatter")
+	}
+
+	secs := map[string]string{}
+	cur := ""
+	var lines []string
+	flush := func() {
+		if cur != "" {
+			secs[cur] = strings.Trim(strings.Join(lines, "\n"), "\n")
+		}
+		lines = nil
+	}
+	for _, ln := range strings.Split(body, "\n") {
+		if h, ok := strings.CutPrefix(ln, "## "); ok && isThreadSection(strings.TrimSpace(h)) {
+			flush()
+			cur = strings.TrimSpace(h)
+			continue
+		}
+		lines = append(lines, ln)
+	}
+	flush()
+	return meta, secs, perr
+}
+
+// formatThreadMD renders meta and the five sections; absent sections get an empty heading.
+func formatThreadMD(meta threadMeta, sections map[string]string) []byte {
+	var buf bytes.Buffer
+	buf.WriteString("---\n")
+	y, err := yaml.Marshal(meta)
+	if err == nil {
+		buf.Write(y)
+	}
+	buf.WriteString("---\n")
+	for _, h := range threadSections {
+		buf.WriteString("\n## " + h + "\n")
+		if s := sections[h]; s != "" {
+			buf.WriteString(s + "\n")
+		}
+	}
+	return buf.Bytes()
+}
+
+// loadThreads reads every open or parked thread under root. Unreadable ones
+// are kept with ParseErr set so they stay visible.
+func loadThreads(root string) []thread {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var out []thread
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+			continue
+		}
+		dir := filepath.Join(root, name)
+		data, err := readFile(filepath.Join(dir, "thread.md"))
+		if err != nil {
+			continue
+		}
+		meta, secs, perr := parseThreadMD(data)
+		if meta.Slug == "" {
+			meta.Slug = name
+		}
+		out = append(out, thread{Meta: meta, Sections: secs, Dir: dir, ParseErr: perr})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i].Meta, out[j].Meta
+		if a.NeedsYou != b.NeedsYou {
+			return a.NeedsYou
+		}
+		return a.Updated > b.Updated
+	})
+	return out
+}
