@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -70,14 +71,26 @@ func threadLaunchWith(t thread, f threadFacts, self, claudeBin string, newID fun
 	if env != nil {
 		acct, tap, _ = env("claude", id)
 	}
-	prompt := "Read " + filepath.Join(t.Dir, "thread.md") + " and knowledge.md, then continue this thread."
-	return newWorkspaceScript(cwd, self, id, paneBin(claudeBin), acct, tap, true, prompt), threadSessionRef{Agent: "claude", ID: id}, ""
+	prompt := "Read " + filepath.Join(t.Dir, "thread.md") + " and " + filepath.Join(t.Dir, "knowledge.md") + ", then continue this thread."
+	w := newWorkspaceScript(cwd, self, id, paneBin(claudeBin), acct, tap, true, prompt)
+	if !pinsSessionID(paneBin(claudeBin)) {
+		// A wrapper drops --session-id, so the id we minted is not the real one.
+		return w, threadSessionRef{}, ""
+	}
+	return w, threadSessionRef{Agent: "claude", ID: id}, ""
 }
 
 // threadsStart is startWorkspace through the seams. It returns only on failure.
-func threadsStart(w workspaceLaunch) error {
+// before runs after the panes exist and before pane A replaces the process,
+// so nothing is recorded for a launch that failed.
+func threadsStart(w workspaceLaunch, before func() error) error {
 	if err := threadsOsa(w.Script); err != nil {
 		return err
+	}
+	if before != nil {
+		if err := before(); err != nil {
+			return err
+		}
 	}
 	if !w.InPlace {
 		os.Exit(0)
@@ -234,9 +247,49 @@ func runThreadsTUI(cfg Config) error {
 	}
 }
 
-// openThread launches the workspace for slug. It returns the note to show when
-// it could not, and does not return at all on success (pane A's agent replaces
-// this process).
+// threadsLiveNow reads the running sessions; a seam for tests.
+var threadsLiveNow = func(home string) []liveSession { return defaultThreadCheckDeps(home).Live() }
+
+// runningFor finds a live session that belongs to the thread.
+func runningFor(t thread, live []liveSession) *liveSession {
+	for _, s := range t.Meta.Sessions {
+		for _, l := range live {
+			if l.SessionID == s.ID {
+				l := l
+				return &l
+			}
+		}
+	}
+	return nil
+}
+
+// openThreadWith launches t's workspace. The running-session guard uses the
+// live list read now, whether or not the background facts have arrived. A
+// session is registered only after the panes exist. It returns a note on
+// refusal or failure and does not return at all on success.
+func openThreadWith(root string, t thread, f threadFacts, live []liveSession, self, bin string, env threadLaunchEnv, newID func() string) string {
+	if f.Running == nil {
+		f.Running = runningFor(t, live)
+	}
+	w, ref, refuse := threadLaunchWith(t, f, self, bin, newID, env)
+	if refuse != "" {
+		return refuse
+	}
+	slug := threadSlugOf(t)
+	err := threadsStart(w, func() error {
+		if ref.ID == "" {
+			return nil
+		}
+		return registerSession(root, slug, ref.Agent, ref.ID, time.Now())
+	})
+	if err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// openThread finds the thread and opens it. It leaves the alt screen first and
+// puts the terminal back when the launch fails.
 func openThread(cfg Config, home, root string, ui threadsUI, slug string, tty *os.File, saved string, restore func()) string {
 	var t thread
 	found := false
@@ -251,31 +304,25 @@ func openThread(cfg Config, home, root string, ui threadsUI, slug string, tty *o
 	if !threadsItermOK() {
 		return "open threads from an unsplit iTerm tab to get a workspace"
 	}
-	bin := resolveClaudeBin(cfg, exec.LookPath, os.Stderr)
+	var warn bytes.Buffer // stderr is invisible under the alt screen
+	bin := resolveClaudeBin(cfg, exec.LookPath, &warn)
 	env := func(agent, id string) (string, string, string) {
 		if agent == "amp" {
 			return "", "", ""
 		}
 		p := localPathForID(home, id)
-		if p == "" {
-			prof := profileByName(home, "")
-			return accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(home)), ""
-		}
 		prof := profileByName(home, profileForPath(home, p))
-		warnMissingToken(prof)
-		return accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(home)), workspaceCwd(p)
-	}
-	w, ref, refuse := threadLaunchWith(t, ui.Facts[slug], selfPath(), bin, newSessionID, env)
-	if refuse != "" {
-		return refuse
-	}
-	if err := registerSession(root, slug, ref.Agent, ref.ID, time.Now()); err != nil {
-		return err.Error()
+		if prof.Name == personalProfile && !personalTokenAvailable() {
+			fmt.Fprintf(&warn, "no %q token in the Keychain; the personal session may open unauthenticated. ", personalKeychainService)
+		}
+		cwd := ""
+		if p != "" {
+			cwd = workspaceCwd(p)
+		}
+		return accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(home)), cwd
 	}
 	restore()
-	if err := threadsStart(w); err != nil {
-		_, _ = setRawTimed(tty)
-		return err.Error()
-	}
-	return ""
+	note := openThreadWith(root, t, ui.Facts[slug], threadsLiveNow(home), selfPath(), bin, env, newSessionID)
+	_, _ = setRawTimed(tty)
+	return strings.TrimSpace(warn.String() + " " + note)
 }

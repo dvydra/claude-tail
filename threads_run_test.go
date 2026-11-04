@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -64,7 +65,7 @@ func TestThreadLaunchFreshPrompt(t *testing.T) {
 	if refuse != "" {
 		t.Fatal(refuse)
 	}
-	want := shQuote("Read /vault/Threads/foo/thread.md and knowledge.md, then continue this thread.")
+	want := shQuote("Read /vault/Threads/foo/thread.md and /vault/Threads/foo/knowledge.md, then continue this thread.")
 	if !strings.HasSuffix(w.Agent, " "+want) {
 		t.Fatalf("agent line: %s", w.Agent)
 	}
@@ -86,5 +87,71 @@ func TestNewWorkspaceScriptEmptyPromptUnchanged(t *testing.T) {
 	h := newWorkspaceScript("/work/proj", "/bin/et", id, "happy", "", "", true, "x")
 	if !strings.HasSuffix(h.Agent, " 'x'") || strings.Contains(h.Agent, "--session-id") {
 		t.Fatalf("agent: %s", h.Agent)
+	}
+}
+
+func stubThreadSeams(t *testing.T, osaErr error) (osaCalls, execCalls *int) {
+	t.Helper()
+	po, pe := threadsOsa, threadsExec
+	o, e := 0, 0
+	threadsOsa = func(string) error { o++; return osaErr }
+	threadsExec = func(string) error { e++; return nil }
+	t.Cleanup(func() { threadsOsa, threadsExec = po, pe })
+	return &o, &e
+}
+
+func openFixture(t *testing.T) (string, thread) {
+	t.Helper()
+	root := t.TempDir()
+	if _, err := createThread(root, "Open me", storeNow); err != nil {
+		t.Fatal(err)
+	}
+	th := loadThreads(root)[0]
+	th.Meta.Claims = []threadClaim{{Kind: "worktree", Path: t.TempDir()}}
+	return root, th
+}
+
+func TestOpenThreadRefusesRunningWithoutFacts(t *testing.T) {
+	_, execs := stubThreadSeams(t, nil)
+	root, th := openFixture(t)
+	th.Meta.Sessions = []threadSessionRef{{Agent: "claude", ID: "sess-1"}}
+	live := []liveSession{{SessionID: "sess-1", PID: 7, Cwd: "/w"}}
+	note := openThreadWith(root, th, threadFacts{}, live, "/bin/et", "claude", nil, func() string { return "x" })
+	if note != "already running in /w (pid 7)" || *execs != 0 {
+		t.Fatalf("note=%q execs=%d", note, *execs)
+	}
+}
+
+func TestOpenThreadFailedOsaRegistersNothing(t *testing.T) {
+	_, execs := stubThreadSeams(t, errors.New("boom"))
+	root, th := openFixture(t)
+	note := openThreadWith(root, th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return "11111111-2222-4333-8444-555555555555" })
+	if note != "boom" || *execs != 0 {
+		t.Fatalf("note=%q execs=%d", note, *execs)
+	}
+	if got := loadThreads(root)[0].Meta.Sessions; len(got) != 0 {
+		t.Fatalf("registered %v", got)
+	}
+}
+
+func TestOpenThreadRegistersAfterOsaBeforeExec(t *testing.T) {
+	_, execs := stubThreadSeams(t, nil)
+	root, th := openFixture(t)
+	id := "11111111-2222-4333-8444-555555555555"
+	openThreadWith(root, th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return id })
+	if *execs != 1 {
+		t.Fatalf("execs=%d", *execs)
+	}
+	got := loadThreads(root)[0].Meta.Sessions
+	if len(got) != 1 || got[0].ID != id {
+		t.Fatalf("sessions %v", got)
+	}
+}
+
+func TestThreadLaunchWrapperRegistersNothing(t *testing.T) {
+	th := thread{Dir: "/v/foo", Meta: threadMeta{Claims: []threadClaim{{Kind: "worktree", Path: t.TempDir()}}}}
+	_, reg, refuse := threadLaunch(th, threadFacts{}, "/bin/et", "happy", func() string { return "x" })
+	if refuse != "" || reg.ID != "" {
+		t.Fatalf("reg=%+v refuse=%q", reg, refuse)
 	}
 }
