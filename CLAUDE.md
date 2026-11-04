@@ -195,7 +195,12 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   3-pane tab in the CURRENT window (`openAllScript`). Don't make it open a new
   window: that was asked for explicitly. It needs no unsplit tab, it selects
   the triage tab again at the end, and sessions are registered only after the
-  tabs open.
+  tabs open. The prompt has the fresh session pick a 1 to 3 word title and run
+  `entire-tail threads title <title>` (`threads_title.go`, the embedded
+  `tabtitle.py` through `uv run --with iterm2`), which names the TAB via
+  `tab.async_set_title`, never the pane. No `ITERM_SESSION_ID` means not in
+  iTerm: exit 0, nothing done. The `thread-title` skill (`/thread-title`) runs
+  the same subcommand on demand.
 - `discovery.go` — find the session file for `$PWD` per agent
 - `tree.go` — the interactive session **tree** picker (the DEFAULT): Claude and
   Amp sessions grouped by repo/folder, marked `C`/`A`, arrow-key navigable,

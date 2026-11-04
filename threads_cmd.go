@@ -14,7 +14,7 @@ import (
 )
 
 // threadsSubcommands is the accepted set of `entire-tail threads` subcommands.
-var threadsSubcommands = []string{"list", "lookup", "new", "register", "park", "unpark", "close", "reopen", "begin", "commit", "enabled", "path"}
+var threadsSubcommands = []string{"list", "lookup", "new", "register", "park", "unpark", "close", "reopen", "begin", "commit", "enabled", "path", "title"}
 
 // Exit codes of the agent-facing subcommands.
 const (
@@ -159,6 +159,8 @@ func runThreadsCommand(args []string, root string, now time.Time, out, errOut io
 		}
 		fmt.Fprintln(out, root)
 		return 0
+	case "title":
+		return threadsTitle(rest, os.Getenv, errOut)
 	}
 	return threadsUsage(errOut, "")
 }

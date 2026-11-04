@@ -84,3 +84,7 @@ install_copy "$HERE/docs/skills/thread-handover/SKILL.md" "$HOME/.config/amp/ski
 # ── threads-bootstrap skill: same layout as thread-handover ──────────────────
 install_copy "$HERE/docs/skills/threads-bootstrap/SKILL.md" "$HOME/.agents/skills/threads-bootstrap/SKILL.md"
 ln -sfn "$HOME/.agents/skills/threads-bootstrap" "$HOME/.claude/skills/threads-bootstrap"
+
+# ── thread-title skill (/thread-title): same layout ──────────────────────────
+install_copy "$HERE/docs/skills/thread-title/SKILL.md" "$HOME/.agents/skills/thread-title/SKILL.md"
+ln -sfn "$HOME/.agents/skills/thread-title" "$HOME/.claude/skills/thread-title"

@@ -236,7 +236,8 @@ func threadReassessPrompt(t thread) string {
 	}
 	b.WriteString(", so treat it as a claim about the past, not the truth. ")
 	b.WriteString("Before doing anything else, reassess the current state: check every worktree, branch, trail and Linear issue it names (git status and log, `entire trail show`, Linear), and anything it says it is waiting on. ")
-	b.WriteString("Then give me a short overview: what this thread is, where it actually is now, what changed since the thread was written, what is in the way, and the next step you propose. ")
-	b.WriteString("Do not change any code, branch, trail or issue until I say go.")
+	b.WriteString("Pick a 1 to 3 word title naming the work: plain words, no codenames, and shorter than the thread name if a shorter name is just as clear. Run `entire-tail threads title <title>` to put it on this iTerm tab; this is allowed before I say go. ")
+	b.WriteString("Then give me a short overview, with the title alone on its first line: what this thread is, where it actually is now, what changed since the thread was written, what is in the way, and the next step you propose. ")
+	b.WriteString("Apart from the tab title, do not change any code, branch, trail or issue until I say go.")
 	return b.String()
 }
