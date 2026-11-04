@@ -25,6 +25,10 @@ func TestInstallerRegistersTrailsWithoutMonitoring(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("docs/skills/thread-handover/SKILL.md", "skill body\n")
+	if err := os.MkdirAll(filepath.Join(home, "docs/skills/threads-bootstrap"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	write("docs/skills/threads-bootstrap/SKILL.md", "bootstrap body\n")
 	write("docs/skills/handover-command.md", "command body\n")
 	write("docs/handover-sessions-skill.md", "---\nname: handover-sessions\n---\nbatch body\n")
 	write("go", "#!/bin/sh\nexit 0\n")
@@ -53,6 +57,12 @@ func TestInstallerRegistersTrailsWithoutMonitoring(t *testing.T) {
 	}
 	if target, err := os.Readlink(filepath.Join(home, ".claude/skills/thread-handover")); err != nil || target != filepath.Join(home, ".agents/skills/thread-handover") {
 		t.Fatalf("skill link: %q %v", target, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(home, ".agents/skills/threads-bootstrap/SKILL.md")); err != nil || string(b) != "bootstrap body\n" {
+		t.Fatalf("bootstrap skill not installed: %q %v", b, err)
+	}
+	if target, err := os.Readlink(filepath.Join(home, ".claude/skills/threads-bootstrap")); err != nil || target != filepath.Join(home, ".agents/skills/threads-bootstrap") {
+		t.Fatalf("bootstrap skill link: %q %v", target, err)
 	}
 	for rel, want := range map[string]string{
 		".claude/commands/handover.md":              "command body\n",
@@ -88,6 +98,7 @@ func TestInstallerSkipsSymlinkedHandoverTargets(t *testing.T) {
 	}
 	write("install.sh", string(script))
 	write("docs/skills/thread-handover/SKILL.md", "skill\n")
+	write("docs/skills/threads-bootstrap/SKILL.md", "bootstrap\n")
 	write("docs/skills/handover-command.md", "new command\n")
 	write("docs/handover-sessions-skill.md", "---\nnew batch\n")
 	write("go", "#!/bin/sh\nexit 0\n")

@@ -76,3 +76,7 @@ install_copy() {
 }
 install_copy "$HERE/docs/skills/handover-command.md" "$HOME/.claude/commands/handover.md"
 install_copy "$HERE/docs/handover-sessions-skill.md" "$HOME/.claude/skills/handover-sessions/SKILL.md"
+
+# ── threads-bootstrap skill: same layout as thread-handover ──────────────────
+install_copy "$HERE/docs/skills/threads-bootstrap/SKILL.md" "$HOME/.agents/skills/threads-bootstrap/SKILL.md"
+ln -sfn "$HOME/.agents/skills/threads-bootstrap" "$HOME/.claude/skills/threads-bootstrap"

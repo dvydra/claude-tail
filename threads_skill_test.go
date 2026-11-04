@@ -8,7 +8,24 @@ import (
 )
 
 func TestThreadHandoverSkillMentionsOnlyRealSubcommands(t *testing.T) {
-	data, err := os.ReadFile("docs/skills/thread-handover/SKILL.md")
+	known := map[string]bool{}
+	for _, s := range threadsSubcommands {
+		known[s] = true
+	}
+	mention := regexp.MustCompile(`entire-tail threads ([a-z]+)`)
+	data, err := os.ReadFile("docs/skills/threads-bootstrap/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "—") {
+		t.Error("bootstrap skill contains an em dash")
+	}
+	for _, m := range mention.FindAllStringSubmatch(string(data), -1) {
+		if !known[m[1]] {
+			t.Errorf("bootstrap skill mentions unknown subcommand %q", m[1])
+		}
+	}
+	data, err = os.ReadFile("docs/skills/thread-handover/SKILL.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,12 +33,8 @@ func TestThreadHandoverSkillMentionsOnlyRealSubcommands(t *testing.T) {
 	if strings.Contains(text, "—") {
 		t.Error("skill contains an em dash")
 	}
-	known := map[string]bool{}
-	for _, s := range threadsSubcommands {
-		known[s] = true
-	}
 	seen := map[string]bool{}
-	for _, m := range regexp.MustCompile(`entire-tail threads ([a-z]+)`).FindAllStringSubmatch(text, -1) {
+	for _, m := range mention.FindAllStringSubmatch(text, -1) {
 		if !known[m[1]] {
 			t.Errorf("skill mentions unknown subcommand %q", m[1])
 		}
