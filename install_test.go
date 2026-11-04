@@ -21,6 +21,10 @@ func TestInstallerRegistersTrailsWithoutMonitoring(t *testing.T) {
 		}
 	}
 	write("install.sh", string(script))
+	if err := os.MkdirAll(filepath.Join(home, "docs/skills/thread-handover"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	write("docs/skills/thread-handover/SKILL.md", "skill body\n")
 	write("go", "#!/bin/sh\nexit 0\n")
 	write("entire", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/registrations\"\n")
 	write("launchctl", "#!/bin/sh\ntouch \"$HOME/monitoring-started\"\nexit 1\n")
@@ -41,6 +45,12 @@ func TestInstallerRegistersTrailsWithoutMonitoring(t *testing.T) {
 		if !strings.Contains(string(registrations), "plugin install "+path+" --force") {
 			t.Fatalf("missing registration: %s", name)
 		}
+	}
+	if b, err := os.ReadFile(filepath.Join(home, ".agents/skills/thread-handover/SKILL.md")); err != nil || string(b) != "skill body\n" {
+		t.Fatalf("skill not installed: %q %v", b, err)
+	}
+	if target, err := os.Readlink(filepath.Join(home, ".claude/skills/thread-handover")); err != nil || target != filepath.Join(home, ".agents/skills/thread-handover") {
+		t.Fatalf("skill link: %q %v", target, err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "monitoring-started")); !os.IsNotExist(err) {
 		t.Fatal("installer started monitoring")

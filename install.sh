@@ -54,3 +54,9 @@ else
   echo "note: 'entire' CLI not on \$PATH. Skipping plugin install."
   echo "      You can still run the standalone 'entire-tail' command."
 fi
+
+# ── thread-handover skill: one copy for Claude and Amp ───────────────────────
+mkdir -p "$HOME/.agents/skills/thread-handover" "$HOME/.claude/skills"
+cp "$HERE/docs/skills/thread-handover/SKILL.md" "$HOME/.agents/skills/thread-handover/SKILL.md"
+ln -sfn "$HOME/.agents/skills/thread-handover" "$HOME/.claude/skills/thread-handover"
+echo "Installed: ~/.agents/skills/thread-handover (linked from ~/.claude/skills/thread-handover)"
