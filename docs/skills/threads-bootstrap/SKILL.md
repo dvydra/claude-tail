@@ -5,7 +5,7 @@ description: One-time bootstrap that turns the open dated handover docs in the O
 
 # Threads bootstrap
 
-This turns the open dated handover docs into threads, once. Read `thread-handover`'s skill first (`~/.agents/skills/thread-handover/SKILL.md`). For each thread you write, follow its Write section (its `begin`, `thread.md` rules, `knowledge.md` rules, `commit` and exit codes) instead of inventing your own. Only what differs for a bootstrap is below.
+This turns the open dated handover docs into threads, once. Read `thread-handover`'s skill first (`~/.agents/skills/thread-handover/SKILL.md`). For each thread you write, follow its `## 3. Write the update` (its `begin`, `thread.md` rules, `knowledge.md` rules, `commit` and exit codes) instead of inventing your own. Skip its `## 1` and `## 2`: there is no live session to find or match here, the groups below replace them. Only what differs for a bootstrap is below.
 
 Plain words, no em dashes, no hard-wrapped lines.
 
@@ -22,7 +22,7 @@ First check the feature is built in:
 entire-tail threads path
 ```
 
-If that fails, stop and tell Daniel to install the new build.
+`path` does not depend on `.enabled`, so a failure means the binary has no threads support. Say "the threads command is not available: run install.sh from the threads build" and stop.
 
 ## 1. Find the docs
 
@@ -32,7 +32,7 @@ List every day folder and the `*.md` files directly inside each. Use `/bin/ls` (
 
 ## 2. Read every doc
 
-Read each doc in full. Up to about 10 docs, read them yourself. Past that, give batches to subagents and have each return, per doc: file name, date (the folder name), title, Sessions line, Repo / branch line, Tracker, `Continues [[...]]` links, the Next step list, and whether any next step is still open.
+Read each doc in full. Up to about 10 docs, read them yourself. Past that, give batches to subagents (read-only: they report, they write nothing) and have each return, per doc: file name, date (the folder name), title, Sessions line, Repo / branch line, Tracker, `Continues [[...]]` links, the Next step list, and whether any next step is still open.
 
 For each doc note:
 
@@ -55,15 +55,26 @@ Put two docs in the same group when any of these hold:
 
 Keep docs apart when they only share a repo or a scope word. Two unrelated fixes in one repo are two groups.
 
-## 4. Show the table and stop
+A doc with no Sessions line still gets grouped. Register nothing for it, and say so in the table.
 
-Print one table: proposed thread name, the source docs (date and file name), the working dir. Under it, list the dropped docs and why. Then stop and ask Daniel to confirm, merge, split, rename or drop rows.
+## 4. Check existing threads, show the table and stop
+
+Before the table, check what already exists (read-only):
+
+```bash
+entire-tail threads list --all
+entire-tail threads lookup <agent> <id>
+```
+
+Run `lookup` for every session id in the docs. A hit means that session is already in a thread (from an earlier run, or one Daniel made by hand). Also compare each group against the listed threads by trail, worktree and topic.
+
+Print one table: proposed thread name, the source docs (date and file name), the working dir, which sessions are already threaded (with the slug), and an action for the group: `new`, `append to <existing slug>`, or `skip` (already fully covered). Under it, list the dropped docs and why, and the docs with no Sessions line. Then stop and ask Daniel to confirm, merge, split, rename or drop rows.
 
 Apply his edits and print the table again. Repeat until he says go. Run no subcommand that writes (`new`, `register`, `begin`, `commit`) before that.
 
 ## 5. Write each thread
 
-For each confirmed group, in order:
+For each confirmed group, by its action. `skip` rows do nothing. For `append to <slug>` rows, do not run `new`: go straight to register, begin and commit on that slug, and merge into its existing `thread.md` and `knowledge.md` rather than replacing them. For `new` rows, in order:
 
 ```bash
 entire-tail threads new "<name>"
@@ -71,15 +82,15 @@ entire-tail threads new "<name>"
 
 It prints the slug. Exit 2 means the slug exists: stop and ask Daniel (a rerun after a partial bootstrap lands here; skip groups he says are done).
 
-Register every session from every doc in the group, newest doc first, so `sessions` ends up newest first:
+Register every session from every doc in the group that is not already registered to that thread, newest doc first, so `sessions` ends up newest first:
 
 ```bash
 entire-tail threads register <slug> <claude|amp> <id>
 ```
 
-Claude ids are the UUIDs, agent `claude`. Amp ids start with `T-`, agent `amp`. A session already registered to another thread is a conflict: stop and ask Daniel which thread keeps it.
+Claude ids are the UUIDs, agent `claude`. Amp ids start with `T-`, agent `amp`. A session already registered to another thread should have shown up in the table; if one slips through, that is a conflict: stop and ask Daniel which thread keeps it.
 
-Then run `entire-tail threads begin <slug>` and write the files per `thread-handover`'s Write section, with these differences:
+Then run `entire-tail threads begin <slug>` and write the files per `thread-handover`'s `## 3. Write the update`, with these differences:
 
 - The source is the group's docs, not a live session. Fetch live state (git, trail, Linear) as that skill says; a failed fetch is "state unknown (fetch failed)".
 - `waiting_on`, `needs_you` and the open steps under "What's in the way" come from the newest doc's open next steps. A step marked **needs you** sets `needs_you: true`.
