@@ -53,17 +53,21 @@ It prints `{"slug": "..."}` and exits 0 on a hit, exits 1 on a miss. Then check 
 
 On a hit:
 
-- open: use it. Do not ask.
-- parked: say so, and ask "This thread is parked (<reason>). Unpark it?" The default is no. Write the update either way. Only on a yes run `entire-tail threads unpark <slug>`.
-- closed: ask whether to reopen it or start a new thread. On reopen run `entire-tail threads reopen <slug>`. Nothing changes status without that answer.
+- open: use it. Do not ask about status.
+- parked: the reason is `park_reason` in the frontmatter, which `begin` prints (`list` does not carry it). Say so and ask "This thread is parked (<reason>). Unpark it?" The default is no. Write the update either way. Only on a yes run `entire-tail threads unpark <slug>`.
+- closed: ask whether to reopen it or start a new thread. Nothing changes status without that answer.
+  - Reopen: run `entire-tail threads reopen <slug>`, then `register`, then `begin`.
+  - New: leave the closed thread untouched and follow the new-thread path below (steps 1 and 2 of the miss path, then `register`, then `begin`).
+  - No answer: stop and write nothing.
 
 On a miss:
 
 1. Run `entire-tail threads list`. Compare this session to the open and parked threads in this order: trail (the `trails` and trail claims), then worktree (the `claims` with `kind: worktree`), then topic. Propose the best match: "This looks like <name>. Update it?" Daniel confirms, picks another, or says new.
 2. For a new thread, propose a name from the work and let Daniel accept or edit it. Then run `entire-tail threads new "<name>"`. It prints the slug. Exit 2 means the slug exists; ask Daniel what to do.
-3. If the session drifted across topics, ask once which thread to file it under. One session is never split across two threads.
 
-After any outcome, record the mapping:
+After a hit or a miss, check for drift. If this session clearly worked on something other than the matched thread, ask once which thread to file it under. Never split one session across two threads.
+
+Then record the mapping:
 
 ```bash
 entire-tail threads register <slug> <agent> <session-id>
@@ -81,7 +85,7 @@ It prints JSON: `base` (a hash), `dir` (the thread folder) and `thread_md` (the 
 
 Rewrite `thread.md` from scratch. Inputs: the old `thread.md`, this session, and live state (git status, the trail, the Linear issue). The rule is "only what's true now". Fetch real state with `git`, `entire trail show` and Linear. Never write state from memory. If a fetch fails, write "state unknown (fetch failed)".
 
-Write the new file to a scratch path outside the vault, not into `dir`. Keep the frontmatter keys below. Leave `status`, `park_reason` and `parked_at` as they were in the old file; commit forces them back anyway.
+Write the new file to a scratch path outside the vault, not into `dir`. Make it with `mktemp` (for example `f=$(mktemp)`), in both Claude and Amp. Keep the frontmatter keys below. Leave `status`, `park_reason` and `parked_at` as they were in the old file; commit forces them back anyway.
 
 ```markdown
 ---
@@ -147,7 +151,7 @@ Rules for the file:
 - `waiting_on` is one line: who or what the thread waits on. `needs_you` is true only when the next step is Daniel's.
 - Claims are what triage checks against live state. Write one for every worktree (`path`, `branch`, and `head` set to the pushed SHA, or empty for unpushed), every trail (`expect`: `open`, `merged` or `closed`), and every Linear issue (`expect`: its current state name).
 - Set `as_of` to today for every section you rewrote. Leave the old date on a section you did not touch. Triage dims a section older than 7 days.
-- Recent holds the last 3 working days only, one line each. Older lines move to the log.
+- Recent holds the last 3 working days only, one line each. A working day is a day with a log entry for this thread (a file in `<dir>/log/`, counting today's). Older lines move to the log.
 - `sessions` lists agent and id, newest first. Keep what is there; `register` already added this one.
 
 Nothing is lost by the rewrite. In `<dir>/log/<today>.md` (create `log/` if needed; if today's file exists, add to it, do not overwrite) put what is leaving `thread.md`: finished steps, old SHAs, resolved blockers, and a short account of this session.
