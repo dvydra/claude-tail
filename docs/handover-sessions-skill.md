@@ -35,9 +35,25 @@ file. For Amp, it is the thread URL; export the transcript with
 
 If the manifest's `threadsEnabled` is `true`, do not write dated docs. Load the
 `thread-handover` skill and, for each group, follow its matching and writing:
-one thread update per group, using the group's `thread` field (when set) as the
-proposed match. Never split or merge groups. The Output and Per-group sections
-below apply only when `threadsEnabled` is `false` or absent.
+one thread update per group. Never split or merge groups. Three differences
+from a live `/handover`:
+
+- Skip `thread-handover` step 1 (finding your own session id). You are not the
+  session being handed over; the group's sessions are, and the manifest names
+  them.
+- The group's `thread` field, when set, is the slug of a thread one of its
+  sessions is already registered to. Treat it as a registry hit. When it is
+  absent, run `entire-tail threads lookup <agent> <sessionId>` for every
+  session in the group; a hit is a registry hit, and a group whose sessions
+  hit two different threads is a conflict to ask Daniel about. With no hit,
+  run the matching dialogue as a miss.
+- Run `entire-tail threads register <slug> <agent> <sessionId>` for every
+  session in the group, oldest `lastActivity` first so the newest ends up
+  first in `sessions`. Write the update from the group's transcripts (see
+  Per-group procedure for reading them), not from this conversation.
+
+The Output and Per-group sections below apply only when `threadsEnabled` is
+`false` or absent, apart from how to read the transcripts.
 
 ## Output
 

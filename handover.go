@@ -217,8 +217,10 @@ func handoverTranscript(it handoverItem) string {
 }
 
 // buildManifest assembles the manifest; linksOf is injected so it's pure/testable
-// (production passes extractLinks).
-func buildManifest(groups []handoverGroup, vaultDir, date string, now int64, linksOf func(string) []sessionLink, threadsEnabled func() bool) handoverManifest {
+// (production passes extractLinks). With threads on, threadOf (a registry
+// lookup) names each group's thread from the first of its sessions already
+// registered to one; nil leaves Thread empty.
+func buildManifest(groups []handoverGroup, vaultDir, date string, now int64, linksOf func(string) []sessionLink, threadsEnabled func() bool, threadOf func(agent, id string) (string, bool)) handoverManifest {
 	m := handoverManifest{
 		Date:             date,
 		GeneratedAt:      time.Unix(now, 0).Format(time.RFC3339),
@@ -230,7 +232,13 @@ func buildManifest(groups []handoverGroup, vaultDir, date string, now int64, lin
 	for _, g := range groups {
 		mg := manifestGroup{GroupID: g.GroupID}
 		for _, it := range g.Sessions {
-			mg.Sessions = append(mg.Sessions, manifestSessionFrom(it, linksOf(it.Path)))
+			ms := manifestSessionFrom(it, linksOf(it.Path))
+			mg.Sessions = append(mg.Sessions, ms)
+			if m.ThreadsEnabled && threadOf != nil && mg.Thread == "" {
+				if slug, ok := threadOf(ms.Agent, ms.SessionID); ok {
+					mg.Thread = slug
+				}
+			}
 		}
 		m.Groups = append(m.Groups, mg)
 	}
@@ -296,10 +304,11 @@ func runHandover(cfg Config) {
 
 	date := time.Unix(now, 0).In(loc).Format("2006-01-02")
 	vaultDir := handoverVaultDir(os.Getenv, now, loc)
+	troot := threadsRoot(os.Getenv)
 	manifest := buildManifest(groups, vaultDir, date, now, extractLinks, func() bool {
-		_, err := os.Stat(filepath.Join(threadsRoot(os.Getenv), ".enabled"))
+		_, err := os.Stat(filepath.Join(troot, ".enabled"))
 		return err == nil
-	})
+	}, func(agent, id string) (string, bool) { return lookupSession(troot, agent, id) })
 	path, err := writeManifestTemp(manifest)
 	if err != nil {
 		die("cannot write manifest: " + err.Error())
