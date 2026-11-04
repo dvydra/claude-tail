@@ -37,6 +37,7 @@ type Config struct {
 	LinkArgs         []string
 	WTFArgs          []string
 	TrailsArgs       []string
+	ThreadsArgs      []string
 	RestoreArgs      []string
 }
 
@@ -77,6 +78,7 @@ const (
 	ActionLink           // `entire-tail link <start|install|uninstall|stop|status>`
 	ActionWTF            // `entire-tail wtf`: today's session dashboard
 	ActionTrails         // `entire-tail trails`: trail-first today view
+	ActionThreads        // `entire-tail threads`: agent-facing thread commands
 	ActionRestore        // `entire-tail restore`: rebuild pre-reboot iTerm tabs
 )
 
@@ -195,6 +197,10 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 	if len(args) > 0 && args[0] == "trails" {
 		c.TrailsArgs = append([]string(nil), args[1:]...)
 		return c, ActionTrails, nil
+	}
+	if len(args) > 0 && args[0] == "threads" {
+		c.ThreadsArgs = append([]string(nil), args[1:]...)
+		return c, ActionThreads, nil
 	}
 	if len(args) > 0 && args[0] == "restore" {
 		c.RestoreArgs = append([]string(nil), args[1:]...)

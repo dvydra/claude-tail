@@ -65,6 +65,9 @@ func main() {
 			die(err.Error())
 		}
 		return
+	case ActionThreads:
+		runThreads(cfg)
+		return
 	case ActionRestore:
 		if err := runRestore(cfg.RestoreArgs, cfg, firstNonEmpty(os.Getenv("HOME"), mustHome()), os.Stdin, os.Stdout); err != nil {
 			die("restore: " + err.Error())
@@ -87,6 +90,8 @@ func commandArgs(argv0 string, args []string) []string {
 		return append([]string{"wtf"}, args...)
 	case "entire-trails":
 		return append([]string{"trails"}, args...)
+	case "entire-threads":
+		return append([]string{"threads"}, args...)
 	}
 	return args
 }
