@@ -82,7 +82,7 @@ entire-tail threads new "<name>"
 
 It prints the slug. Exit 2 means the slug exists: stop and ask Daniel (a rerun after a partial bootstrap lands here; skip groups he says are done).
 
-Register every session from every doc in the group that is not already registered to that thread, newest doc first, so `sessions` ends up newest first:
+Register every session from every doc in the group that is not already registered to that thread, oldest doc first. `register` puts each new session at the top of `sessions`, so registering oldest first leaves the newest session first:
 
 ```bash
 entire-tail threads register <slug> <claude|amp> <id>
