@@ -100,11 +100,13 @@ func isThreadSection(h string) bool {
 }
 
 // parseThreadMD splits thread.md into frontmatter and sections. A bad
-// frontmatter returns an error but the sections are still parsed.
+// frontmatter returns an error but the sections are still parsed. On error the
+// returned meta may be partially filled and must never be written back.
+// CRLF line endings are accepted.
 func parseThreadMD(data []byte) (threadMeta, map[string]string, error) {
 	var meta threadMeta
 	var perr error
-	body := string(data)
+	body := strings.ReplaceAll(string(data), "\r\n", "\n")
 	if rest, ok := strings.CutPrefix(body, "---\n"); ok {
 		var fm string
 		switch {
@@ -155,9 +157,10 @@ func formatThreadMD(meta threadMeta, sections map[string]string) []byte {
 	var buf bytes.Buffer
 	buf.WriteString("---\n")
 	y, err := yaml.Marshal(meta)
-	if err == nil {
-		buf.Write(y)
+	if err != nil {
+		panic("formatThreadMD: cannot marshal thread frontmatter: " + err.Error())
 	}
+	buf.Write(y)
 	buf.WriteString("---\n")
 	for _, h := range threadSections {
 		buf.WriteString("\n## " + h + "\n")

@@ -66,6 +66,17 @@ func TestParseThreadMDBadFrontmatter(t *testing.T) {
 	}
 }
 
+func TestParseThreadMDCRLF(t *testing.T) {
+	in := "---\r\nname: N\r\nstatus: open\r\n---\r\n## What it is\r\nx\r\ny\r\n"
+	meta, secs, err := parseThreadMD([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Name != "N" || meta.Status != threadOpen || secs["What it is"] != "x\ny" {
+		t.Errorf("meta=%+v secs=%q", meta, secs)
+	}
+}
+
 func TestParseThreadMDUnknownHeadingStaysInSection(t *testing.T) {
 	_, secs, err := parseThreadMD([]byte("---\nname: n\n---\n## What it is\nx\n## Extra\ny\n## People\nz\n"))
 	if err != nil {
