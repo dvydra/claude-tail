@@ -45,6 +45,29 @@ func TestThreadLaunchResumesClaude(t *testing.T) {
 	}
 }
 
+func TestThreadLaunchCwd(t *testing.T) {
+	claim, sess := t.TempDir(), t.TempDir()
+	id := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	th := thread{Dir: "/v/foo", Meta: threadMeta{Claims: []threadClaim{{Kind: "worktree", Path: "/gone"}, {Kind: "worktree", Path: claim}}}}
+	env := func(cwd string) threadLaunchEnv {
+		return func(agent, id string) (string, string, string) { return "", "", cwd }
+	}
+	newID := func() string { return "11111111-2222-4333-8444-555555555555" }
+	cd := func(dir string) string { return "cd " + shQuote(dir) + " && " }
+
+	resume := th
+	resume.Meta.Sessions = []threadSessionRef{{Agent: "claude", ID: id}}
+	if w, _, r := threadLaunchWith(resume, threadFacts{}, "/bin/et", "claude", newID, env(sess)); r != "" || !strings.HasPrefix(w.Agent, cd(sess)) {
+		t.Errorf("resume should use the session's cwd: %q %q", w.Agent, r)
+	}
+	if w, _, r := threadLaunchWith(resume, threadFacts{}, "/bin/et", "claude", newID, env("/gone/too")); r != "" || !strings.HasPrefix(w.Agent, cd(claim)) {
+		t.Errorf("resume with a gone session cwd should fall back to the first existing claim: %q %q", w.Agent, r)
+	}
+	if w, _, r := threadLaunchWith(th, threadFacts{}, "/bin/et", "claude", newID, env(sess)); r != "" || !strings.HasPrefix(w.Agent, cd(claim)) {
+		t.Errorf("fresh start should use the claim: %q %q", w.Agent, r)
+	}
+}
+
 func TestThreadLaunchAmp(t *testing.T) {
 	dir := t.TempDir()
 	w, reg, refuse := launchThread(t, []threadSessionRef{{Agent: "amp", ID: "T-abc"}}, dir, threadFacts{})

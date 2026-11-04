@@ -26,8 +26,9 @@ var (
 type threadLaunchEnv func(agent, id string) (acctEnv, tapEnv, cwd string)
 
 // threadLaunch decides how to open a thread: resume its newest session, or
-// start a fresh one primed with the thread's files. Pure, no IO beyond a
-// directory check on worktree claims; refuse is non-empty when it must not open.
+// start a fresh one primed with the thread's files. Pure, no IO beyond
+// directory checks on worktree claims and the session's cwd; refuse is
+// non-empty when it must not open.
 func threadLaunch(t thread, f threadFacts, self, claudeBin string, newID func() string) (workspaceLaunch, threadSessionRef, string) {
 	return threadLaunchWith(t, f, self, claudeBin, newID, nil)
 }
@@ -44,15 +45,21 @@ func threadLaunchWith(t thread, f threadFacts, self, claudeBin string, newID fun
 	if newest != nil && env != nil {
 		acct, tap, sessCwd = env(newest.Agent, newest.ID)
 	}
-	cwd := ""
+	claimCwd := ""
 	for _, c := range t.Meta.Claims {
 		if c.Kind == "worktree" && c.Path != "" && isDir(c.Path) {
-			cwd = c.Path
+			claimCwd = c.Path
 			break
 		}
 	}
-	if cwd == "" {
-		cwd = sessCwd
+	if sessCwd != "" && !isDir(sessCwd) {
+		sessCwd = ""
+	}
+	// A resume goes back where that session last worked; the first claim may be
+	// a different worktree of the thread. A fresh start goes to the claim.
+	cwd := firstNonEmpty(claimCwd, sessCwd)
+	if newest != nil {
+		cwd = firstNonEmpty(sessCwd, claimCwd)
 	}
 	if cwd == "" {
 		return workspaceLaunch{}, threadSessionRef{}, "no working directory recorded"
