@@ -206,6 +206,35 @@ func TestRegisterSessionIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRegisterSessionKeepsHandEdits(t *testing.T) {
+	root := t.TempDir()
+	hand := "---\nname: Hand edited\nstatus: open\ncreated: 2026-10-01\nupdated: 2026-10-02\naliases: [Mirror, \"GH checks\"]\nreviewed: 2026-10-30\ntags:\n  - work\n  - ci # from Obsidian\n---\n\n# Hand edited\n\nAn intro paragraph Daniel wrote.\n\n## What it is\n\nThe work.\n"
+	writeThread(t, root, "hand-edited/thread.md", hand)
+	if err := registerSession(root, "hand-edited", "claude", "s1", storeNow); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "hand-edited", "thread.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	for _, part := range []string{
+		"aliases: [Mirror, \"GH checks\"]\n",
+		"reviewed: 2026-10-30\n",
+		"tags:\n  - work\n  - ci # from Obsidian\n",
+		"---\n\n# Hand edited\n\nAn intro paragraph Daniel wrote.\n\n## What it is\n",
+		"## What it is\nThe work.\n",
+	} {
+		if !strings.Contains(got, part) {
+			t.Errorf("lost %q from:\n%s", part, got)
+		}
+	}
+	meta, secs, perr := parseThreadMD(data)
+	if perr != nil || meta.Preamble != "# Hand edited\n\nAn intro paragraph Daniel wrote." || secs["What it is"] != "The work." {
+		t.Errorf("reparse: preamble=%q secs=%q err=%v", meta.Preamble, secs, perr)
+	}
+}
+
 func TestLoadRegistryMissingIsEmpty(t *testing.T) {
 	reg, err := loadRegistry(t.TempDir())
 	if err != nil || reg.Sessions == nil {

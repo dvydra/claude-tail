@@ -56,6 +56,14 @@ type threadMeta struct {
 	Created    string             `yaml:"created,omitempty"`
 	Updated    string             `yaml:"updated,omitempty"`
 	AsOf       map[string]string  `yaml:"as_of,omitempty"` // section heading -> YYYY-MM-DD
+	// Extra holds frontmatter keys this struct does not name (Obsidian's tags,
+	// aliases, cssclasses, anything hand-added). Kept as nodes so a Go write
+	// gives them back in their own style: a date stays a date, a flow list
+	// stays a flow list, a trailing comment stays.
+	Extra map[string]yaml.Node `yaml:",inline"`
+	// Preamble is the body text before the first known section, e.g. a
+	// `# Title` and an intro paragraph. Not frontmatter.
+	Preamble string `yaml:"-"`
 }
 
 type thread struct {
@@ -135,8 +143,11 @@ func parseThreadMD(data []byte) (threadMeta, map[string]string, error) {
 	cur := ""
 	var lines []string
 	flush := func() {
+		text := strings.Trim(strings.Join(lines, "\n"), "\n")
 		if cur != "" {
-			secs[cur] = strings.Trim(strings.Join(lines, "\n"), "\n")
+			secs[cur] = text
+		} else {
+			meta.Preamble = text
 		}
 		lines = nil
 	}
@@ -152,16 +163,23 @@ func parseThreadMD(data []byte) (threadMeta, map[string]string, error) {
 	return meta, secs, perr
 }
 
-// formatThreadMD renders meta and the five sections; absent sections get an empty heading.
+// formatThreadMD renders meta, the preamble and the five sections; absent
+// sections get an empty heading. Two-space indent, the same as the skill writes.
 func formatThreadMD(meta threadMeta, sections map[string]string) []byte {
 	var buf bytes.Buffer
 	buf.WriteString("---\n")
-	y, err := yaml.Marshal(meta)
-	if err != nil {
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(meta); err != nil {
 		panic("formatThreadMD: cannot marshal thread frontmatter: " + err.Error())
 	}
-	buf.Write(y)
+	if err := enc.Close(); err != nil {
+		panic("formatThreadMD: cannot marshal thread frontmatter: " + err.Error())
+	}
 	buf.WriteString("---\n")
+	if meta.Preamble != "" {
+		buf.WriteString("\n" + meta.Preamble + "\n")
+	}
 	for _, h := range threadSections {
 		buf.WriteString("\n## " + h + "\n")
 		if s := sections[h]; s != "" {
