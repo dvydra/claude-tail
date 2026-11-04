@@ -190,9 +190,7 @@ func loadThreads(root string) []thread {
 			continue
 		}
 		meta, secs, perr := parseThreadMD(data)
-		if meta.Slug == "" {
-			meta.Slug = name
-		}
+		meta.Slug = name // the directory name is the slug, whatever the frontmatter says
 		out = append(out, thread{Meta: meta, Sections: secs, Dir: dir, ParseErr: perr})
 	}
 	sort.SliceStable(out, func(i, j int) bool {

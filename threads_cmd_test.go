@@ -164,6 +164,33 @@ func TestThreadsCmdLifecycleAndList(t *testing.T) {
 	}
 }
 
+func TestThreadsCmdListUsesDirName(t *testing.T) {
+	root := t.TempDir()
+	slug := mustCreate(t, root, "Bar")
+	p := filepath.Join(root, slug, "thread.md")
+	data, _ := os.ReadFile(p)
+	os.WriteFile(p, []byte(strings.Replace(string(data), "name: Bar", "name: Bar\nslug: foo", 1)), 0o644)
+	_, out, _ := runCmd(t, root, "list")
+	if !strings.Contains(out, `"slug":"bar"`) || strings.Contains(out, "foo") {
+		t.Fatalf("list = %q", out)
+	}
+}
+
+func TestThreadsCmdCommitPinsSlug(t *testing.T) {
+	root := t.TempDir()
+	slug := mustCreate(t, root, "Bar")
+	b := mustBegin(t, root, slug)
+	nw := strings.Replace(b.ThreadMD, "name: Bar", "name: Renamed\nslug: foo", 1)
+	if code, _, e := runCmd(t, root, "commit", slug, "--base", b.Base, "--file", writeTmp(t, nw)); code != 0 {
+		t.Fatalf("commit = %d %s", code, e)
+	}
+	data, _ := os.ReadFile(filepath.Join(root, slug, "thread.md"))
+	meta, _, _ := parseThreadMD(data)
+	if meta.Slug != "bar" || meta.Name != "Renamed" {
+		t.Fatalf("meta = %+v", meta)
+	}
+}
+
 func TestThreadsCmdUsage(t *testing.T) {
 	root := t.TempDir()
 	if code, _, e := runCmd(t, root, "bogus"); code != 64 || e == "" {

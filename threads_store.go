@@ -14,6 +14,9 @@ import (
 
 const threadsClosedDir = "_closed"
 
+// errThreadExists is returned by createThread when the slug is taken.
+var errThreadExists = errors.New("already exists")
+
 // lockThreads takes the exclusive, blocking lock that serialises every thread
 // mutation. The lock file is created on demand and never unlinked.
 func lockThreads(root string) (func(), error) {
@@ -184,7 +187,7 @@ func createThread(root, name string, now time.Time) (string, error) {
 	defer release()
 	for _, d := range []string{filepath.Join(root, slug), filepath.Join(root, threadsClosedDir, slug)} {
 		if _, err := os.Stat(d); err == nil {
-			return "", fmt.Errorf("thread %q already exists", slug)
+			return "", fmt.Errorf("thread %q: %w", slug, errThreadExists)
 		}
 	}
 	dir := filepath.Join(root, slug)

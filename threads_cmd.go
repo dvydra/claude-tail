@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -81,7 +82,7 @@ func runThreadsCommand(args []string, root string, now time.Time, out, errOut io
 		}
 		slug, err := createThread(root, strings.Join(rest, " "), now)
 		if err != nil {
-			if strings.Contains(err.Error(), "already exists") {
+			if errors.Is(err, errThreadExists) {
 				fmt.Fprintln(errOut, "entire-tail threads:", err)
 				return threadsExitDuplicate
 			}
@@ -175,9 +176,6 @@ func threadsList(args []string, root string, out, errOut io.Writer) int {
 	rows := make([]threadListRow, 0, len(ts))
 	for _, t := range ts {
 		m := t.Meta
-		if m.Slug == "" {
-			m.Slug = filepath.Base(t.Dir)
-		}
 		r := threadListRow{Slug: m.Slug, Name: m.Name, Status: m.Status, WaitingOn: m.WaitingOn,
 			NeedsYou: m.NeedsYou, Updated: m.Updated, Trails: m.Trails, Linear: m.Linear,
 			Claims: m.Claims, Customer: m.Customer}
@@ -297,6 +295,7 @@ func threadsCommit(args []string, root string, now time.Time, out, errOut io.Wri
 		return threadsExitBadFM
 	}
 	meta.Status, meta.ParkReason, meta.ParkedAt = disk.Status, disk.ParkReason, disk.ParkedAt
+	meta.Slug = filepath.Base(dir) // identity is the directory's, not the agent's
 	meta.Updated = now.Format("2006-01-02")
 	if err := atomicWrite(filepath.Join(dir, "thread.md"), formatThreadMD(meta, secs)); err != nil {
 		return threadsFail(errOut, err)
