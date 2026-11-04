@@ -44,8 +44,10 @@ type threadMeta struct {
 	Name       string             `yaml:"name"`
 	Slug       string             `yaml:"slug,omitempty"`
 	Status     threadStatus       `yaml:"status"`
-	ParkReason string             `yaml:"park_reason,omitempty"`
+	ParkKind   string             `yaml:"park_kind,omitempty"`   // a parkKinds key; "" for a free-text park
+	ParkReason string             `yaml:"park_reason,omitempty"` // the note; required only without a kind
 	ParkedAt   string             `yaml:"parked_at,omitempty"`
+	WakesOn    string             `yaml:"wakes_on,omitempty"` // YYYY-MM-DD the park ends by itself
 	WaitingOn  string             `yaml:"waiting_on,omitempty"`
 	NeedsYou   bool               `yaml:"needs_you,omitempty"`
 	Customer   string             `yaml:"customer,omitempty"`

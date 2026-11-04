@@ -117,9 +117,16 @@ func runThreadsCommand(args []string, root string, now time.Time, out, errOut io
 		return 0
 	case "park":
 		if len(rest) < 2 {
-			return threadsUsage(errOut, "park <slug> <reason...>")
+			return threadsUsage(errOut, "park <slug> [--kind "+parkKindKeys()+"] <reason...>")
 		}
-		return threadsStatus(root, rest[0], threadParked, strings.Join(rest[1:], " "), now, errOut)
+		kind := ""
+		if len(rest) >= 3 && rest[1] == "--kind" {
+			kind, rest = rest[2], append([]string{rest[0]}, rest[3:]...)
+		}
+		if err := parkThread(root, rest[0], kind, strings.Join(rest[1:], " "), now); err != nil {
+			return threadsFail(errOut, err)
+		}
+		return 0
 	case "unpark", "reopen":
 		if len(rest) != 1 {
 			return threadsUsage(errOut, cmd+" <slug>")
@@ -193,6 +200,7 @@ func threadsList(args []string, root string, out, errOut io.Writer) int {
 		}
 		all = true
 	}
+	wakeThreads(root, time.Now())
 	ts := loadThreads(root)
 	if all {
 		ts = append(ts, loadThreads(filepath.Join(root, threadsClosedDir))...)
@@ -417,7 +425,7 @@ func threadsCommit(args []string, root string, now time.Time, out, errOut io.Wri
 	}
 	// Status moves through park/unpark/close; sessions through register; the
 	// creation date never moves. An agent can't drop or rewrite any of them.
-	meta.Status, meta.ParkReason, meta.ParkedAt = disk.Status, disk.ParkReason, disk.ParkedAt
+	meta.Status, meta.ParkKind, meta.ParkReason, meta.ParkedAt, meta.WakesOn = disk.Status, disk.ParkKind, disk.ParkReason, disk.ParkedAt, disk.WakesOn
 	meta.Sessions, meta.Created = disk.Sessions, disk.Created
 	meta.Slug = filepath.Base(dir) // identity is the directory's, not the agent's
 	meta.Updated = now.Format("2006-01-02")

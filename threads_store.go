@@ -224,15 +224,32 @@ func appendThreadLog(dir string, now time.Time, line string) error {
 
 // setThreadStatus moves a thread between open, parked and closed. Closing
 // moves its directory to _closed; any other status moves it back to root.
+// A free-text park needs a reason; parkThread parks with a kind.
 func setThreadStatus(root, slug string, to threadStatus, reason string, now time.Time) error {
+	return moveThread(root, slug, to, "", reason, now)
+}
+
+// parkThread parks with a kind from parkKinds; the note is optional. An empty
+// kind is a free-text park, which needs the note.
+func parkThread(root, slug, kind, note string, now time.Time) error {
+	return moveThread(root, slug, threadParked, kind, note, now)
+}
+
+func moveThread(root, slug string, to threadStatus, kind, reason string, now time.Time) error {
 	if err := validThreadSlug(slug); err != nil {
 		return err
 	}
 	reason = strings.TrimSpace(reason)
+	var pk parkKind
 	switch to {
 	case threadOpen, threadClosed:
 	case threadParked:
-		if reason == "" {
+		if kind != "" {
+			var ok bool
+			if pk, ok = parkKindByKey(kind); !ok {
+				return fmt.Errorf("unknown park kind %q (one of %s)", kind, parkKindKeys())
+			}
+		} else if reason == "" {
 			return errors.New("parking a thread requires a reason")
 		}
 	default:
@@ -267,24 +284,27 @@ func setThreadStatus(root, slug string, to threadStatus, reason string, now time
 	case from == threadClosed:
 		from = threadOpen
 	}
-	if from == to {
+	if from == to && to != threadParked {
 		return nil
 	}
 
 	var logLine string
 	switch {
 	case to == threadParked:
-		logLine = "parked: " + reason
-		meta.ParkReason, meta.ParkedAt = reason, now.Format("2006-01-02")
+		logLine = "parked: " + parkSummary(pk.Label, reason)
+		meta.ParkKind, meta.ParkReason, meta.ParkedAt, meta.WakesOn = pk.Key, reason, now.Format("2006-01-02"), ""
+		if pk.Wakes {
+			meta.WakesOn = nextWorkday(now).Format("2006-01-02")
+		}
 	case to == threadClosed:
 		logLine = "closed"
-		meta.ParkReason, meta.ParkedAt = "", ""
+		clearPark(&meta)
 	case from == threadParked:
 		logLine = "unparked"
-		meta.ParkReason, meta.ParkedAt = "", ""
+		clearPark(&meta)
 	default:
 		logLine = "reopened"
-		meta.ParkReason, meta.ParkedAt = "", ""
+		clearPark(&meta)
 	}
 	meta.Status = to
 	meta.Updated = now.Format("2006-01-02")

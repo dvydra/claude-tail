@@ -184,7 +184,18 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   turns `⏎` into a resume or a fresh primed session in the 3-pane workspace
   (unsplit iTerm tab only; otherwise a note). A session is registered before pane
   A replaces the process. `threadsOsa`/`threadsExec` are seams, so tests never run
-  osascript.
+  osascript. `threads_park.go` holds the park kinds (`parkKinds`, listed from
+  the BOTTOM up so the default "not today" sits by the footer and `p ⏎` parks),
+  the picker box drawn over the screen with `overlayRows`/`spliceVisible`, and
+  `wakeThreads`. Only "not today" has behaviour: it writes `wakes_on` (the next
+  working day), and the list paths (TUI start, `threads list`) unpark due
+  threads. There is no "until" date and no trail-driven wake, on purpose: keep
+  it simple. `O` (`planOpenAll`) opens every open thread in view as a FRESH
+  Claude session, never a resume, with `threadReassessPrompt`. Each is a new
+  3-pane tab in the CURRENT window (`openAllScript`). Don't make it open a new
+  window: that was asked for explicitly. It needs no unsplit tab, it selects
+  the triage tab again at the end, and sessions are registered only after the
+  tabs open.
 - `discovery.go` — find the session file for `$PWD` per agent
 - `tree.go` — the interactive session **tree** picker (the DEFAULT): Claude and
   Amp sessions grouped by repo/folder, marked `C`/`A`, arrow-key navigable,

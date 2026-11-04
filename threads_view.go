@@ -9,13 +9,15 @@ import (
 )
 
 // threadsUI is the triage screen's state. Mode is "list", "park", "close",
-// "details", "knowledge" or "filter" (typing into Filter).
+// "openall", "details", "knowledge" or "filter" (typing into Filter).
+// ParkPick indexes parkKinds while Mode is "park"; Input is the note.
 type threadsUI struct {
 	Threads        []thread
 	Facts          map[string]threadFacts
 	Cursor, Scroll int
 	Mode           string
 	Input          string
+	ParkPick       int
 	Filter         string
 	Width, Height  int
 	Today          string
@@ -24,11 +26,13 @@ type threadsUI struct {
 
 // threadsAction is what the driver must do after a key. Kind is "" for none.
 type threadsAction struct {
-	Kind         string // ""|"open"|"park"|"unpark"|"close"|"quit"
+	Kind         string // ""|"open"|"openall"|"park"|"unpark"|"close"|"quit"
 	Slug, Reason string
+	ParkKind     string   // park: a parkKinds key
+	Slugs        []string // openall: the open threads in view, in list order
 }
 
-const threadsFooter = "⏎ open   p park…   u unpark   x close…   d details   k knowledge   / filter   q quit"
+const threadsFooter = "⏎ open   O open all…   p park…   u unpark   x close…   d details   k knowledge   / filter   q quit"
 
 func threadSlugOf(t thread) string { return filepath.Base(t.Dir) }
 
@@ -91,6 +95,10 @@ func updateThreads(ui threadsUI, k treeKey, r rune) (threadsUI, threadsAction) {
 		switch k {
 		case kEsc:
 			ui.Mode, ui.Input = "list", ""
+		case kUp:
+			ui.ParkPick = min(len(parkKinds)-1, ui.ParkPick+1)
+		case kDown:
+			ui.ParkPick = max(0, ui.ParkPick-1)
 		case kBackspace:
 			if rs := []rune(ui.Input); len(rs) > 0 {
 				ui.Input = string(rs[:len(rs)-1])
@@ -100,14 +108,22 @@ func updateThreads(ui threadsUI, k treeKey, r rune) (threadsUI, threadsAction) {
 				ui.Input += string(r)
 			}
 		case kEnter:
-			reason := strings.TrimSpace(ui.Input)
-			if reason == "" {
-				ui.Note = "a reason is required"
-			} else if cur != nil {
-				a = threadsAction{Kind: "park", Slug: threadSlugOf(*cur), Reason: reason}
-				ui.Mode, ui.Input = "list", ""
+			if cur != nil {
+				pk := parkKinds[max(0, min(ui.ParkPick, len(parkKinds)-1))]
+				a = threadsAction{Kind: "park", Slug: threadSlugOf(*cur), ParkKind: pk.Key, Reason: strings.TrimSpace(ui.Input)}
+			}
+			ui.Mode, ui.Input = "list", ""
+		}
+		return ui, a
+	case "openall":
+		if k == kRune && r == 'y' {
+			open, _ := visibleThreads(ui)
+			a.Kind = "openall"
+			for _, t := range open {
+				a.Slugs = append(a.Slugs, threadSlugOf(t))
 			}
 		}
+		ui.Mode = "list"
 		return ui, a
 	case "close":
 		if k == kRune && r == 'y' && cur != nil {
@@ -184,7 +200,13 @@ func updateThreads(ui threadsUI, k treeKey, r rune) (threadsUI, threadsAction) {
 			ui.Mode = "filter"
 		case 'p':
 			if cur != nil {
-				ui.Mode, ui.Input = "park", ""
+				ui.Mode, ui.Input, ui.ParkPick = "park", "", 0
+			}
+		case 'O':
+			if open, _ := visibleThreads(ui); len(open) > 0 {
+				ui.Mode = "openall"
+			} else {
+				ui.Note = "no open threads in view"
 			}
 		case 'u':
 			if cur != nil && cur.Meta.Status == threadParked {
@@ -486,7 +508,7 @@ func renderThreads(ui threadsUI, render func(string) (string, error), knowledge 
 		list = append(list, tvDim+"── parked ──"+tvReset)
 		for j, t := range parked {
 			i := len(open) + j
-			line := tvDim + mark(i) + padVisible(truncVisible(threadDisplayName(t), nameW), nameW) + `  ("` + t.Meta.ParkReason + `")` + tvReset
+			line := tvDim + mark(i) + padVisible(truncVisible(threadDisplayName(t), nameW), nameW) + tvReset + "  " + parkedLabel(t.Meta, ui.Today)
 			if i == cur {
 				curRow = len(list)
 			}
@@ -513,6 +535,11 @@ func renderThreads(ui threadsUI, render func(string) (string, error), knowledge 
 		rows = append(rows, "")
 	}
 	rows = append(rows, truncVisible(footerFor(ui), w))
+	if ui.Mode == "park" && len(threadsAt(ui)) > 0 {
+		box := parkBoxLines(threadDisplayName(threadsAt(ui)[cur]), ui.ParkPick, ui.Input, ui.Today)
+		top := max(1, len(rows)-1-len(box))
+		overlayRows(rows, box, top, max(0, (w-parkBoxW)/2))
+	}
 	return strings.Join(rows, "\n")
 }
 
@@ -520,7 +547,10 @@ func footerFor(ui threadsUI) string {
 	foot := threadsFooter
 	switch ui.Mode {
 	case "park":
-		foot = "park reason: " + ui.Input + "▏  (⏎ park, Esc cancel)"
+		foot = "↑↓ pick a reason · type to add a note · ⏎ park · Esc cancel"
+	case "openall":
+		open, _ := visibleThreads(ui)
+		foot = "open " + plural(len(open), "thread") + " in new tabs here, each a fresh Claude that reassesses first? y to confirm, any other key cancels"
 	case "close":
 		foot = "close this thread? y to confirm, any other key cancels"
 	case "details", "knowledge":

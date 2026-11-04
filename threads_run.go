@@ -129,7 +129,7 @@ func applyThreadsAction(root string, a threadsAction, now time.Time) (note strin
 	var err error
 	switch a.Kind {
 	case "park":
-		err = setThreadStatus(root, a.Slug, threadParked, a.Reason, now)
+		err = parkThread(root, a.Slug, a.ParkKind, a.Reason, now)
 	case "unpark":
 		err = setThreadStatus(root, a.Slug, threadOpen, "", now)
 	case "close":
@@ -186,6 +186,7 @@ func runThreadsTUI(cfg Config) error {
 		}()
 	}
 
+	wakeThreads(root, time.Now())
 	ui := threadsUI{Threads: loadThreads(root), Mode: "list", Today: time.Now().Format("2006-01-02")}
 	loadFacts(ui.Threads)
 	knowledge := threadKnowledge(root)
@@ -251,6 +252,11 @@ func runThreadsTUI(cfg Config) error {
 			case "open":
 				ui.Note = openThread(cfg, home, root, ui, a.Slug, tty, saved, restore)
 				io.WriteString(tty, "\x1b[?1049h\x1b[?25l")
+			case "openall":
+				ui.Note = openAllThreads(cfg, home, root, ui, a.Slugs)
+				ui.Threads = loadThreads(root)
+				ui.Facts = nil
+				loadFacts(ui.Threads)
 			}
 		}
 	}
@@ -348,4 +354,156 @@ func openThread(cfg Config, home, root string, ui threadsUI, slug string, tty *o
 	note := openThreadWith(root, home, t, ui.Facts[slug], threadsLiveNow(home), selfPath(), bin, env, newSessionID)
 	_, _ = setRawTimed(tty)
 	return strings.TrimSpace(warn.String() + " " + note)
+}
+
+// openAllPick is one thread `O` will open: its tab and the session to record.
+type openAllPick struct {
+	Slug string
+	Tab  restoreTab
+	Ref  threadSessionRef
+}
+
+// planOpenAll decides, for each thread, a FRESH Claude session primed with
+// threadReassessPrompt, never a resume: the point of opening everything at once
+// is a clean look at where each thread really is. A thread with one of its
+// sessions running, or any agent inside one of its worktrees, is skipped (the
+// same guards as ⏎), and so is one with no directory to start in. Pure apart
+// from directory checks.
+func planOpenAll(ts []thread, facts map[string]threadFacts, live []liveSession, self, bin string, env threadLaunchEnv, newID func() string) (picks []openAllPick, skipped []string) {
+	for _, t := range ts {
+		slug := threadSlugOf(t)
+		name := threadDisplayName(t)
+		f := facts[slug]
+		if f.Running == nil {
+			f.Running = runningFor(t, live)
+		}
+		if f.Running != nil {
+			skipped = append(skipped, name+" (already running)")
+			continue
+		}
+		if l, _ := agentInWorktree(t, live, isDir); l != nil {
+			skipped = append(skipped, name+" (an agent is in its worktree)")
+			continue
+		}
+		acct, tap, sessCwd := "", "", ""
+		claude := len(t.Meta.Sessions) > 0 && t.Meta.Sessions[0].Agent != "amp"
+		if len(t.Meta.Sessions) > 0 && env != nil {
+			_, _, sessCwd = env(t.Meta.Sessions[0].Agent, t.Meta.Sessions[0].ID)
+			if claude {
+				// The fresh session runs as the account the thread last used.
+				acct, tap, _ = env(t.Meta.Sessions[0].Agent, t.Meta.Sessions[0].ID)
+			}
+		}
+		id := newID()
+		if !claude && env != nil {
+			acct, tap, _ = env("claude", id)
+		}
+		cwd := ""
+		for _, c := range t.Meta.Claims {
+			if c.Kind == "worktree" && c.Path != "" && isDir(c.Path) {
+				cwd = c.Path
+				break
+			}
+		}
+		if cwd == "" && sessCwd != "" && isDir(sessCwd) {
+			cwd = sessCwd
+		}
+		if cwd == "" {
+			skipped = append(skipped, name+" (no working directory recorded)")
+			continue
+		}
+		w := newWorkspaceScript(cwd, self, id, bin, acct, tap, false, threadReassessPrompt(t))
+		p := openAllPick{Slug: slug, Tab: restoreTab{Label: name, Agent: w.Agent, Tail: w.Tail, Shell: w.Shell}}
+		if pinsSessionID(bin) {
+			p.Ref = threadSessionRef{Agent: "claude", ID: id}
+		}
+		picks = append(picks, p)
+	}
+	return picks, skipped
+}
+
+// openAllScript adds one tab per pick to the CURRENT window, each with
+// splitScript's layout (B right of A at full height, C under A), then selects
+// the tab the triage screen runs in again, so the note it prints is in view.
+func openAllScript(sh string, tabs []restoreTab) string {
+	cmd := func(s string) string { return asEscape(paneCommand(sh, s)) }
+	var b strings.Builder
+	b.WriteString("tell application \"iTerm2\"\n\tset w to current window\n\tset home to current tab of w\n")
+	for _, t := range tabs {
+		b.WriteString("\ttell w to set nt to (create tab with default profile command \"" + cmd(t.Agent) + "\")\n")
+		b.WriteString("\ttell current session of nt\n")
+		b.WriteString("\t\tsplit vertically with default profile command \"" + cmd(t.Tail) + "\"\n")
+		b.WriteString("\t\tsplit horizontally with default profile command \"" + cmd(t.Shell) + "\"\n")
+		b.WriteString("\tend tell\n")
+	}
+	b.WriteString("\tselect home\nend tell")
+	return b.String()
+}
+
+// openAllWith opens picks as new tabs of the current window and records each
+// session on its thread once the tabs exist. It returns the note for the footer.
+func openAllWith(root string, picks []openAllPick, skipped []string) string {
+	var note string
+	if len(picks) > 0 {
+		var tabs []restoreTab
+		for _, p := range picks {
+			tabs = append(tabs, p.Tab)
+		}
+		if err := threadsOsa(openAllScript(paneShell(), tabs)); err != nil {
+			return "could not open the tabs: " + err.Error()
+		}
+		var failed []string
+		for _, p := range picks {
+			if p.Ref.ID == "" {
+				continue
+			}
+			if err := registerSession(root, p.Slug, p.Ref.Agent, p.Ref.ID); err != nil {
+				failed = append(failed, p.Slug)
+			}
+		}
+		note = "opened " + plural(len(picks), "thread") + " in new tabs"
+		if len(failed) > 0 {
+			note += "; could not record the session on " + strings.Join(failed, ", ")
+		}
+	} else {
+		note = "opened nothing"
+	}
+	if len(skipped) > 0 {
+		note += " · skipped " + strings.Join(skipped, ", ")
+	}
+	return note
+}
+
+// openAllThreads opens every thread named in slugs. Unlike ⏎ it needs no
+// unsplit tab: it makes its own window and the triage screen stays put.
+func openAllThreads(cfg Config, home, root string, ui threadsUI, slugs []string) string {
+	if !itermAvailable() {
+		return "open all needs iTerm"
+	}
+	want := map[string]bool{}
+	for _, s := range slugs {
+		want[s] = true
+	}
+	var ts []thread
+	for _, t := range ui.Threads {
+		if want[threadSlugOf(t)] {
+			ts = append(ts, t)
+		}
+	}
+	var warn bytes.Buffer
+	bin := paneBin(resolveClaudeBin(cfg, exec.LookPath, &warn))
+	env := func(agent, id string) (string, string, string) {
+		if agent == "amp" {
+			return "", "", ""
+		}
+		p := localPathForID(home, id)
+		prof := profileByName(home, profileForPath(home, p))
+		cwd := ""
+		if p != "" {
+			cwd = workspaceCwd(p)
+		}
+		return accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(home)), cwd
+	}
+	picks, skipped := planOpenAll(ts, ui.Facts, threadsLiveNow(home), selfPath(), bin, env, newSessionID)
+	return strings.TrimSpace(warn.String() + " " + openAllWith(root, picks, skipped))
 }

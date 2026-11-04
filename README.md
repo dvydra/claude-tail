@@ -963,12 +963,15 @@ A thread is one piece of work that outlives any single agent session. Each lives
 | Key | Does |
 | --- | --- |
 | `⏎` | open the thread: resume its newest session, or start a fresh one primed with its files, in the 3-pane iTerm workspace (unsplit tab only) |
-| `p` | park, with a reason you type |
+| `O` | open every open thread in the (filtered) list, each as a fresh Claude session in a new tab of the current window, asked to reassess the thread and report before changing anything. Asks `y` first; skips threads with a session already running |
+| `p` | park: pick a reason, optionally type a note (see below) |
 | `u` | unpark |
 | `x` | close |
 | `d` / `k` | details / knowledge |
 | `/` | filter |
 | `q` | quit |
+
+`p` opens a picker with five reasons: **not today** (the default, so `p ⏎` parks it), waiting on review, waiting on customer, waiting on someone, and someday. `↑↓` picks one, and typing adds a note to it. A "not today" park wakes the thread the next working day: it is back on the open list the first time `threads` or `threads list` runs on or after that date. The others stay parked until you unpark them. From the CLI: `entire-tail threads park <slug> --kind not-today|review|customer|someone|someday [note...]`; without `--kind` the reason is free text and required, as before.
 
 Piped, it prints the list as JSON. The agent-facing subcommands (`new`, `lookup`, `register`, `park`, `begin`, `commit`, and so on) run `entire-tail threads <subcommand>`.
 
