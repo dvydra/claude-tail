@@ -219,9 +219,18 @@ func shortSHA(s string) string {
 	return s
 }
 
-// checkTrailClaim asks entire for the trail's status. fetchTrailMetadata
-// hardcodes the gh/ forge, so this runs the same command with the claim's own
-// forge prefix and works for gh/ and et/ alike.
+// checkTrailClaim asks entire for the trail's status. A claim is
+// `<forge>/<project>/<repo>/<n>`, and the repo slot decides which number space
+// <n> is in:
+//
+//   - `-`: a project trail (entire.com/<forge>/<project>/-/trails/<n>), read
+//     with `entire trail show <n> --project <forge>/<project>`.
+//   - a repo name: a repo-scoped trail (entire.io/<forge>/<project>/<repo>/trails/<n>),
+//     read through the repo's API path.
+//
+// `entire trail show <n> --repo <r>` is NOT a repo-scoped read: it ignores the
+// repo and returns the PROJECT trail numbered <n> (measured: entiredb 4103 came
+// back as an unrelated fleet promote trail), so it can never be used here.
 func checkTrailClaim(ctx context.Context, c threadClaim, deps threadCheckDeps, f *threadFacts) {
 	parts := strings.Split(c.Trail, "/")
 	if len(parts) != 4 {
@@ -233,7 +242,18 @@ func checkTrailClaim(ctx context.Context, c threadClaim, deps threadCheckDeps, f
 		f.Details = append(f.Details, "trail "+c.Trail+": unrecognised form")
 		return
 	}
-	data, err := deps.Run(ctx, "", "entire", "trail", "show", parts[3], "--repo", strings.Join(parts[:3], "/"), "--json")
+	var data []byte
+	if parts[2] == "-" {
+		data, err = deps.Run(ctx, "", "entire", "trail", "show", parts[3], "--project", parts[0]+"/"+parts[1], "--json")
+	} else {
+		// The active login's jurisdiction may not hold the repo (an au login
+		// 404s entirehq's us repos), so retry in us before calling it unknown.
+		path := "/api/v1/trails/" + c.Trail
+		data, err = deps.Run(ctx, "", "entire", "api", path)
+		if err != nil {
+			data, err = deps.Run(ctx, "", "entire", "api", "-j", "us", path)
+		}
+	}
 	var md entireTrailJSON
 	if err == nil {
 		err = json.Unmarshal(data, &md)

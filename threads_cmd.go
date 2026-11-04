@@ -143,6 +143,13 @@ func runThreadsCommand(args []string, root string, now time.Time, out, errOut io
 		}
 		return 0
 	case "path":
+		// Create the folder: the documented way to turn threads on is
+		// `touch "$(entire-tail threads path)/.enabled"`, which fails on a
+		// machine that has no thread yet if this only prints the name.
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			fmt.Fprintln(errOut, "entire-tail threads path: "+err.Error())
+			return threadsExitMiss
+		}
 		fmt.Fprintln(out, root)
 		return 0
 	}

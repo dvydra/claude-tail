@@ -93,7 +93,7 @@ Claude ids are the UUIDs, agent `claude`. Amp ids start with `T-`, agent `amp`. 
 Then run `entire-tail threads begin <slug>` and write the files per `thread-handover`'s `## 3. Write the update`, with these differences:
 
 - The source is the group's docs, not a live session. Fetch live state (git, trail, Linear) as that skill says; a failed fetch is "state unknown (fetch failed)".
-- `waiting_on`, `needs_you` and the open steps under "What's in the way" come from the newest doc's open next steps. A step marked **needs you** sets `needs_you: true`.
+- `waiting_on`, `needs_you` and the open steps under "What's in the way" come from the newest doc's open next steps. `needs_you` follows `thread-handover`'s rule: true only when the step blocking the thread now is Daniel's own. A **needs you** mark on a later step does not set it; a thread waiting on a reviewer, a customer or a reply is false. Trail claims follow its project-vs-repo form rule.
 - Claims come from the newest doc's Repo / branch line (a worktree claim) and Tracker line (trail and Linear claims), checked against live state.
 - Set every `as_of` to today. `created` came from `new --created` and `commit` keeps it (and `sessions`) from disk; `commit` sets `updated`.
 - Recent holds the last 3 source dates, one line each.

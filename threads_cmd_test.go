@@ -235,6 +235,20 @@ func TestThreadsCmdEnabledAndPath(t *testing.T) {
 	}
 }
 
+// `touch "$(entire-tail threads path)/.enabled"` is the documented way to turn
+// threads on, so `path` must leave a folder to touch even before the first
+// thread exists (it failed exactly that way on go-live).
+func TestThreadsCmdPathCreatesFolder(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "Entire", "Threads")
+	code, out, _ := runCmd(t, root, "path")
+	if code != 0 || strings.TrimSpace(out) != root {
+		t.Fatalf("code = %d, path = %q", code, out)
+	}
+	if !isDir(root) {
+		t.Fatal("path did not create the threads folder")
+	}
+}
+
 func TestThreadsCmdLifecycleAndList(t *testing.T) {
 	root := t.TempDir()
 	slug := mustCreate(t, root, "Alpha")

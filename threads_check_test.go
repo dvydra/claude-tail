@@ -95,12 +95,16 @@ func TestCheckThreadNoUpstreamDirtyRisk(t *testing.T) {
 }
 
 func TestCheckThreadTrailMerged(t *testing.T) {
+	// A project trail ("-" in the repo slot) is read by project; a repo-scoped
+	// trail number is a different number space and must go through the repo's
+	// API path, because `trail show <n> --repo` ignores the repo and returns
+	// the PROJECT trail with that number.
 	f := &fakeRun{out: map[string]string{
-		"entire trail show 7 --repo gh/o/r --json": `{"number":7,"status":"merged"}`,
-		"entire trail show 9 --repo et/o/r --json": `{"number":9,"status":"open"}`,
+		"entire trail show 7 --project gh/o --json": `{"number":7,"status":"merged"}`,
+		"entire api /api/v1/trails/et/o/r/9":        `{"number":9,"status":"open"}`,
 	}}
 	th := thread{Meta: threadMeta{Claims: []threadClaim{
-		{Kind: "trail", Trail: "gh/o/r/7", Expect: "open"},
+		{Kind: "trail", Trail: "gh/o/-/7", Expect: "open"},
 		{Kind: "trail", Trail: "et/o/r/9", Expect: "open"},
 		{Kind: "linear", Linear: "ENT-1"},
 	}}}
@@ -110,6 +114,33 @@ func TestCheckThreadTrailMerged(t *testing.T) {
 	}
 	if !strings.Contains(joinStr(got.Details), "ENT-1") {
 		t.Fatalf("details = %v", got.Details)
+	}
+}
+
+// The active login's jurisdiction may not hold the repo (an au login 404s
+// entirehq's us repos), so a failed repo read retries in us before giving up.
+func TestCheckThreadTrailRepoFallsBackToUS(t *testing.T) {
+	f := &fakeRun{
+		fail: map[string]bool{"entire api /api/v1/trails/gh/o/r/50": true},
+		out:  map[string]string{"entire api -j us /api/v1/trails/gh/o/r/50": `{"number":50,"status":"merged"}`},
+	}
+	th := thread{Meta: threadMeta{Claims: []threadClaim{{Kind: "trail", Trail: "gh/o/r/50", Expect: "merged"}}}}
+	got := checkThread(context.Background(), th, wtDeps(f, nil))
+	if len(got.Stale) != 0 || !strings.Contains(joinStr(got.Details), "trail 50 is merged") {
+		t.Fatalf("stale = %v, details = %v", got.Stale, got.Details)
+	}
+}
+
+// A repo read that fails everywhere is unknown, never stale.
+func TestCheckThreadTrailUnavailableIsNotStale(t *testing.T) {
+	f := &fakeRun{fail: map[string]bool{
+		"entire api /api/v1/trails/gh/o/r/1":       true,
+		"entire api -j us /api/v1/trails/gh/o/r/1": true,
+	}}
+	th := thread{Meta: threadMeta{Claims: []threadClaim{{Kind: "trail", Trail: "gh/o/r/1", Expect: "open"}}}}
+	got := checkThread(context.Background(), th, wtDeps(f, nil))
+	if len(got.Stale) != 0 || !strings.Contains(joinStr(got.Details), "trail 1: status unavailable") {
+		t.Fatalf("stale = %v, details = %v", got.Stale, got.Details)
 	}
 }
 

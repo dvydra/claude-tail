@@ -99,14 +99,14 @@ customer: acme
 linear:
   - ENT-482
 trails:
-  - gh/entirehq/entiredb/1234
+  - gh/entirehq/-/1234
 claims:
   - kind: worktree
     path: /Users/dvydra/src/entirehq/entiredb/.claude/worktrees/mirror-checks
     branch: mirror-checks
     head: 9f3c2ab
   - kind: trail
-    trail: gh/entirehq/entiredb/1234
+    trail: gh/entirehq/-/1234
     expect: open
   - kind: linear
     linear: ENT-482
@@ -150,8 +150,9 @@ Who it waits on or overlaps with.
 Rules for the file:
 
 - Five sections, in this order: What it is, Where it got to, What's in the way, People, Recent. No length limit, but no padding.
-- `waiting_on` is one line: who or what the thread waits on. `needs_you` is true only when the next step is Daniel's.
+- `waiting_on` is one line: who or what the thread waits on. `needs_you` is true only when the thing blocking the thread right now is Daniel's own action (a decision, a send, a merge he has to do). Waiting on a reviewer, a customer, another team or a reply is `needs_you: false`, even if a later step will need him. The test: if Daniel did nothing today, would the thread still move? If yes, it is false.
 - Claims are what triage checks against live state. Write one for every worktree (`path`, `branch`, and `head` set to the pushed SHA, or empty for unpushed), every trail (`expect`: `open`, `merged` or `closed`), and every Linear issue (`expect`: its current state name).
+- A trail is `<forge>/<project>/<repo>/<number>`, and the repo slot says which number it is. A project trail (URL `entire.com/<forge>/<project>/-/trails/<n>`) uses `-`: `gh/entirehq/-/22618`. A repo trail (URL `entire.io/<forge>/<project>/<repo>/trails/<n>`) uses the repo name: `gh/entirehq/entiredb/4103`. Copy the shape from the trail's URL; never put a repo name in front of a project trail's number, because the two number spaces overlap and triage would read a different trail.
 - Set `as_of` to today for every section you rewrote. Leave the old date on a section you did not touch. Triage dims a section older than 7 days.
 - Recent holds the last 3 working days only, one line each. A working day is a day with a log entry for this thread (a file in `<dir>/log/`, counting today's). Older lines move to the log.
 - `sessions` lists agent and id, newest first. Keep what is there; `register` already added this one.
