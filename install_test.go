@@ -25,6 +25,8 @@ func TestInstallerRegistersTrailsWithoutMonitoring(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("docs/skills/thread-handover/SKILL.md", "skill body\n")
+	write("docs/skills/handover-command.md", "command body\n")
+	write("docs/handover-sessions-skill.md", "batch body\n")
 	write("go", "#!/bin/sh\nexit 0\n")
 	write("entire", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/registrations\"\n")
 	write("launchctl", "#!/bin/sh\ntouch \"$HOME/monitoring-started\"\nexit 1\n")
@@ -51,6 +53,14 @@ func TestInstallerRegistersTrailsWithoutMonitoring(t *testing.T) {
 	}
 	if target, err := os.Readlink(filepath.Join(home, ".claude/skills/thread-handover")); err != nil || target != filepath.Join(home, ".agents/skills/thread-handover") {
 		t.Fatalf("skill link: %q %v", target, err)
+	}
+	for rel, want := range map[string]string{
+		".claude/commands/handover.md":              "command body\n",
+		".claude/skills/handover-sessions/SKILL.md": "batch body\n",
+	} {
+		if b, err := os.ReadFile(filepath.Join(home, rel)); err != nil || string(b) != want {
+			t.Fatalf("%s: %q %v", rel, b, err)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(home, "monitoring-started")); !os.IsNotExist(err) {
 		t.Fatal("installer started monitoring")

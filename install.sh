@@ -60,3 +60,9 @@ mkdir -p "$HOME/.agents/skills/thread-handover" "$HOME/.claude/skills"
 cp "$HERE/docs/skills/thread-handover/SKILL.md" "$HOME/.agents/skills/thread-handover/SKILL.md"
 ln -sfn "$HOME/.agents/skills/thread-handover" "$HOME/.claude/skills/thread-handover"
 echo "Installed: ~/.agents/skills/thread-handover (linked from ~/.claude/skills/thread-handover)"
+
+# ── /handover command and batch handover skill (vendored copies) ─────────────
+mkdir -p "$HOME/.claude/commands" "$HOME/.claude/skills/handover-sessions"
+cp "$HERE/docs/skills/handover-command.md" "$HOME/.claude/commands/handover.md"
+cp "$HERE/docs/handover-sessions-skill.md" "$HOME/.claude/skills/handover-sessions/SKILL.md"
+echo "Installed: ~/.claude/commands/handover.md and ~/.claude/skills/handover-sessions/SKILL.md"

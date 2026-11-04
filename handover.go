@@ -135,6 +135,7 @@ type manifestSession struct {
 
 type manifestGroup struct {
 	GroupID  string            `json:"groupId"`
+	Thread   string            `json:"thread,omitempty"`
 	Sessions []manifestSession `json:"sessions"`
 }
 
@@ -142,6 +143,7 @@ type handoverManifest struct {
 	Date             string          `json:"date"`
 	GeneratedAt      string          `json:"generatedAt"`
 	VaultHandoverDir string          `json:"vaultHandoverDir"`
+	ThreadsEnabled   bool            `json:"threadsEnabled"`
 	Groups           []manifestGroup `json:"groups"`
 }
 
@@ -216,11 +218,14 @@ func handoverTranscript(it handoverItem) string {
 
 // buildManifest assembles the manifest; linksOf is injected so it's pure/testable
 // (production passes extractLinks).
-func buildManifest(groups []handoverGroup, vaultDir, date string, now int64, linksOf func(string) []sessionLink) handoverManifest {
+func buildManifest(groups []handoverGroup, vaultDir, date string, now int64, linksOf func(string) []sessionLink, threadsEnabled func() bool) handoverManifest {
 	m := handoverManifest{
 		Date:             date,
 		GeneratedAt:      time.Unix(now, 0).Format(time.RFC3339),
 		VaultHandoverDir: vaultDir,
+	}
+	if threadsEnabled != nil {
+		m.ThreadsEnabled = threadsEnabled()
 	}
 	for _, g := range groups {
 		mg := manifestGroup{GroupID: g.GroupID}
@@ -291,7 +296,10 @@ func runHandover(cfg Config) {
 
 	date := time.Unix(now, 0).In(loc).Format("2006-01-02")
 	vaultDir := handoverVaultDir(os.Getenv, now, loc)
-	manifest := buildManifest(groups, vaultDir, date, now, extractLinks)
+	manifest := buildManifest(groups, vaultDir, date, now, extractLinks, func() bool {
+		_, err := os.Stat(filepath.Join(threadsRoot(os.Getenv), ".enabled"))
+		return err == nil
+	})
 	path, err := writeManifestTemp(manifest)
 	if err != nil {
 		die("cannot write manifest: " + err.Error())

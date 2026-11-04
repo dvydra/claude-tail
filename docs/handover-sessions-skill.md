@@ -35,6 +35,14 @@ Each session: `sessionId`, `agent` (`claude` or `amp`), `repo`, `cwd`, `title`,
 file. For Amp, it is the thread URL; export the transcript with
 `amp threads export <sessionId>`.
 
+## Threads switch
+
+If the manifest's `threadsEnabled` is `true`, do not write dated docs. Load the
+`thread-handover` skill and, for each group, follow its matching and writing:
+one thread update per group, using the group's `thread` field (when set) as the
+proposed match. Never split or merge groups. The Output and Per-group sections
+below apply only when `threadsEnabled` is `false` or absent.
+
 ## Output
 
 Write **exactly one Markdown file per `groups[]` entry** — the user already chose

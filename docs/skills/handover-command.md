@@ -4,6 +4,8 @@ argument-hint: [optional scope hint or title, e.g. "focus on the RFD, not the CI
 allowed-tools: Bash(date *), Bash(git *), Bash(gh *), Bash(ls *), Bash(mkdir *), Bash(head *), Bash(echo *), Bash(entire *), Read, Write, Glob, Grep
 ---
 
+0. Run `entire-tail threads enabled`. If it exits 0, load and follow the `thread-handover` skill instead of everything below, and stop. If it exits with anything else (including the command not existing), continue with the flow below unchanged.
+
 Write a handover document for **this session** into the Obsidian vault.
 
 SCOPE HINT (may be empty): $ARGUMENTS

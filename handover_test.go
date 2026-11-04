@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -139,7 +140,7 @@ func TestBuildManifestGroupsThrough(t *testing.T) {
 		{GroupID: "g1", Sessions: []handoverItem{{SessionID: "a", Path: "/p/a"}, {SessionID: "b", Path: "/p/b"}}},
 	}
 	m := buildManifest(groups, "/vault/Handover/2026-07-17", "2026-07-17", 0,
-		func(string) []sessionLink { return nil })
+		func(string) []sessionLink { return nil }, func() bool { return false })
 	if len(m.Groups) != 1 || len(m.Groups[0].Sessions) != 2 || m.Groups[0].GroupID != "g1" {
 		t.Fatalf("groups = %+v", m.Groups)
 	}
@@ -252,5 +253,33 @@ func TestUpdateHandoverPickPreview(t *testing.T) {
 func TestRowTag(t *testing.T) {
 	if rowTag(tagIndependent) != "[x]" || rowTag(tagExcluded) != "[ ]" || rowTag(3) != "[3]" {
 		t.Fatalf("rowTag mapping wrong: %q %q %q", rowTag(tagIndependent), rowTag(tagExcluded), rowTag(3))
+	}
+}
+
+func TestBuildManifestThreadsEnabled(t *testing.T) {
+	groups := []handoverGroup{{GroupID: "g1", Sessions: []handoverItem{{SessionID: "a", Path: "/p/a"}}}}
+	none := func(string) []sessionLink { return nil }
+	on := buildManifest(groups, "/v", "2026-07-17", 0, none, func() bool { return true })
+	if !on.ThreadsEnabled {
+		t.Fatal("ThreadsEnabled should be true")
+	}
+	off := buildManifest(groups, "/v", "2026-07-17", 0, none, func() bool { return false })
+	if off.ThreadsEnabled {
+		t.Fatal("ThreadsEnabled should be false")
+	}
+	b, err := json.Marshal(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"threadsEnabled":false`) {
+		t.Fatalf("threadsEnabled must always be present: %s", b)
+	}
+	if strings.Contains(string(b), `"thread"`) {
+		t.Fatalf("empty thread must be omitted: %s", b)
+	}
+	on.Groups[0].Thread = "my-thread"
+	b, _ = json.Marshal(on)
+	if !strings.Contains(string(b), `"thread":"my-thread"`) {
+		t.Fatalf("thread missing: %s", b)
 	}
 }
