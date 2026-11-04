@@ -62,7 +62,17 @@ ln -sfn "$HOME/.agents/skills/thread-handover" "$HOME/.claude/skills/thread-hand
 echo "Installed: ~/.agents/skills/thread-handover (linked from ~/.claude/skills/thread-handover)"
 
 # ── /handover command and batch handover skill (vendored copies) ─────────────
-mkdir -p "$HOME/.claude/commands" "$HOME/.claude/skills/handover-sessions"
-cp "$HERE/docs/skills/handover-command.md" "$HOME/.claude/commands/handover.md"
-cp "$HERE/docs/handover-sessions-skill.md" "$HOME/.claude/skills/handover-sessions/SKILL.md"
-echo "Installed: ~/.claude/commands/handover.md and ~/.claude/skills/handover-sessions/SKILL.md"
+# Never write through or replace a symlink: the target is owned elsewhere.
+install_copy() {
+  src="$1"; dst="$2"
+  mkdir -p "$(dirname "$dst")"
+  shown="~${dst#$HOME}"
+  if [ -L "$dst" ]; then
+    echo "skipping $shown: it is a symlink to $(readlink "$dst"); update that file from ${src#$HERE/}"
+    return 0
+  fi
+  cp "$src" "$dst"
+  echo "Installed: $shown"
+}
+install_copy "$HERE/docs/skills/handover-command.md" "$HOME/.claude/commands/handover.md"
+install_copy "$HERE/docs/handover-sessions-skill.md" "$HOME/.claude/skills/handover-sessions/SKILL.md"

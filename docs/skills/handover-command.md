@@ -1,7 +1,7 @@
 ---
 description: Write an Obsidian handover doc for this session — where we left it, next step, loose ends — into the Entire vault under today's date.
 argument-hint: [optional scope hint or title, e.g. "focus on the RFD, not the CI porting"]
-allowed-tools: Bash(date *), Bash(git *), Bash(gh *), Bash(ls *), Bash(mkdir *), Bash(head *), Bash(echo *), Bash(entire *), Read, Write, Glob, Grep
+allowed-tools: Bash(date *), Bash(git *), Bash(gh *), Bash(ls *), Bash(mkdir *), Bash(head *), Bash(echo *), Bash(entire *), Bash(entire-tail *), Read, Write, Glob, Grep
 ---
 
 0. Run `entire-tail threads enabled`. If it exits 0, load and follow the `thread-handover` skill instead of everything below, and stop. If it exits with anything else (including the command not existing), continue with the flow below unchanged.

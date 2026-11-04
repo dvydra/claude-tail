@@ -1,7 +1,3 @@
-<!-- Reference copy of the `handover-sessions` skill installed at
-     ~/.claude/skills/handover-sessions/SKILL.md — launched by `entire-tail handover`.
-     Kept here so the prompt is reviewable in-repo; the installed copy is authoritative. -->
-
 ---
 name: handover-sessions
 description: Generate Obsidian handover docs from an entire-tail session manifest. Use when invoked by `entire-tail handover` with a manifest path, or when asked to write session handover docs from a manifest.
