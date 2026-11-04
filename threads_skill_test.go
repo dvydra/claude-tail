@@ -46,3 +46,15 @@ func TestThreadHandoverSkillMentionsOnlyRealSubcommands(t *testing.T) {
 		}
 	}
 }
+
+func TestHandoverEntryPointsRouteToThreads(t *testing.T) {
+	for _, p := range []string{"docs/skills/handover-command.md", "docs/skills/amp-handover-skill.md"} {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "0. Run `entire-tail threads enabled`. If it exits 0, load and follow the `thread-handover` skill") {
+			t.Errorf("%s has no threads step 0", p)
+		}
+	}
+}

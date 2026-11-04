@@ -5,6 +5,8 @@ description: Write an Obsidian handover doc for this session — where we left i
 
 Arguments: [optional scope hint or title, e.g. "focus on the RFD, not the CI porting"]
 
+0. Run `entire-tail threads enabled`. If it exits 0, load and follow the `thread-handover` skill instead of everything below, and stop. If it exits with anything else (including the command not existing), continue with the flow below unchanged.
+
 Write a handover document for **this session** into the Obsidian vault.
 
 SCOPE HINT (may be empty): (whatever the user said when invoking this skill)

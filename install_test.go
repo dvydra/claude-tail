@@ -30,6 +30,7 @@ func TestInstallerRegistersTrailsWithoutMonitoring(t *testing.T) {
 	}
 	write("docs/skills/threads-bootstrap/SKILL.md", "bootstrap body\n")
 	write("docs/skills/handover-command.md", "command body\n")
+	write("docs/skills/amp-handover-skill.md", "amp handover body\n")
 	write("docs/handover-sessions-skill.md", "---\nname: handover-sessions\n---\nbatch body\n")
 	write("go", "#!/bin/sh\nexit 0\n")
 	write("entire", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/registrations\"\n")
@@ -65,8 +66,10 @@ func TestInstallerRegistersTrailsWithoutMonitoring(t *testing.T) {
 		t.Fatalf("bootstrap skill link: %q %v", target, err)
 	}
 	for rel, want := range map[string]string{
-		".claude/commands/handover.md":              "command body\n",
-		".claude/skills/handover-sessions/SKILL.md": "---\nname: handover-sessions\n---\nbatch body\n",
+		".claude/commands/handover.md":                "command body\n",
+		".claude/skills/handover-sessions/SKILL.md":   "---\nname: handover-sessions\n---\nbatch body\n",
+		".config/amp/skills/handover/SKILL.md":        "amp handover body\n",
+		".config/amp/skills/thread-handover/SKILL.md": "skill body\n",
 	} {
 		if b, err := os.ReadFile(filepath.Join(home, rel)); err != nil || string(b) != want {
 			t.Fatalf("%s: %q %v", rel, b, err)
@@ -100,15 +103,18 @@ func TestInstallerSkipsSymlinkedHandoverTargets(t *testing.T) {
 	write("docs/skills/thread-handover/SKILL.md", "skill\n")
 	write("docs/skills/threads-bootstrap/SKILL.md", "bootstrap\n")
 	write("docs/skills/handover-command.md", "new command\n")
+	write("docs/skills/amp-handover-skill.md", "new amp\n")
 	write("docs/handover-sessions-skill.md", "---\nnew batch\n")
 	write("go", "#!/bin/sh\nexit 0\n")
 	write("entire", "#!/bin/sh\nexit 0\n")
 	write("launchctl", "#!/bin/sh\nexit 1\n")
 	write("elsewhere/handover.md", "orig command\n")
 	write("elsewhere/SKILL.md", "orig batch\n")
+	write("elsewhere/amp.md", "orig amp\n")
 	cmdLink := filepath.Join(home, ".claude/commands/handover.md")
 	skillLink := filepath.Join(home, ".claude/skills/handover-sessions/SKILL.md")
-	for _, d := range []string{filepath.Dir(cmdLink), filepath.Dir(skillLink)} {
+	ampLink := filepath.Join(home, ".config/amp/skills/handover/SKILL.md")
+	for _, d := range []string{filepath.Dir(cmdLink), filepath.Dir(skillLink), filepath.Dir(ampLink)} {
 		if err := os.MkdirAll(d, 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -119,18 +125,21 @@ func TestInstallerSkipsSymlinkedHandoverTargets(t *testing.T) {
 	if err := os.Symlink(filepath.Join(home, "elsewhere/SKILL.md"), skillLink); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(filepath.Join(home, "elsewhere/amp.md"), ampLink); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command("bash", filepath.Join(home, "install.sh"))
 	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+home+":/usr/bin:/bin")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	for f, want := range map[string]string{"elsewhere/handover.md": "orig command\n", "elsewhere/SKILL.md": "orig batch\n"} {
+	for f, want := range map[string]string{"elsewhere/handover.md": "orig command\n", "elsewhere/SKILL.md": "orig batch\n", "elsewhere/amp.md": "orig amp\n"} {
 		if b, _ := os.ReadFile(filepath.Join(home, f)); string(b) != want {
 			t.Fatalf("%s was written through: %q", f, b)
 		}
 	}
-	for _, l := range []string{cmdLink, skillLink} {
+	for _, l := range []string{cmdLink, skillLink, ampLink} {
 		if fi, err := os.Lstat(l); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 			t.Fatalf("%s no longer a symlink", l)
 		}
@@ -138,5 +147,12 @@ func TestInstallerSkipsSymlinkedHandoverTargets(t *testing.T) {
 	want := "skipping ~/.claude/commands/handover.md: it is a symlink to " + filepath.Join(home, "elsewhere/handover.md") + "; update that file from docs/skills/handover-command.md"
 	if !strings.Contains(string(out), want) {
 		t.Fatalf("missing skip message: %s", out)
+	}
+	wantAmp := "skipping ~/.config/amp/skills/handover/SKILL.md: it is a symlink to " + filepath.Join(home, "elsewhere/amp.md") + "; update that file from docs/skills/amp-handover-skill.md"
+	if !strings.Contains(string(out), wantAmp) {
+		t.Fatalf("missing Amp skip message: %s", out)
+	}
+	if b, err := os.ReadFile(filepath.Join(home, ".config/amp/skills/thread-handover/SKILL.md")); err != nil || string(b) != "skill\n" {
+		t.Fatalf("Amp thread-handover not installed: %q %v", b, err)
 	}
 }
