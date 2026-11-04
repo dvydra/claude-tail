@@ -149,7 +149,7 @@ func TestSetStatusRejectsBadSlugAndParseErr(t *testing.T) {
 	if string(got) != orig {
 		t.Error("broken thread was rewritten")
 	}
-	if err := registerSession(root, "broken", "claude", "s1", storeNow); err == nil {
+	if err := registerSession(root, "broken", "claude", "s1"); err == nil {
 		t.Fatal("expected parse error from registerSession")
 	}
 	got, _ = os.ReadFile(filepath.Join(dir, "thread.md"))
@@ -182,7 +182,7 @@ func TestRegisterSessionIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	slug := mustCreate(t, root, "Sess")
 	for i := 0; i < 2; i++ {
-		if err := registerSession(root, slug, "claude", "aaa", storeNow); err != nil {
+		if err := registerSession(root, slug, "claude", "aaa"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -190,7 +190,7 @@ func TestRegisterSessionIsIdempotent(t *testing.T) {
 	if err != nil || len(reg.Sessions) != 1 || reg.Sessions["claude:aaa"] != slug {
 		t.Fatalf("registry = %+v err=%v", reg, err)
 	}
-	if err := registerSession(root, slug, "amp", "bbb", storeNow); err != nil {
+	if err := registerSession(root, slug, "amp", "bbb"); err != nil {
 		t.Fatal(err)
 	}
 	if got, ok := lookupSession(root, "amp", "bbb"); !ok || got != slug {
@@ -210,7 +210,7 @@ func TestRegisterSessionKeepsHandEdits(t *testing.T) {
 	root := t.TempDir()
 	hand := "---\nname: Hand edited\nstatus: open\ncreated: 2026-10-01\nupdated: 2026-10-02\naliases: [Mirror, \"GH checks\"]\nreviewed: 2026-10-30\ntags:\n  - work\n  - ci # from Obsidian\n---\n\n# Hand edited\n\nAn intro paragraph Daniel wrote.\n\n## What it is\n\nThe work.\n"
 	writeThread(t, root, "hand-edited/thread.md", hand)
-	if err := registerSession(root, "hand-edited", "claude", "s1", storeNow); err != nil {
+	if err := registerSession(root, "hand-edited", "claude", "s1"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "hand-edited", "thread.md"))

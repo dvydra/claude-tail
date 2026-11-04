@@ -19,6 +19,8 @@ var (
 	threadsExec = execAgent
 	// threadsItermOK reports whether an unsplit iTerm tab is there to take the workspace.
 	threadsItermOK = func() bool { return itermAvailable() && itermSinglePane() }
+	// threadsNote prints a line the user sees before the agent takes the pane.
+	threadsNote = func(s string) { fmt.Fprintln(os.Stderr, s) }
 )
 
 // threadLaunchEnv supplies what needs IO to build a launch: the account and
@@ -289,11 +291,19 @@ func openThreadWith(root, home string, t thread, f threadFacts, live []liveSessi
 		return refuse
 	}
 	slug := threadSlugOf(t)
+	resume := len(t.Meta.Sessions) > 0 && ref == t.Meta.Sessions[0]
 	err := threadsStart(w, func() error {
 		if ref.ID == "" {
 			return nil
 		}
-		return registerSession(root, slug, ref.Agent, ref.ID, time.Now())
+		err := registerSession(root, slug, ref.Agent, ref.ID)
+		if err != nil && resume {
+			// The panes exist and the session is already on the thread;
+			// recording it again is bookkeeping, so say so and carry on.
+			threadsNote("entire-tail: opened the thread, but could not record the session against it: " + err.Error())
+			return nil
+		}
+		return err
 	})
 	if err != nil {
 		return err.Error()

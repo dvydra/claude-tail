@@ -18,11 +18,12 @@ var threadsSubcommands = []string{"list", "lookup", "new", "register", "park", "
 
 // Exit codes of the agent-facing subcommands.
 const (
-	threadsExitMiss      = 1  // lookup miss, enabled false, other errors
-	threadsExitDuplicate = 2  // new: slug already exists
-	threadsExitStale     = 3  // commit: base hash is out of date
-	threadsExitBadFM     = 4  // commit: frontmatter does not parse
-	threadsExitUsage     = 64 // unknown subcommand or bad arguments
+	threadsExitMiss       = 1  // lookup miss, enabled false, other errors
+	threadsExitDuplicate  = 2  // new: slug already exists
+	threadsExitStale      = 3  // commit: base hash is out of date
+	threadsExitBadFM      = 4  // commit: the new file's frontmatter does not parse
+	threadsExitDiskBroken = 5  // commit: the thread.md on disk does not parse
+	threadsExitUsage      = 64 // unknown subcommand or bad arguments
 )
 
 // runThreads is the `threads` entry point. With arguments it runs the
@@ -84,10 +85,19 @@ func runThreadsCommand(args []string, root string, now time.Time, out, errOut io
 		}
 		return threadsJSON(out, errOut, map[string]string{"slug": slug})
 	case "new":
-		if len(rest) < 1 {
-			return threadsUsage(errOut, "new <name>")
+		// --created backdates a thread (the bootstrap); commit never changes it.
+		day := now
+		if len(rest) >= 2 && rest[0] == "--created" {
+			d, err := time.ParseInLocation("2006-01-02", rest[1], now.Location())
+			if err != nil {
+				return threadsUsage(errOut, "new [--created YYYY-MM-DD] <name>")
+			}
+			day, rest = d, rest[2:]
 		}
-		slug, err := createThread(root, strings.Join(rest, " "), now)
+		if len(rest) < 1 {
+			return threadsUsage(errOut, "new [--created YYYY-MM-DD] <name>")
+		}
+		slug, err := createThread(root, strings.Join(rest, " "), day)
 		if err != nil {
 			if errors.Is(err, errThreadExists) {
 				fmt.Fprintln(errOut, "entire-tail threads:", err)
@@ -101,7 +111,7 @@ func runThreadsCommand(args []string, root string, now time.Time, out, errOut io
 		if len(rest) != 3 {
 			return threadsUsage(errOut, "register <slug> <agent> <session-id>")
 		}
-		if err := registerSession(root, rest[0], rest[1], rest[2], now); err != nil {
+		if err := registerSession(root, rest[0], rest[1], rest[2]); err != nil {
 			return threadsFail(errOut, err)
 		}
 		return 0
@@ -183,7 +193,7 @@ func threadsList(args []string, root string, out, errOut io.Writer) int {
 	rows := make([]threadListRow, 0, len(ts))
 	for _, t := range ts {
 		m := t.Meta
-		r := threadListRow{Slug: m.Slug, Name: m.Name, Status: m.Status, WaitingOn: m.WaitingOn,
+		r := threadListRow{Slug: m.Slug, Name: threadDisplayName(t), Status: m.Status, WaitingOn: m.WaitingOn,
 			NeedsYou: m.NeedsYou, Updated: m.Updated, Trails: m.Trails, Linear: m.Linear,
 			Claims: m.Claims, Customer: m.Customer}
 		if r.Trails == nil {
@@ -390,14 +400,18 @@ func threadsCommit(args []string, root string, now time.Time, out, errOut io.Wri
 	disk, _, perr := parseThreadMD([]byte(cur.ThreadMD))
 	if perr != nil {
 		fmt.Fprintf(errOut, "entire-tail threads: %s: %v\n", filepath.Join(dir, "thread.md"), perr)
-		return threadsExitBadFM
+		fmt.Fprintln(errOut, "entire-tail threads: thread.md on disk is broken; tell Daniel")
+		return threadsExitDiskBroken
 	}
 	meta, secs, perr := parseThreadMD(newData)
 	if perr != nil {
 		fmt.Fprintf(errOut, "entire-tail threads: %s: %v\n", file, perr)
 		return threadsExitBadFM
 	}
+	// Status moves through park/unpark/close; sessions through register; the
+	// creation date never moves. An agent can't drop or rewrite any of them.
 	meta.Status, meta.ParkReason, meta.ParkedAt = disk.Status, disk.ParkReason, disk.ParkedAt
+	meta.Sessions, meta.Created = disk.Sessions, disk.Created
 	meta.Slug = filepath.Base(dir) // identity is the directory's, not the agent's
 	meta.Updated = now.Format("2006-01-02")
 	if err := atomicWrite(filepath.Join(dir, "thread.md"), formatThreadMD(meta, secs)); err != nil {

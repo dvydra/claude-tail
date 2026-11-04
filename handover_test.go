@@ -290,7 +290,7 @@ func TestBuildManifestThreadFromRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registerSession(root, slug, "claude", "b", storeNow); err != nil {
+	if err := registerSession(root, slug, "claude", "b"); err != nil {
 		t.Fatal(err)
 	}
 	groups := []handoverGroup{

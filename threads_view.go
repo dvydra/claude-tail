@@ -37,7 +37,7 @@ func threadMatches(t thread, q string) bool {
 		return true
 	}
 	q = strings.ToLower(q)
-	if strings.Contains(strings.ToLower(t.Meta.Name), q) {
+	if strings.Contains(strings.ToLower(threadDisplayName(t)), q) {
 		return true
 	}
 	for _, s := range t.Sections {
@@ -356,7 +356,7 @@ func threadDetailLines(ui threadsUI, render func(string) (string, error), knowle
 	add := func(s string) {
 		out = append(out, strings.Split(strings.TrimRight(wrapANSI(s, w), "\n"), "\n")...)
 	}
-	out = append(out, tvBold+t.Meta.Name+tvReset, "")
+	out = append(out, tvBold+threadDisplayName(t)+tvReset, "")
 	switch ui.Mode {
 	case "details":
 		f := ui.Facts[threadSlugOf(t)]
@@ -459,7 +459,7 @@ func renderThreads(ui threadsUI, render func(string) (string, error), knowledge 
 	cur := max(0, min(ui.Cursor, len(open)+len(parked)-1))
 	nameW := 8
 	for _, t := range append(append([]thread{}, open...), parked...) {
-		nameW = max(nameW, min(28, visWidth(t.Meta.Name)))
+		nameW = max(nameW, min(28, visWidth(threadDisplayName(t))))
 	}
 	var list []string
 	curRow := 0
@@ -472,7 +472,7 @@ func renderThreads(ui threadsUI, render func(string) (string, error), knowledge 
 	for i, t := range open {
 		f := ui.Facts[threadSlugOf(t)]
 		text, tone := threadListStatus(t, f)
-		line := mark(i) + padVisible(truncVisible(t.Meta.Name, nameW), nameW) + "  " + threadToneColour(tone) + text + tvReset
+		line := mark(i) + padVisible(truncVisible(threadDisplayName(t), nameW), nameW) + "  " + threadToneColour(tone) + text + tvReset
 		if age := threadAge(t.Meta.Updated, ui.Today); age != "" {
 			line += "  " + tvDim + age + tvReset
 		}
@@ -486,7 +486,7 @@ func renderThreads(ui threadsUI, render func(string) (string, error), knowledge 
 		list = append(list, tvDim+"── parked ──"+tvReset)
 		for j, t := range parked {
 			i := len(open) + j
-			line := tvDim + mark(i) + padVisible(truncVisible(t.Meta.Name, nameW), nameW) + `  ("` + t.Meta.ParkReason + `")` + tvReset
+			line := tvDim + mark(i) + padVisible(truncVisible(threadDisplayName(t), nameW), nameW) + `  ("` + t.Meta.ParkReason + `")` + tvReset
 			if i == cur {
 				curRow = len(list)
 			}

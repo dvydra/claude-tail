@@ -77,10 +77,10 @@ Apply his edits and print the table again. Repeat until he says go. Run no subco
 For each confirmed group, by its action. `skip` rows do nothing. For `append to <slug>` rows, do not run `new`: go straight to register, begin and commit on that slug, and merge into its existing `thread.md` and `knowledge.md` rather than replacing them. For `new` rows, in order:
 
 ```bash
-entire-tail threads new "<name>"
+entire-tail threads new --created <oldest doc date> "<name>"
 ```
 
-It prints the slug. Exit 2 means the slug exists: stop and ask Daniel (a rerun after a partial bootstrap lands here; skip groups he says are done).
+`--created` takes `YYYY-MM-DD` and sets the thread's `created` date; nothing can change it later. It prints the slug. Exit 2 means the slug exists: stop and ask Daniel (a rerun after a partial bootstrap lands here; skip groups he says are done).
 
 Register every session from every doc in the group that is not already registered to that thread, oldest doc first. `register` puts each new session at the top of `sessions`, so registering oldest first leaves the newest session first:
 
@@ -95,7 +95,7 @@ Then run `entire-tail threads begin <slug>` and write the files per `thread-hand
 - The source is the group's docs, not a live session. Fetch live state (git, trail, Linear) as that skill says; a failed fetch is "state unknown (fetch failed)".
 - `waiting_on`, `needs_you` and the open steps under "What's in the way" come from the newest doc's open next steps. A step marked **needs you** sets `needs_you: true`.
 - Claims come from the newest doc's Repo / branch line (a worktree claim) and Tracker line (trail and Linear claims), checked against live state.
-- Set `created` to the oldest doc's date, `updated` and every `as_of` to today.
+- Set every `as_of` to today. `created` came from `new --created` and `commit` keeps it (and `sessions`) from disk; `commit` sets `updated`.
 - Recent holds the last 3 source dates, one line each.
 - Write one log entry per source doc date, each in its own `mktemp` file. If two docs share a date, put both in that one entry. Each entry holds what that doc recorded: state, decisions, finished steps. Pass each to `commit` as `--log <YYYY-MM-DD>=<file>`, with the doc's date, so it lands in `log/<YYYY-MM-DD>.md`.
 - `knowledge.md` collects the decisions and gotchas across all the group's docs. Resolve contradictions toward the newest doc and move the losing one to `## Rejected`.
@@ -106,7 +106,7 @@ Then commit:
 entire-tail threads commit <slug> --base <base> --file <new-thread.md> --knowledge <new-knowledge.md> --knowledge-base <knowledge_base> --log <date1>=<log1.md> --log <date2>=<log2.md>
 ```
 
-One `--log` per source date. Handle the exit codes as `thread-handover` does. Move on to the next group only after a commit succeeds.
+One `--log` per source date. Exit codes are as in `thread-handover`: 3 means stale (nothing written; merge onto the printed `begin` JSON and retry once), 4 means your frontmatter does not parse, 5 means the `thread.md` on disk is broken (stop and tell Daniel). Move on to the next group only after a commit succeeds.
 
 ## 6. Finish
 

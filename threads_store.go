@@ -136,8 +136,10 @@ func readThreadFile(dir string) (threadMeta, map[string]string, error) {
 }
 
 // registerSession records that agent session id works on the thread: a
-// registry entry plus a newest-first Sessions entry, both idempotent.
-func registerSession(root, slug, agent, id string, now time.Time) error {
+// registry entry plus a newest-first Sessions entry, both idempotent. It
+// leaves `updated` alone: opening a thread is not work on it, and triage ages
+// threads by `updated`.
+func registerSession(root, slug, agent, id string) error {
 	if err := validThreadSlug(slug); err != nil {
 		return err
 	}
@@ -166,7 +168,6 @@ func registerSession(root, slug, agent, id string, now time.Time) error {
 		}
 	}
 	meta.Sessions = append([]threadSessionRef{ref}, rest...)
-	meta.Updated = now.Format("2006-01-02")
 	if err := atomicWrite(filepath.Join(dir, "thread.md"), formatThreadMD(meta, secs)); err != nil {
 		return err
 	}
@@ -256,9 +257,15 @@ func setThreadStatus(root, slug string, to threadStatus, reason string, now time
 	if err != nil {
 		return err
 	}
+	// The folder decides whether a thread is closed, not the frontmatter: a
+	// thread.md in root that says closed (a hand edit, or a close that crashed
+	// before the move) counts as open, so closing it completes the move.
 	from := meta.Status
-	if wasClosed {
+	switch {
+	case wasClosed:
 		from = threadClosed
+	case from == threadClosed:
+		from = threadOpen
 	}
 	if from == to {
 		return nil
@@ -296,6 +303,15 @@ func setThreadStatus(root, slug string, to threadStatus, reason string, now time
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return err
 		}
+	}
+	// Closing moves first and writes after, so a crash in between leaves the
+	// thread in _closed (closed, by its folder). Reopening writes first, so a
+	// crash leaves it in _closed and a retry still moves it.
+	if to == threadClosed && dest != "" {
+		if err := os.Rename(dir, dest); err != nil {
+			return err
+		}
+		dir, dest = dest, ""
 	}
 	if err := atomicWrite(filepath.Join(dir, "thread.md"), formatThreadMD(meta, secs)); err != nil {
 		return err

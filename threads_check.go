@@ -255,6 +255,8 @@ func threadListStatus(t thread, f threadFacts) (string, string) {
 		return "unreadable: " + t.ParseErr.Error(), "stale"
 	case len(f.Stale) > 0:
 		return "stale: " + f.Stale[0], "stale"
+	case t.ClosedInRoot:
+		return "marked closed but not moved", "risk"
 	case len(f.Risks) > 0:
 		return f.Risks[0], "risk"
 	case t.Meta.WaitingOn == "":

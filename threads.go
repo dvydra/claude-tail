@@ -25,13 +25,13 @@ const (
 
 // threadClaim is one checkable statement a thread makes about the world.
 type threadClaim struct {
-	Kind   string `yaml:"kind"` // "worktree" | "trail" | "linear"
-	Path   string `yaml:"path,omitempty"`
-	Branch string `yaml:"branch,omitempty"`
-	Head   string `yaml:"head,omitempty"`  // worktree; "" means unpushed
-	Trail  string `yaml:"trail,omitempty"` // "gh/owner/repo/123" or "et/..."
-	Linear string `yaml:"linear,omitempty"`
-	Expect string `yaml:"expect,omitempty"` // trail/linear state
+	Kind   string `yaml:"kind" json:"kind"` // "worktree" | "trail" | "linear"
+	Path   string `yaml:"path,omitempty" json:"path,omitempty"`
+	Branch string `yaml:"branch,omitempty" json:"branch,omitempty"`
+	Head   string `yaml:"head,omitempty" json:"head,omitempty"`   // worktree; "" means unpushed
+	Trail  string `yaml:"trail,omitempty" json:"trail,omitempty"` // "gh/owner/repo/123" or "et/..."
+	Linear string `yaml:"linear,omitempty" json:"linear,omitempty"`
+	Expect string `yaml:"expect,omitempty" json:"expect,omitempty"` // trail/linear state
 }
 
 // threadSessionRef names an agent session that worked on a thread, newest first.
@@ -71,6 +71,15 @@ type thread struct {
 	Sections map[string]string
 	Dir      string
 	ParseErr error
+	// ClosedInRoot is set when thread.md says closed but the folder is not in
+	// _closed. Such a thread is shown as open with a risk, so it is not lost.
+	ClosedInRoot bool
+}
+
+// threadDisplayName is the thread's name, or its slug when the name is
+// missing (an unreadable or hand-made thread.md).
+func threadDisplayName(t thread) string {
+	return firstNonEmpty(t.Meta.Name, t.Meta.Slug, filepath.Base(t.Dir))
 }
 
 var threadSections = []string{"What it is", "Where it got to", "What's in the way", "People", "Recent"}
@@ -189,13 +198,16 @@ func formatThreadMD(meta threadMeta, sections map[string]string) []byte {
 	return buf.Bytes()
 }
 
-// loadThreads reads every open or parked thread under root. Unreadable ones
-// are kept with ParseErr set so they stay visible.
+// loadThreads reads every thread directly under root (the threads root, or
+// its _closed folder). Unreadable ones are kept with ParseErr set so they stay
+// visible. The folder decides closed: under _closed a thread is closed, and
+// one in root whose file says closed is shown as open with ClosedInRoot set.
 func loadThreads(root string) []thread {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
+	inClosed := filepath.Base(root) == threadsClosedDir
 	var out []thread
 	for _, e := range entries {
 		name := e.Name()
@@ -204,12 +216,24 @@ func loadThreads(root string) []thread {
 		}
 		dir := filepath.Join(root, name)
 		data, err := readFile(filepath.Join(dir, "thread.md"))
-		if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		meta, secs, perr := parseThreadMD(data)
+		var meta threadMeta
+		var secs map[string]string
+		perr := err
+		if err == nil {
+			meta, secs, perr = parseThreadMD(data)
+		}
 		meta.Slug = name // the directory name is the slug, whatever the frontmatter says
-		out = append(out, thread{Meta: meta, Sections: secs, Dir: dir, ParseErr: perr})
+		t := thread{Meta: meta, Sections: secs, Dir: dir, ParseErr: perr}
+		switch {
+		case inClosed:
+			t.Meta.Status = threadClosed
+		case meta.Status == threadClosed:
+			t.Meta.Status, t.ClosedInRoot = threadOpen, true
+		}
+		out = append(out, t)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i].Meta, out[j].Meta

@@ -171,6 +171,9 @@ Pass `--knowledge-base` exactly as `begin` printed it, including when it is empt
 - Exit 0: done. All three files are written.
 - Exit 3: someone else wrote `thread.md` or `knowledge.md` since `begin`, and nothing was written. Stdout is the current `begin` JSON. Merge your changes onto its `thread_md` and `knowledge_md`, then commit again with the new `base` and `knowledge_base` (the same log entry). Retry once. If it is stale again, stop and tell Daniel.
 - Exit 4: your new `thread.md` frontmatter does not parse. Fix the YAML and commit again.
+- Exit 5: the `thread.md` on disk is broken. Nothing was written. Stop and tell Daniel; do not try to repair it.
+
+`commit` keeps `sessions` and `created` as they are on disk, whatever your file says. `register` is the only way to add a session.
 
 ## 4. Finish
 

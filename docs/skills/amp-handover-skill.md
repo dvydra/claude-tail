@@ -1,6 +1,6 @@
 ---
 name: handover
-description: Write an Obsidian handover doc for this session — where we left it, next step, loose ends — into the Entire vault under today's date.
+description: Hand over this session. With threads enabled, update its long-running thread in the Entire vault (thread.md, knowledge, log); otherwise write an Obsidian handover doc (where we left it, next step, loose ends) under today's date.
 ---
 
 Arguments: [optional scope hint or title, e.g. "focus on the RFD, not the CI porting"]
