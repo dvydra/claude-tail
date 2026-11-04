@@ -168,6 +168,7 @@ func TestUpdateThreadsScrollCapped(t *testing.T) {
 	ui := tvUI()
 	for i := 0; i < 50; i++ {
 		ui, _ = press(ui, kPageDown, 0)
+		ui = clampThreadsScroll(ui, idRender, nil)
 	}
 	if ui.Scroll > 10 {
 		t.Fatalf("scroll ran away: %d", ui.Scroll)
@@ -184,4 +185,79 @@ func TestRenderThreadsLayoutDump(t *testing.T) {
 	ui.Facts["a"] = threadFacts{Stale: []string{"worktree gone"}}
 	ui.Threads[0].Sections["Where it got to"] = "Wired the parser. Next is the view."
 	t.Log("\n" + stripANSI(renderThreads(ui, idRender, nil)))
+}
+
+func TestThreadsScrollReachesEndWithExpandingRender(t *testing.T) {
+	double := func(s string) (string, error) {
+		var out []string
+		for _, l := range strings.Split(s, "\n") {
+			out = append(out, l, l)
+		}
+		return strings.Join(out, "\n"), nil
+	}
+	var ls []string
+	for i := 0; i < 60; i++ {
+		ls = append(ls, fmt.Sprintf("line%03d", i))
+	}
+	ui := tvUI()
+	ui.Threads[0].Sections["Where it got to"] = strings.Join(ls, "\n\n")
+	for i := 0; i < 400; i++ {
+		ui, _ = press(ui, kPageDown, 0)
+		ui = clampThreadsScroll(ui, double, nil)
+	}
+	out := stripANSI(renderThreads(ui, double, nil))
+	if !strings.Contains(out, "line059") {
+		t.Fatalf("end unreachable:\n%s", out)
+	}
+	ui, _ = press(ui, kPageUp, 0)
+	if ui.Scroll < 0 {
+		t.Fatal("negative scroll")
+	}
+}
+
+func TestRenderThreadsWideLineKeepsFooter(t *testing.T) {
+	ui := tvUI()
+	ui.Width = 80
+	ui.Threads[0].Sections["Where it got to"] = "before\n\n" + strings.Repeat("x", 300) + "\n\nafter"
+	for s := 0; s < 12; s++ {
+		ui.Scroll = s
+		out := stripANSI(renderThreads(ui, idRender, nil))
+		lines := strings.Split(out, "\n")
+		phys := 0
+		for _, l := range lines {
+			phys += physRows(l, 80)
+		}
+		if len(lines) > ui.Height || phys > ui.Height {
+			t.Fatalf("scroll %d: %d rows, %d physical > %d", s, len(lines), phys, ui.Height)
+		}
+		if !strings.HasPrefix(lines[len(lines)-1], "⏎ open") {
+			t.Fatalf("scroll %d: footer missing:\n%s", s, out)
+		}
+	}
+}
+
+func TestUpdateThreadsDetailModeIgnoresOtherKeys(t *testing.T) {
+	for _, m := range []string{"details", "knowledge"} {
+		ui := tvUI()
+		ui.Mode = m
+		for _, r := range "pxu/dk" {
+			n, a := press(ui, kRune, r)
+			if a.Kind != "" || n.Mode != m || n.Cursor != 0 {
+				t.Fatalf("%s: %q changed state: %+v %+v", m, r, n, a)
+			}
+		}
+		if n, _ := press(ui, kDown, 0); n.Cursor != 0 || n.Mode != m {
+			t.Fatalf("%s: down moved cursor", m)
+		}
+		if n, _ := press(ui, kRune, 'q'); n.Mode != "list" {
+			t.Fatalf("%s: q should leave", m)
+		}
+	}
+}
+
+func TestDimLinesReappliesDimAfterReset(t *testing.T) {
+	got := dimLines("a\x1b[1mb\x1b[0mc")[0]
+	if !strings.Contains(got, "\x1b[0m"+tvDim+"c") {
+		t.Fatalf("dim lost after reset: %q", got)
+	}
 }

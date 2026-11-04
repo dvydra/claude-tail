@@ -133,10 +133,21 @@ func updateThreads(ui threadsUI, k treeKey, r rune) (threadsUI, threadsAction) {
 		ui.Cursor, ui.Scroll = 0, 0
 		return ui, a
 	case "details", "knowledge":
-		if k == kEsc || k == kEnter || (k == kRune && (r == 'q' || r == 'd' || r == 'k')) {
+		dpage := max(1, ui.Height/2-1)
+		switch {
+		case k == kEsc, k == kRune && r == 'q':
 			ui.Mode, ui.Scroll = "list", 0
-			return ui, a
+		case k == kUp:
+			ui.Scroll--
+		case k == kDown:
+			ui.Scroll++
+		case k == kPageDown, k == kRune && r == ' ':
+			ui.Scroll += dpage
+		case k == kPageUp:
+			ui.Scroll -= dpage
 		}
+		ui.Scroll = max(0, ui.Scroll)
+		return ui, a
 	}
 	page := max(1, ui.Height/2-1)
 	switch {
@@ -198,13 +209,9 @@ func updateThreads(ui threadsUI, k treeKey, r rune) (threadsUI, threadsAction) {
 	} else {
 		ui.Cursor = 0
 	}
-	// Cap the detail scroll with the same layout the renderer uses. Knowledge
-	// text is not known here, so that mode is capped at render time only.
-	if ui.Scroll != 0 && ui.Mode != "knowledge" {
-		_, _, detailH := threadsLayout(ui)
-		lines := threadDetailLines(ui, nil, nil)
-		ui.Scroll = max(0, min(ui.Scroll, len(lines)-detailH))
-	}
+	// The upper bound on Scroll depends on rendered output; the driver applies
+	// clampThreadsScroll after each update.
+	ui.Scroll = max(0, ui.Scroll)
 	return ui, a
 }
 
@@ -281,9 +288,59 @@ func renderMD(render func(string) (string, error), s string) string {
 func dimLines(s string) []string {
 	var out []string
 	for _, l := range strings.Split(s, "\n") {
+		l = strings.ReplaceAll(l, "\x1b[0m", tvReset+tvDim)
+		l = strings.ReplaceAll(l, "\x1b[m", tvReset+tvDim)
 		out = append(out, tvDim+l+tvReset)
 	}
 	return out
+}
+
+func physRows(line string, w int) int {
+	return max(1, (visWidth(line)+w-1)/w)
+}
+
+// detailWindow takes lines from sc while their physical rows (a long line the
+// terminal soft-wraps costs several) fit in h. A first line bigger than h is
+// hard-truncated to h rows. Returns the lines and the rows they use.
+func detailWindow(lines []string, sc, h, w int) ([]string, int) {
+	var out []string
+	used := 0
+	for i := max(0, sc); i < len(lines); i++ {
+		n := physRows(lines[i], w)
+		if len(out) == 0 && n > h {
+			return []string{truncVisible(lines[i], h*w)}, h
+		}
+		if used+n > h {
+			break
+		}
+		out = append(out, lines[i])
+		used += n
+	}
+	return out, used
+}
+
+// maxThreadsScroll is the largest scroll that still shows the last line.
+func maxThreadsScroll(lines []string, h, w int) int {
+	used := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		used += physRows(lines[i], w)
+		if used > h {
+			return min(i+1, len(lines)-1)
+		}
+	}
+	return 0
+}
+
+// clampThreadsScroll bounds Scroll with the same lines the renderer windows.
+// The driver calls it after every update, since render cannot mutate ui.
+func clampThreadsScroll(ui threadsUI, render func(string) (string, error), knowledge func(string) string) threadsUI {
+	if ui.Height < 6 {
+		ui.Height = 6
+	}
+	_, _, detailH := threadsLayout(ui)
+	lines := threadDetailLines(ui, render, knowledge)
+	ui.Scroll = max(0, min(ui.Scroll, maxThreadsScroll(lines, detailH, max(20, ui.Width))))
+	return ui
 }
 
 // threadDetailLines is the whole detail pane as rows, wrapped to the width and
@@ -449,9 +506,10 @@ func renderThreads(ui threadsUI, render func(string) (string, error), knowledge 
 	rows = append(rows, tvDim+strings.Repeat("─", w)+tvReset)
 
 	lines := threadDetailLines(ui, render, knowledge)
-	sc := max(0, min(ui.Scroll, len(lines)-detailH))
-	rows = append(rows, lines[sc:min(len(lines), sc+detailH)]...)
-	for len(rows) < ui.Height-1 {
+	sc := max(0, min(ui.Scroll, maxThreadsScroll(lines, detailH, w)))
+	win, used := detailWindow(lines, sc, detailH, w)
+	rows = append(rows, win...)
+	for ; used < detailH; used++ {
 		rows = append(rows, "")
 	}
 	rows = append(rows, truncVisible(footerFor(ui), w))
