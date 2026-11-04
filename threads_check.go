@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ type threadCheckDeps struct {
 	Live   func() []liveSession
 	Exists func(string) bool
 	Now    func() int64
+	Home   string // for tildify in risk text
 }
 
 const threadCheckTimeout = 12 * time.Second
@@ -37,25 +39,60 @@ func defaultThreadCheckDeps(home string) threadCheckDeps {
 		Run: defaultWTFScanDeps().Run,
 		Live: func() []liveSession {
 			out := collectLiveSessions(liveRoots(home), pidAlive)
-			return append(out, collectLiveAmpSessions(home)...)
+			return append(out, lightLiveAmpSessions()...)
 		},
+		Home:   home,
 		Exists: isDir,
 		Now:    func() int64 { return time.Now().Unix() },
 	}
 }
 
-// checkThreads checks every thread concurrently, keyed by slug.
+// lightLiveAmpSessions maps running amp pids to thread ids through pgrep, ps
+// and lsof only. Unlike collectLiveAmpSessions it never exports a thread or
+// writes a snapshot, which a read-only check must not do.
+func lightLiveAmpSessions() []liveSession {
+	out, err := exec.Command("pgrep", "-x", "amp").Output()
+	if err != nil {
+		return nil
+	}
+	var sessions []liveSession
+	for _, pid := range parsePIDs(out) {
+		id := strconv.Itoa(pid)
+		tty, err := exec.Command("ps", "-o", "tty=", "-p", id).Output()
+		if err != nil || strings.TrimSpace(string(tty)) == "" || strings.TrimSpace(string(tty)) == "??" {
+			continue
+		}
+		files, err := exec.Command("lsof", "-a", "-p", id, "-Fn").Output()
+		if err != nil {
+			continue
+		}
+		tid := ampThreadIDFromLsof(files)
+		if tid == "" {
+			continue
+		}
+		cwdOut, _ := exec.Command("lsof", "-a", "-p", id, "-d", "cwd", "-Fn").Output()
+		sessions = append(sessions, liveSession{Agent: AgentAmp, PID: pid, SessionID: tid, Cwd: parseLsofCwd(cwdOut)})
+	}
+	return sessions
+}
+
+// checkThreads reads live sessions once, then checks every thread
+// concurrently, keyed by its directory name.
 func checkThreads(ctx context.Context, ts []thread, deps threadCheckDeps) map[string]threadFacts {
 	out := make(map[string]threadFacts, len(ts))
+	var live []liveSession
+	if deps.Live != nil {
+		live = deps.Live()
+	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, t := range ts {
 		wg.Add(1)
 		go func(t thread) {
 			defer wg.Done()
-			f := checkThread(ctx, t, deps)
+			f := checkThreadLive(ctx, t, deps, live)
 			mu.Lock()
-			out[t.Meta.Slug] = f
+			out[filepath.Base(t.Dir)] = f
 			mu.Unlock()
 		}(t)
 	}
@@ -66,6 +103,15 @@ func checkThreads(ctx context.Context, ts []thread, deps threadCheckDeps) map[st
 // checkThread compares one thread's claims with git, entire and the live
 // session registry.
 func checkThread(ctx context.Context, t thread, deps threadCheckDeps) threadFacts {
+	var live []liveSession
+	if deps.Live != nil {
+		live = deps.Live()
+	}
+	return checkThreadLive(ctx, t, deps, live)
+}
+
+// checkThreadLive is checkThread with the running sessions already read.
+func checkThreadLive(ctx context.Context, t thread, deps threadCheckDeps, live []liveSession) threadFacts {
 	ctx, cancel := context.WithTimeout(ctx, threadCheckTimeout)
 	defer cancel()
 	var f threadFacts
@@ -79,16 +125,16 @@ func checkThread(ctx context.Context, t thread, deps threadCheckDeps) threadFact
 			f.Details = append(f.Details, "linear "+c.Linear+" not checked (no Linear access from here)")
 		}
 	}
-	if deps.Live != nil && len(t.Meta.Sessions) > 0 {
+	if len(t.Meta.Sessions) > 0 {
 		ids := map[string]bool{}
 		for _, s := range t.Meta.Sessions {
 			ids[s.ID] = true
 		}
-		for _, l := range deps.Live() {
+		for _, l := range live {
 			if ids[l.SessionID] {
 				l := l
 				f.Running = &l
-				f.Risks = append(f.Risks, "running now in "+tildify(l.Cwd, mustHome()))
+				f.Risks = append(f.Risks, "running now in "+tildify(l.Cwd, deps.Home))
 				break
 			}
 		}

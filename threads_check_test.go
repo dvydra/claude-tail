@@ -129,7 +129,7 @@ func TestCheckThreadsConcurrent(t *testing.T) {
 	deps := wtDeps(&fakeRun{}, nil)
 	var ts []thread
 	for _, s := range []string{"a", "b", "c", "d"} {
-		ts = append(ts, thread{Meta: threadMeta{Slug: s, Sessions: []threadSessionRef{{ID: s}}}})
+		ts = append(ts, thread{Dir: "/t/" + s, Meta: threadMeta{Slug: "ignored", Sessions: []threadSessionRef{{ID: s}}}})
 	}
 	deps.Live = func() []liveSession { return []liveSession{{SessionID: "c", Cwd: "/c"}} }
 	m := checkThreads(context.Background(), ts, deps)
@@ -158,5 +158,17 @@ func TestThreadListStatusPrecedence(t *testing.T) {
 		if text != c.text || tone != c.tone {
 			t.Errorf("%s: got %q/%q want %q/%q", c.name, text, tone, c.text, c.tone)
 		}
+	}
+}
+
+func TestCheckThreadsCallsLiveOnce(t *testing.T) {
+	deps := wtDeps(&fakeRun{}, nil)
+	var mu sync.Mutex
+	n := 0
+	deps.Live = func() []liveSession { mu.Lock(); n++; mu.Unlock(); return nil }
+	ts := []thread{{Dir: "/t/a"}, {Dir: "/t/b"}, {Dir: "/t/c"}}
+	checkThreads(context.Background(), ts, deps)
+	if n != 1 {
+		t.Fatalf("Live called %d times", n)
 	}
 }
