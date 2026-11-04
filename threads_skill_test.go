@@ -47,6 +47,20 @@ func TestThreadHandoverSkillMentionsOnlyRealSubcommands(t *testing.T) {
 	}
 }
 
+func TestThreadSkillsCommitKnowledgeAndLog(t *testing.T) {
+	for _, p := range []string{"docs/skills/thread-handover/SKILL.md", "docs/skills/threads-bootstrap/SKILL.md"} {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, flag := range []string{"--knowledge <", "--knowledge-base <knowledge_base>", "--log <"} {
+			if !strings.Contains(string(data), flag) {
+				t.Errorf("%s does not pass %s to commit", p, flag)
+			}
+		}
+	}
+}
+
 func TestHandoverEntryPointsRouteToThreads(t *testing.T) {
 	for _, p := range []string{"docs/skills/handover-command.md", "docs/skills/amp-handover-skill.md"} {
 		data, err := os.ReadFile(p)

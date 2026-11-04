@@ -12,7 +12,7 @@ Plain words, no em dashes, no hard-wrapped lines.
 Hard rules:
 
 - Never edit, move or delete a source handover doc. Read only.
-- Write only through `entire-tail threads` subcommands, plus `knowledge.md` and `log/<date>.md` inside the thread dir that `begin` returns.
+- Write only through `entire-tail threads` subcommands. `knowledge.md` and the logs go through `commit` too; never write into the thread dir yourself.
 - Do not create `.enabled`. Daniel does that himself at the end.
 - Write nothing until Daniel confirms the grouping table.
 
@@ -97,16 +97,16 @@ Then run `entire-tail threads begin <slug>` and write the files per `thread-hand
 - Claims come from the newest doc's Repo / branch line (a worktree claim) and Tracker line (trail and Linear claims), checked against live state.
 - Set `created` to the oldest doc's date, `updated` and every `as_of` to today.
 - Recent holds the last 3 source dates, one line each.
-- Write one `log/<date>.md` per source doc date. If two docs share a date, put both in that one file. Each log holds what that doc recorded: state, decisions, finished steps. Create `log/` if needed.
+- Write one log entry per source doc date, each in its own `mktemp` file. If two docs share a date, put both in that one entry. Each entry holds what that doc recorded: state, decisions, finished steps. Pass each to `commit` as `--log <YYYY-MM-DD>=<file>`, with the doc's date, so it lands in `log/<YYYY-MM-DD>.md`.
 - `knowledge.md` collects the decisions and gotchas across all the group's docs. Resolve contradictions toward the newest doc and move the losing one to `## Rejected`.
 
 Then commit:
 
 ```bash
-entire-tail threads commit <slug> --base <base> --file <path-to-new-thread.md>
+entire-tail threads commit <slug> --base <base> --file <new-thread.md> --knowledge <new-knowledge.md> --knowledge-base <knowledge_base> --log <date1>=<log1.md> --log <date2>=<log2.md>
 ```
 
-Handle exits 3 and 4 as `thread-handover` does. Move on to the next group only after a commit succeeds.
+One `--log` per source date. Handle the exit codes as `thread-handover` does. Move on to the next group only after a commit succeeds.
 
 ## 6. Finish
 

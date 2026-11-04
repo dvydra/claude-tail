@@ -17,9 +17,11 @@ func runCmd(t *testing.T, root string, args ...string) (int, string, string) {
 }
 
 type beginOut struct {
-	Base     string `json:"base"`
-	Dir      string `json:"dir"`
-	ThreadMD string `json:"thread_md"`
+	Base          string `json:"base"`
+	Dir           string `json:"dir"`
+	ThreadMD      string `json:"thread_md"`
+	KnowledgeBase string `json:"knowledge_base"`
+	KnowledgeMD   string `json:"knowledge_md"`
 }
 
 func mustBegin(t *testing.T, root, slug string) beginOut {
@@ -104,6 +106,103 @@ func TestThreadsCmdCommitRejectsBadFrontmatter(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(root, slug, "thread.md"))
 	if string(data) != b.ThreadMD {
 		t.Fatal("file changed")
+	}
+}
+
+func readT(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestThreadsCmdBeginKnowledge(t *testing.T) {
+	root := t.TempDir()
+	slug := mustCreate(t, root, "Alpha")
+	os.WriteFile(filepath.Join(root, slug, "knowledge.md"), []byte("k1\n"), 0o644)
+	b := mustBegin(t, root, slug)
+	if b.KnowledgeMD != "k1\n" || b.KnowledgeBase != sha256Hex([]byte("k1\n")) {
+		t.Fatalf("begin = %+v", b)
+	}
+	os.Remove(filepath.Join(root, slug, "knowledge.md"))
+	if b := mustBegin(t, root, slug); b.KnowledgeBase != "" || b.KnowledgeMD != "" {
+		t.Fatalf("missing knowledge: %+v", b)
+	}
+}
+
+func TestThreadsCmdCommitStaleKnowledgeWritesNothing(t *testing.T) {
+	root := t.TempDir()
+	slug := mustCreate(t, root, "Alpha")
+	dir := filepath.Join(root, slug)
+	b := mustBegin(t, root, slug)
+	os.WriteFile(filepath.Join(dir, "knowledge.md"), []byte("written by B\n"), 0o644)
+	nw := strings.Replace(b.ThreadMD, "## What it is\n", "## What it is\nfrom A\n", 1)
+	code, out, _ := runCmd(t, root, "commit", slug, "--base", b.Base, "--file", writeTmp(t, nw),
+		"--knowledge", writeTmp(t, "from A\n"), "--knowledge-base", b.KnowledgeBase, "--log", writeTmp(t, "- A did a thing\n"))
+	if code != 3 {
+		t.Fatalf("code = %d", code)
+	}
+	var cur beginOut
+	if err := json.Unmarshal([]byte(out), &cur); err != nil || cur.KnowledgeMD != "written by B\n" {
+		t.Fatalf("stdout = %q err=%v", out, err)
+	}
+	if readT(t, filepath.Join(dir, "thread.md")) != b.ThreadMD {
+		t.Error("thread.md written on a stale knowledge base")
+	}
+	if readT(t, filepath.Join(dir, "knowledge.md")) != "written by B\n" {
+		t.Error("knowledge.md overwritten")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "log", "2026-11-04.md")); !os.IsNotExist(err) {
+		t.Error("log written on a stale commit")
+	}
+}
+
+func TestThreadsCmdCommitAppendsLog(t *testing.T) {
+	root := t.TempDir()
+	slug := mustCreate(t, root, "Alpha")
+	dir := filepath.Join(root, slug)
+	for _, entry := range []string{"- first\n", "- second"} {
+		b := mustBegin(t, root, slug)
+		if code, _, e := runCmd(t, root, "commit", slug, "--base", b.Base, "--file", writeTmp(t, b.ThreadMD), "--log", writeTmp(t, entry)); code != 0 {
+			t.Fatalf("commit = %d %s", code, e)
+		}
+	}
+	if got := readT(t, filepath.Join(dir, "log", "2026-11-04.md")); got != "- first\n\n- second\n" {
+		t.Fatalf("log = %q", got)
+	}
+	b := mustBegin(t, root, slug)
+	if code, _, e := runCmd(t, root, "commit", slug, "--base", b.Base, "--file", writeTmp(t, b.ThreadMD), "--log", "2026-10-30="+writeTmp(t, "- old day\n")); code != 0 {
+		t.Fatalf("dated commit = %d %s", code, e)
+	}
+	if got := readT(t, filepath.Join(dir, "log", "2026-10-30.md")); got != "- old day\n" {
+		t.Fatalf("dated log = %q", got)
+	}
+}
+
+func TestThreadsCmdCommitThreadKnowledgeAndLog(t *testing.T) {
+	root := t.TempDir()
+	slug := mustCreate(t, root, "Alpha")
+	dir := filepath.Join(root, slug)
+	b := mustBegin(t, root, slug)
+	nw := strings.Replace(b.ThreadMD, "## What it is\n", "## What it is\nnew\n", 1)
+	code, _, e := runCmd(t, root, "commit", slug, "--base", b.Base, "--file", writeTmp(t, nw),
+		"--knowledge", writeTmp(t, "## Decisions\n- d\n"), "--knowledge-base", b.KnowledgeBase, "--log", writeTmp(t, "- did it\n"))
+	if code != 0 {
+		t.Fatalf("commit = %d %s", code, e)
+	}
+	if !strings.Contains(readT(t, filepath.Join(dir, "thread.md")), "## What it is\nnew\n") {
+		t.Error("thread.md not written")
+	}
+	if readT(t, filepath.Join(dir, "knowledge.md")) != "## Decisions\n- d\n" {
+		t.Error("knowledge.md not written")
+	}
+	if readT(t, filepath.Join(dir, "log", "2026-11-04.md")) != "- did it\n" {
+		t.Error("log not written")
+	}
+	if code, _, _ := runCmd(t, root, "commit", slug, "--base", "x", "--file", "y", "--knowledge", "z"); code != 64 {
+		t.Errorf("--knowledge without --knowledge-base = %d, want 64", code)
 	}
 }
 

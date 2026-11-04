@@ -81,7 +81,9 @@ To pause a thread Daniel asks you to park, run `entire-tail threads park <slug> 
 entire-tail threads begin <slug>
 ```
 
-It prints JSON: `base` (a hash), `dir` (the thread folder) and `thread_md` (the current text). Keep `base`.
+It prints JSON: `base` (a hash of `thread.md`), `dir` (the thread folder), `thread_md` (the current text), `knowledge_base` (a hash of `knowledge.md`, empty if the file does not exist) and `knowledge_md` (its current text). Keep both hashes.
+
+Never write into `dir` yourself. `thread.md`, `knowledge.md` and the log all go through one `commit`, which takes a lock and refuses if another session wrote in between.
 
 Rewrite `thread.md` from scratch. Inputs: the old `thread.md`, this session, and live state (git status, the trail, the Linear issue). The rule is "only what's true now". Fetch real state with `git`, `entire trail show` and Linear. Never write state from memory. If a fetch fails, write "state unknown (fetch failed)".
 
@@ -154,19 +156,21 @@ Rules for the file:
 - Recent holds the last 3 working days only, one line each. A working day is a day with a log entry for this thread (a file in `<dir>/log/`, counting today's). Older lines move to the log.
 - `sessions` lists agent and id, newest first. Keep what is there; `register` already added this one.
 
-Nothing is lost by the rewrite. In `<dir>/log/<today>.md` (create `log/` if needed; if today's file exists, add to it, do not overwrite) put what is leaving `thread.md`: finished steps, old SHAs, resolved blockers, and a short account of this session.
+Nothing is lost by the rewrite. Write a second scratch file (`mktemp`) with today's log entry: what is leaving `thread.md` (finished steps, old SHAs, resolved blockers) and a short account of this session. Write only the new entry; `commit` adds it to the end of `log/<today>.md` and creates the file if needed.
 
-Revise `<dir>/knowledge.md`; do not just append. Add new decisions and gotchas. Replace a decision this session reversed: move the old one to a `## Rejected` section as one line with the date and `see log/<date>`. Create the file if missing.
+Write a third scratch file (`mktemp`) with the whole new `knowledge.md`, starting from `knowledge_md`. Revise it; do not just append. Add new decisions and gotchas. Replace a decision this session reversed: move the old one to a `## Rejected` section as one line with the date and `see log/<date>`.
 
-Then commit the thread:
+Then commit all three at once:
 
 ```bash
-entire-tail threads commit <slug> --base <base> --file <path-to-new-thread.md>
+entire-tail threads commit <slug> --base <base> --file <new-thread.md> --knowledge <new-knowledge.md> --knowledge-base <knowledge_base> --log <log-entry.md>
 ```
 
-- Exit 0: done.
-- Exit 3: someone else wrote the thread since `begin`. Stdout is the current `begin` JSON. Merge your changes onto that `thread_md`, then commit again with the new `base`. Retry once. If it is stale again, stop and tell Daniel.
-- Exit 4: the frontmatter does not parse. Fix the YAML and commit again.
+Pass `--knowledge-base` exactly as `begin` printed it, including when it is empty (`--knowledge-base ""`). Leave out `--knowledge` and `--knowledge-base` only when knowledge did not change.
+
+- Exit 0: done. All three files are written.
+- Exit 3: someone else wrote `thread.md` or `knowledge.md` since `begin`, and nothing was written. Stdout is the current `begin` JSON. Merge your changes onto its `thread_md` and `knowledge_md`, then commit again with the new `base` and `knowledge_base` (the same log entry). Retry once. If it is stale again, stop and tell Daniel.
+- Exit 4: your new `thread.md` frontmatter does not parse. Fix the YAML and commit again.
 
 ## 4. Finish
 

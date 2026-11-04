@@ -213,10 +213,20 @@ func threadDir(root, slug string) (string, error) {
 	return "", fmt.Errorf("thread %q not found", slug)
 }
 
+// threadBegin is what `begin` prints and what a stale `commit` prints back:
+// the current thread.md and knowledge.md with a hash of each to commit against.
+// KnowledgeBase is "" when knowledge.md does not exist.
 type threadBegin struct {
-	Base     string `json:"base"`
-	Dir      string `json:"dir"`
-	ThreadMD string `json:"thread_md"`
+	Base          string `json:"base"`
+	Dir           string `json:"dir"`
+	ThreadMD      string `json:"thread_md"`
+	KnowledgeBase string `json:"knowledge_base"`
+	KnowledgeMD   string `json:"knowledge_md"`
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func readBegin(dir string) (threadBegin, error) {
@@ -224,12 +234,19 @@ func readBegin(dir string) (threadBegin, error) {
 	if err != nil {
 		return threadBegin{}, err
 	}
-	sum := sha256.Sum256(data)
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		abs = dir
 	}
-	return threadBegin{Base: hex.EncodeToString(sum[:]), Dir: abs, ThreadMD: string(data)}, nil
+	b := threadBegin{Base: sha256Hex(data), Dir: abs, ThreadMD: string(data)}
+	k, err := os.ReadFile(filepath.Join(dir, "knowledge.md"))
+	switch {
+	case err == nil:
+		b.KnowledgeBase, b.KnowledgeMD = sha256Hex(k), string(k)
+	case !errors.Is(err, os.ErrNotExist):
+		return threadBegin{}, err
+	}
+	return b, nil
 }
 
 func threadsBegin(root, slug string, out, errOut io.Writer) int {
@@ -244,11 +261,66 @@ func threadsBegin(root, slug string, out, errOut io.Writer) int {
 	return threadsJSON(out, errOut, b)
 }
 
-// threadsCommit replaces thread.md with an agent-edited copy, but only if the
-// file is unchanged since `begin`. Status fields are forced back to disk
-// values: agents change status through park/unpark/close, never here.
+const threadsCommitUsage = "commit <slug> --base <hash> --file <path> [--knowledge <path> --knowledge-base <hash>] [--log [YYYY-MM-DD=]<path>]..."
+
+// threadLogPart is one --log: text appended to log/<Date>.md.
+type threadLogPart struct {
+	Date string
+	Text []byte
+}
+
+// parseLogArg reads `--log [YYYY-MM-DD=]<path>`; without a date it is today's log.
+func parseLogArg(arg string, now time.Time) (string, string, error) {
+	if len(arg) > 11 && arg[10] == '=' {
+		if _, err := time.Parse("2006-01-02", arg[:10]); err == nil {
+			return arg[:10], arg[11:], nil
+		}
+	}
+	return now.Format("2006-01-02"), arg, nil
+}
+
+// appendLogText adds text to log/<date>.md, creating it if missing and
+// keeping a blank line between what was there and what is added.
+func appendLogText(dir, date string, text []byte) error {
+	p := filepath.Join(dir, "log", date+".md")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	old, err := os.ReadFile(p)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	var add []byte
+	if len(old) > 0 {
+		if old[len(old)-1] != '\n' {
+			add = append(add, '\n')
+		}
+		add = append(add, '\n')
+	}
+	add = append(add, text...)
+	if len(add) > 0 && add[len(add)-1] != '\n' {
+		add = append(add, '\n')
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(add)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
+}
+
+// threadsCommit replaces thread.md with an agent-edited copy, and optionally
+// knowledge.md and log entries, in one locked step. Each replaced file must be
+// unchanged since `begin`; if any check fails nothing is written. Status
+// fields are forced back to disk values: agents change status through
+// park/unpark/close, never here.
 func threadsCommit(args []string, root string, now time.Time, out, errOut io.Writer) int {
-	var slug, base, file string
+	var slug, base, file, kfile, kbase string
+	kbaseSet := false
+	var logArgs []string
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--base" && i+1 < len(args):
@@ -257,18 +329,42 @@ func threadsCommit(args []string, root string, now time.Time, out, errOut io.Wri
 		case args[i] == "--file" && i+1 < len(args):
 			file = args[i+1]
 			i++
+		case args[i] == "--knowledge" && i+1 < len(args):
+			kfile = args[i+1]
+			i++
+		case args[i] == "--knowledge-base" && i+1 < len(args):
+			kbase, kbaseSet = args[i+1], true
+			i++
+		case args[i] == "--log" && i+1 < len(args):
+			logArgs = append(logArgs, args[i+1])
+			i++
 		case slug == "" && !strings.HasPrefix(args[i], "--"):
 			slug = args[i]
 		default:
-			return threadsUsage(errOut, "commit <slug> --base <hash> --file <path>")
+			return threadsUsage(errOut, threadsCommitUsage)
 		}
 	}
-	if slug == "" || base == "" || file == "" {
-		return threadsUsage(errOut, "commit <slug> --base <hash> --file <path>")
+	if slug == "" || base == "" || file == "" || (kfile != "") != kbaseSet {
+		return threadsUsage(errOut, threadsCommitUsage)
 	}
 	newData, err := os.ReadFile(file)
 	if err != nil {
 		return threadsFail(errOut, err)
+	}
+	var newKnowledge []byte
+	if kfile != "" {
+		if newKnowledge, err = os.ReadFile(kfile); err != nil {
+			return threadsFail(errOut, err)
+		}
+	}
+	var logs []threadLogPart
+	for _, a := range logArgs {
+		date, p, _ := parseLogArg(a, now)
+		text, err := os.ReadFile(p)
+		if err != nil {
+			return threadsFail(errOut, err)
+		}
+		logs = append(logs, threadLogPart{Date: date, Text: text})
 	}
 	if err := validThreadSlug(slug); err != nil {
 		return threadsFail(errOut, err)
@@ -287,7 +383,7 @@ func threadsCommit(args []string, root string, now time.Time, out, errOut io.Wri
 	if err != nil {
 		return threadsFail(errOut, err)
 	}
-	if cur.Base != base {
+	if cur.Base != base || (kfile != "" && cur.KnowledgeBase != kbase) {
 		threadsJSON(out, errOut, cur)
 		return threadsExitStale
 	}
@@ -306,6 +402,16 @@ func threadsCommit(args []string, root string, now time.Time, out, errOut io.Wri
 	meta.Updated = now.Format("2006-01-02")
 	if err := atomicWrite(filepath.Join(dir, "thread.md"), formatThreadMD(meta, secs)); err != nil {
 		return threadsFail(errOut, err)
+	}
+	if kfile != "" {
+		if err := atomicWrite(filepath.Join(dir, "knowledge.md"), newKnowledge); err != nil {
+			return threadsFail(errOut, err)
+		}
+	}
+	for _, l := range logs {
+		if err := appendLogText(dir, l.Date, l.Text); err != nil {
+			return threadsFail(errOut, err)
+		}
 	}
 	return 0
 }
