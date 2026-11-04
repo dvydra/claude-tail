@@ -270,13 +270,19 @@ func runningFor(t thread, live []liveSession) *liveSession {
 	return nil
 }
 
-// openThreadWith launches t's workspace. The running-session guard uses the
-// live list read now, whether or not the background facts have arrived. A
-// session is registered only after the panes exist. It returns a note on
-// refusal or failure and does not return at all on success.
-func openThreadWith(root string, t thread, f threadFacts, live []liveSession, self, bin string, env threadLaunchEnv, newID func() string) string {
+// openThreadWith launches t's workspace. The running-session guards use the
+// live list read now, whether or not the background facts have arrived: one
+// of the thread's own sessions running anywhere, or any agent running inside
+// one of its worktrees. A session is registered only after the panes exist.
+// It returns a note on refusal or failure and does not return at all on success.
+func openThreadWith(root, home string, t thread, f threadFacts, live []liveSession, self, bin string, env threadLaunchEnv, newID func() string) string {
 	if f.Running == nil {
 		f.Running = runningFor(t, live)
+	}
+	if f.Running == nil {
+		if l, wt := agentInWorktree(t, live, isDir); l != nil {
+			return fmt.Sprintf("an agent is already running in %s (pid %d)", tildify(wt, home), l.PID)
+		}
 	}
 	w, ref, refuse := threadLaunchWith(t, f, self, bin, newID, env)
 	if refuse != "" {
@@ -329,7 +335,7 @@ func openThread(cfg Config, home, root string, ui threadsUI, slug string, tty *o
 		return accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(home)), cwd
 	}
 	restore()
-	note := openThreadWith(root, t, ui.Facts[slug], threadsLiveNow(home), selfPath(), bin, env, newSessionID)
+	note := openThreadWith(root, home, t, ui.Facts[slug], threadsLiveNow(home), selfPath(), bin, env, newSessionID)
 	_, _ = setRawTimed(tty)
 	return strings.TrimSpace(warn.String() + " " + note)
 }

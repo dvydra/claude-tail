@@ -139,7 +139,35 @@ func checkThreadLive(ctx context.Context, t thread, deps threadCheckDeps, live [
 			}
 		}
 	}
+	if f.Running == nil && deps.Exists != nil {
+		if l, wt := agentInWorktree(t, live, deps.Exists); l != nil {
+			f.Risks = append(f.Risks, fmt.Sprintf("an agent is already running in %s (pid %d)", tildify(wt, deps.Home), l.PID))
+		}
+	}
 	return f
+}
+
+// agentInWorktree finds a running session, of any thread or none, whose cwd
+// is inside one of t's claimed worktrees that still exists. Opening the
+// thread there would put a second agent in that worktree.
+func agentInWorktree(t thread, live []liveSession, exists func(string) bool) (*liveSession, string) {
+	for _, c := range t.Meta.Claims {
+		if c.Kind != "worktree" || c.Path == "" || !exists(c.Path) {
+			continue
+		}
+		wt := filepath.Clean(c.Path)
+		for _, l := range live {
+			if l.Cwd == "" {
+				continue
+			}
+			cwd := filepath.Clean(l.Cwd)
+			if cwd == wt || strings.HasPrefix(cwd, wt+string(filepath.Separator)) {
+				l := l
+				return &l, wt
+			}
+		}
+	}
+	return nil, ""
 }
 
 func checkWorktreeClaim(ctx context.Context, c threadClaim, deps threadCheckDeps, f *threadFacts) {

@@ -125,6 +125,23 @@ func TestCheckThreadRunning(t *testing.T) {
 	}
 }
 
+func TestCheckThreadAgentInWorktree(t *testing.T) {
+	th := thread{Meta: threadMeta{Claims: []threadClaim{{Kind: "worktree", Path: "/h/src/wt"}}}}
+	deps := wtDeps(&fakeRun{}, nil)
+	deps.Home = "/h"
+	deps.Live = func() []liveSession {
+		return []liveSession{{SessionID: "x", Cwd: "/h/src/wt2", PID: 8}, {SessionID: "y", Cwd: "/h/src/wt/sub", PID: 9}}
+	}
+	got := checkThread(context.Background(), th, deps)
+	if !strings.Contains(joinStr(got.Risks), "an agent is already running in ~/src/wt (pid 9)") {
+		t.Fatalf("risks = %v", got.Risks)
+	}
+	deps.Live = func() []liveSession { return []liveSession{{SessionID: "x", Cwd: "/h/src/wt2", PID: 8}} }
+	if got := checkThread(context.Background(), th, deps); len(got.Risks) != 0 {
+		t.Fatalf("sibling dir matched: %v", got.Risks)
+	}
+}
+
 func TestCheckThreadsConcurrent(t *testing.T) {
 	deps := wtDeps(&fakeRun{}, nil)
 	var ts []thread

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -139,16 +140,27 @@ func TestOpenThreadRefusesRunningWithoutFacts(t *testing.T) {
 	root, th := openFixture(t)
 	th.Meta.Sessions = []threadSessionRef{{Agent: "claude", ID: "sess-1"}}
 	live := []liveSession{{SessionID: "sess-1", PID: 7, Cwd: "/w"}}
-	note := openThreadWith(root, th, threadFacts{}, live, "/bin/et", "claude", nil, func() string { return "x" })
+	note := openThreadWith(root, "", th, threadFacts{}, live, "/bin/et", "claude", nil, func() string { return "x" })
 	if note != "already running in /w (pid 7)" || *execs != 0 {
 		t.Fatalf("note=%q execs=%d", note, *execs)
+	}
+}
+
+func TestOpenThreadRefusesAgentInWorktree(t *testing.T) {
+	osas, execs := stubThreadSeams(t, nil)
+	root, th := openFixture(t)
+	wt := th.Meta.Claims[0].Path
+	live := []liveSession{{SessionID: "someone-else", PID: 11, Cwd: wt + "/sub"}}
+	note := openThreadWith(root, filepath.Dir(wt), th, threadFacts{}, live, "/bin/et", "claude", nil, func() string { return "x" })
+	if note != "an agent is already running in ~/"+filepath.Base(wt)+" (pid 11)" || *osas != 0 || *execs != 0 {
+		t.Fatalf("note=%q osas=%d execs=%d", note, *osas, *execs)
 	}
 }
 
 func TestOpenThreadFailedOsaRegistersNothing(t *testing.T) {
 	_, execs := stubThreadSeams(t, errors.New("boom"))
 	root, th := openFixture(t)
-	note := openThreadWith(root, th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return "11111111-2222-4333-8444-555555555555" })
+	note := openThreadWith(root, "", th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return "11111111-2222-4333-8444-555555555555" })
 	if note != "boom" || *execs != 0 {
 		t.Fatalf("note=%q execs=%d", note, *execs)
 	}
@@ -161,7 +173,7 @@ func TestOpenThreadRegistersAfterOsaBeforeExec(t *testing.T) {
 	_, execs := stubThreadSeams(t, nil)
 	root, th := openFixture(t)
 	id := "11111111-2222-4333-8444-555555555555"
-	openThreadWith(root, th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return id })
+	openThreadWith(root, "", th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return id })
 	if *execs != 1 {
 		t.Fatalf("execs=%d", *execs)
 	}
