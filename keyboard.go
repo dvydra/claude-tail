@@ -24,7 +24,6 @@ const (
 	keyToggleMrkdwn
 	keyToggleWrap
 	keyDrift
-	keyHunk
 	keyFocus // not a keyActionFor result: the `→` escape sequence decodes to it
 	keySend
 	keySendOff // sent by the keyboard when send mode ends, so the render goroutine can say so
@@ -61,8 +60,6 @@ func keyActionFor(b byte) keyAction {
 		return keyDrift
 	case 'w', 'W':
 		return keyToggleWrap
-	case 'h', 'H':
-		return keyHunk
 	case sendToggle:
 		return keySend
 	}
@@ -188,12 +185,6 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 				<-resumeCh
 			case keyDrift:
 				overlayCh <- keyDrift
-				<-resumeCh
-			case keyHunk:
-				// Same hand-off again, though what takes the screen is a child
-				// process rather than an overlay we draw. The parking matters
-				// more here, not less: hunk reads this very fd.
-				overlayCh <- keyHunk
 				<-resumeCh
 			case keySend:
 				overlayCh <- keySend

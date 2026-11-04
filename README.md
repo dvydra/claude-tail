@@ -188,10 +188,9 @@ events show as they stream:
 | `t`            | cycle tool-call rendering: **full → dots → hidden**           |
 | `T`            | cycle the color **theme** — steps through the bundled themes and re-renders the whole transcript in the new theme |
 | `c`            | toggle collapsing of long user pastes                         |
-| `h`            | **review in hunk** — hand the whole pane to [hunk](https://hunk.dev) for a diff of this session's working tree (see below) |
 | `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
 | `r`            | re-render the whole transcript with current settings (`t`/`T`/`c`/`m`/`w` already do this themselves) |
-| Ctrl-T         | **send mode** — every key goes to the agent pane in this iTerm tab (the one `h` would prompt) while the tail keeps streaming, and what you type is echoed under a `---` at the bottom; Ctrl-T again to stop. Ctrl-C still quits the tail, so use Esc to interrupt the agent |
+| Ctrl-T         | **send mode** — every key goes to the agent pane in this iTerm tab (the claude or amp writing this session, or the only one in the tab) while the tail keeps streaming, and what you type is echoed under a `---` at the bottom; Ctrl-T again to stop. Ctrl-C still quits the tail, so use Esc to interrupt the agent |
 | Ctrl-X         | **back to the tree** — pop out of a Claude or Amp tail; pick another with `t`, or use `Enter`/`c`/`a` for a workspace |
 | Ctrl-W         | Open a workspace around the current Claude or Amp tail: keep the tail on the left, resume the agent above a shell on the right. Refuses if this iTerm tab already has split panes. |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
@@ -369,39 +368,6 @@ orchestration isn't invisible:
   tail. The focused subagent **live-follows** — new turns stream in while you
   watch. entire-tail finds the subagent files next to the main transcript
   (`…/<sessionId>/subagents/agent-*.jsonl`).
-
-## Reviewing in hunk (`h`)
-
-Watching an agent work and reading what it actually changed are different jobs,
-and the second one wants a real diff viewer. Press **`h`** and
-[hunk](https://hunk.dev) takes the pane: a review of the tailed session's
-working tree, in its own full-screen UI. Quit hunk (`q`) and the tail comes
-back where it was.
-
-Two things happen besides the diff.
-
-**Your agent is told the review is open.** Hunk's TUI registers with a local
-loopback daemon when it starts; there's no session id to pass around, so an
-agent finds the review by asking the daemon (`hunk session get --repo .`). What
-hunk's docs prescribe is a prompt, and that's what entire-tail sends — into the
-`claude` sharing this iTerm tab, once the daemon confirms the session is live:
-
-> Load the Hunk skill and use it for this review. Run `hunk skill path` to get the skill path.
-
-From there the agent can narrate the changeset and leave inline comments on the
-hunks while you read them. It's the same tab-scoped placement the tree's nearby
-markers use — a claude in **another** tab is someone else's work and is never
-typed into. When the tab holds more than one claude (or you're not in iTerm),
-the prompt goes to your clipboard instead, one paste away.
-
-**Nothing happens if hunk isn't installed.** `h` says so and
-leaves the tail alone rather than blanking it for a beat. entire-tail looks on
-`PATH` and then in `~/.hunk/bin`, where hunk.dev's install script puts a
-standalone binary that isn't added to `PATH`.
-
-```sh
-brew install hunk          # or: curl -fsSL https://hunk.dev/install.sh | sh
-```
 
 When the agent asks you an **AskUserQuestion**, entire-tail renders a prominent
 card the instant it's asked — *before* you answer, since your answer is a

@@ -211,7 +211,7 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   (`itermSinglePane`). This replaced tailing the lone sibling directly
   (`adoptPaneSession`): `--live`'s `⏎` gets there in one key and also handles
   a tab with two claudes. The rest below still describes how `nearby.go`,
-  `hunk.go` and `panelinkd.go` resolve a pane's claude. The
+  `agentpane.go` and `panelinkd.go` resolve a pane's claude. The
   session id isn't interrogable from a bare `claude` — it's absent from argv,
   env (no `CLAUDE_*` vars), and open files (the transcript is open-append-closed,
   never held; verified live) — so we pin the *process* and resolve its file. The
@@ -449,79 +449,19 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   on `resumeCh`, sharing the SAME tty fd (two fds on one tty race for input).
   **Gotcha:** a raw timed read reports a 0-byte timeout as `(0, io.EOF)` — treat
   that as a follow tick, not end-of-input, or the overlay exits instantly
-- `hunk.go` — the `h` key: **hand the whole pane to [hunk](https://hunk.dev)**
-  for a diff of the tailed session's working tree, and take it back on quit.
-  Same hand-off as `?`/`→` (keyboard signals `overlayCh` and parks on
-  `resumeCh`, one tty reader) with one difference that shapes the file: what
-  owns the screen is a CHILD PROCESS, not an overlay we draw. Six things are
-  deliberate. (1) **The terminal modes are left alone** around the spawn — hunk
-  sets its own raw mode and restores what it inherited (our cbreak), which is
-  exactly the state the keyboard reader needs back; a restore-to-cooked-then-
-  re-cbreak dance adds two failure paths and buys nothing. But **`inputModeReset`
-  IS sent after it exits**: a child that quits cleanly disables its own mouse
-  reporting (hunk does, and its mouse support is entirely its own — it works
-  because the child now holds the real pty), while one that CRASHES leaves the
-  terminal answering every mouse move with an escape sequence fed straight into
-  our keyboard reader, which reads as a possessed tail curable only by `reset`.
-  Sent unconditionally, since disabling a mode nothing enabled is a no-op. The alt screen is deliberately NOT in it: undoing `?1049` when the
-  child already left it restores a saved cursor and would move ours. (2) **`planHunk`
-  decides everything KNOWABLE before the screen is handed over**, which is what
-  keeps the two no-op cases (hunk not installed; the session's cwd deleted, the
-  normal end state of a worktree) from suspending the bar and blanking the tail
-  for a beat — a flicker for a key that was never going to do anything reads as
-  broken, not absent. Its `Msg` is a **refusal only**: what to say afterwards
-  depends on a daemon that hasn't started yet when the plan is made, so it comes
-  back from `runHunk` as a `hunkOutcome`. Shipped the other way first and the bar
-  reported "claude was told to load the skill" whether or not a byte had been
-  sent — and from the tail's side of the screen that is indistinguishable from
-  success, which is exactly why `hunkUnclaimed` says so out loud. (3) **`hunkBin` falls back to `~/.hunk/bin`**: hunk.dev's install.sh
-  drops a standalone binary there and does NOT add it to PATH, so a PATH-only
-  lookup reports "not installed" on a machine that has it (this one). (4) The
-  agent hand-off is **the one hunk's docs prescribe, not one we invented** —
-  there is no session id to pass, no env var and no handshake file; the TUI
-  registers with a local loopback daemon and the agent finds it with `hunk
-  session get --repo <path>`. So `runHunk` waits for the daemon to confirm the
-  session (bounded, `hunkReadyTimeout`) and then types `hunkPrompt` into the
-  claude in THIS iTerm tab. The tab is the whole horizon for the reason
-  nearby.go gives; within it the claude writing the tailed transcript wins, a
-  lone claude is taken on adopt.go's exactly-one rule, and anything ambiguous
-  gives back "" so the prompt goes to the clipboard rather than into someone
-  else's work. `hunkNotifyScript` addresses the pane **by session id, never by
-  index** (panelink.go's lesson: indexes shift) and wraps the write in `try`,
-  since the pane may have closed while hunk was up. Verified live against iTerm
-  3.6.11: the script matched a real session by uuid and typed the prompt
-  verbatim, backticks intact. (6) **The directory reviewed comes from the
-  TRANSCRIPT, not from our pwd** (`hunkReviewDir`). A hunk session's root is
-  fixed for its lifetime — `session reload --source` refuses any path outside
-  the root it launched from (measured) — so the cwd picked at spawn is the only
-  one that review will ever have. Our `pwd` is fixed when entire-tail starts
-  (re-based once, on adopt) while the session moves: an `EnterWorktree` keeps
-  the same id and moves `<id>.jsonl` into the new cwd's project dir, so
-  `relocatedSession` follows the file and the tail carries on from inside the
-  worktree while `pwd` still names the checkout it forked from — and `h` there
-  reviewed the PARENT checkout, a diff of a tree nobody was working in. Every
-  Claude user/assistant record carries its cwd, so `sessionCwdNow`/`tailCwd`
-  take the newest one from the same bounded tail window `loadClaudeMeta`
-  already uses — the tail for the reason `tailMeta` reads the *branch* from the
-  tail, since the head names where the session STARTED. Read at press time
-  rather than tracked, because a fact fetched when it's used can't go stale.
-  `pwd` remains the fallback (codex/agy records carry no cwd; an unreadable
-  transcript), but a cwd that no longer EXISTS is not fallen back on — the end
-  of a worktree is that its dir is deleted, and planHunk's refusal is the honest
-  answer there, not a review of the checkout next door. **Don't confuse it with
-  entire.go's `sessionCwd`**, which answers the same question from the HEAD
-  (where the session STARTED). A resumed workspace used to cd there, so a
-  session that had moved into a worktree reopened in the parent checkout; it
-  now uses `workspaceCwd` — this file's `sessionCwdNow` while that dir exists,
-  `sessionCwd` once the worktree is gone — and so does the `?` panel's resume
-  line, so the two always name the same folder.
-  Pure
-  `planHunk`/`hunkBin`/`hunkClaudePane`/`hunkNotifyScript`/`tailCwd`/
-  `hunkReviewDir` are unit-tested; the spawn and `osascript` are the thin IO
-  layer
+- `agentpane.go` — finds the agent pane beside this tail for Ctrl-T send mode
+  (`agentPaneFor` → `tabAgentPane`): a claude/amp in OUR iTerm tab, preferring the
+  one writing the tailed session, else a lone one in the tab (adopt.go's
+  exactly-one rule), else "" so keys never land in someone else's work. Also
+  `sessionCwdNow`/`tailCwd`: the newest user/assistant cwd from the transcript's
+  bounded tail window, i.e. where the session is NOW. **Don't confuse it with
+  entire.go's `sessionCwd`**, which reads the HEAD (where the session STARTED).
+  A resumed workspace uses `workspaceCwd`: `sessionCwdNow` while that dir
+  exists, `sessionCwd` once the worktree is gone, and so does the `?` panel's
+  resume line, so the two always name the same folder
 - `sendmode.go` — **Ctrl-T: type into the tail, keys land in the agent pane.**
   Not an overlay: the keyboard goroutine asks the render goroutine for the pane
-  (`overlayCh <- keySend`, answered on `sendPaneCh` with `hunkPaneForAgent`'s
+  (`overlayCh <- keySend`, answered on `sendPaneCh` with `agentPaneFor`'s
   pane, "" refuses) and then forwards keys itself (`forwardKeys`) until the next
   Ctrl-T, so the transcript keeps streaming while you type. Keys go through
   `write text <expr> newline NO` addressed by session id, control bytes as

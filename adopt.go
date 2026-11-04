@@ -14,7 +14,7 @@ import (
 //
 // entire-tail is meant to run in a second pane next to the agent. Launched bare
 // (bareStart) beside one, it opens --live with the cursor on that claude's
-// session (paneClaudePIDs → liveCursorFor). nearby.go, hunk.go and panelinkd.go
+// session (paneClaudePIDs → liveCursorFor). nearby.go, agentpane.go and panelinkd.go
 // reuse the same process matching and resolveClaudeSession.
 //
 // The session id is NOT interrogable from a bare `claude`: it is absent from the

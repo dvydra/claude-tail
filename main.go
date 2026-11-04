@@ -859,7 +859,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			if act == keySend {
 				// Not an overlay: the keyboard waits on sendPaneCh, not resumeCh,
 				// and forwards keys itself while we keep rendering.
-				pane := hunkPaneForAgent(home, agent, sessionIDFromPath(cur), cur)
+				pane := agentPaneFor(home, agent, sessionIDFromPath(cur), cur)
 				out.Flush()
 				// Only a refusal gets a note: when it starts, the compose area's
 				// own divider says where the keys go and how to stop.
@@ -882,11 +882,6 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				runFocus(kbTTY, agent, cur, home, theme)
 			case keyDrift:
 				runDrift(kbTTY, cur, home, theme)
-			case keyHunk:
-				// hunk takes the pane outright (it's a child process, not an
-				// overlay we draw), reviews the session's working tree, and
-				// hands the screen back when you quit it.
-				overlayMsg = hunkOverlay(kbTTY, home, agent, sessionIDFromPath(cur), cur, pwd)
 			case keyHelp:
 				// The state shown is sampled HERE, not at startup: t/T/c/m/w may
 				// all have moved since the banner was printed.
@@ -1257,7 +1252,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		if agent == AgentClaude || agent == AgentAmp {
 			back = "Ctrl-X=back to tree  "
 		}
-		fmt.Fprintln(w, "  keys:     ?=settings  y=copy as slack mrkdwn  m=mrkdwn view  w=wrap  t=tools  T=theme  c=collapse  h=hunk  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     ?=settings  y=copy as slack mrkdwn  m=mrkdwn view  w=wrap  t=tools  T=theme  c=collapse  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
@@ -1605,14 +1600,6 @@ LIVE KEYS (while following, on an interactive terminal):
   y                         Copy the last agent message to the clipboard as
                             Slack mrkdwn. Press again within 3s to add the
                             message before it.
-  h                         Review in hunk: hand the whole pane to hunk
-                            (hunk.dev) for a diff of the session's working tree,
-                            and take it back when you quit hunk. Once the review
-                            is up, the matching agent in this iTerm tab is prompted to
-                            load hunk's review skill so it can narrate and leave
-                            inline comments; off iTerm (or when the tab holds
-                            more than one matching agent) that prompt goes to the
-                            clipboard instead. No-op with hunk not installed.
   →                         Focus Claude subagents or Amp child threads in an
                             alt-screen view. ←/→ cycles between them, ↑↓ scrolls,
                             r reloads, q/Esc returns. No-op when none exist.
