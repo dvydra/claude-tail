@@ -240,6 +240,19 @@ func paneCommand(shell, cmd string) string {
 	return shQuote(shell) + " -lc " + shQuote("trap : INT; "+cmd+"; exec "+shQuote(shell)+" -l")
 }
 
+// paneSafePrompt keeps an agent's first message intact on its way through
+// iTerm's `command`. The message is shQuoted, and the line it sits in is
+// shQuoted again by paneCommand, so an apostrophe in it is escaped twice, one
+// escape nested in the other. iTerm's command splitter copes with one level
+// (the `cd` and binary path rely on it) but not two: it kept the backslash,
+// dropped the quote, and ended the argument there. Every `O` tab started
+// Claude with "We\re" and nothing else. So the message carries no ASCII
+// apostrophe or backslash: a typographic apostrophe reads the same to the
+// agent. Verified live on iTerm, before and after.
+func paneSafePrompt(s string) string {
+	return strings.NewReplacer("'", "’", `\`, "/").Replace(s)
+}
+
 // paneBin resolves the agent binary to an absolute path while we still have the
 // PATH of the interactive shell that started us. A started pane's login shell
 // skips the rc files, so a PATH entry added there would be missing. Unresolvable
@@ -367,6 +380,7 @@ func pinsSessionID(bin string) bool {
 // acctEnv (accountEnvPrefix) leads the assignments so the account decision reads
 // first in the agent's command line; it is "" for the default account, leaving
 // that launch byte-identical to the pre-profiles one.
+// The prompt goes through paneSafePrompt; see there for why.
 func newWorkspaceScript(cwd, self, sessionID, bin, acctEnv, tapEnv string, inPlace bool, prompt string) workspaceLaunch {
 	cd := "cd " + shQuote(cwd)
 	a := cd + " && " + acctEnv + tapEnv + shQuote(bin)
@@ -378,7 +392,7 @@ func newWorkspaceScript(cwd, self, sessionID, bin, acctEnv, tapEnv string, inPla
 		b += " --wait-new"
 	}
 	if prompt != "" {
-		a += " " + shQuote(prompt) // pane A only: the agent's first message
+		a += " " + shQuote(paneSafePrompt(prompt)) // pane A only: the agent's first message
 	}
 	return workspaceLaunch{Script: splitScript(a, b, cd, inPlace), Agent: a, Tail: b, Shell: cd, InPlace: inPlace}
 }

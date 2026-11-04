@@ -114,6 +114,21 @@ func TestNewWorkspaceScriptEmptyPromptUnchanged(t *testing.T) {
 	}
 }
 
+// An apostrophe in the prompt cut every `O` tab's first message off at it
+// ("We\re"): iTerm's command splitter handles one level of quote escaping, not
+// the two a prompt inside paneCommand gets. Verified live on iTerm before and
+// after the fix.
+func TestNewWorkspaceScriptPromptHasNoNestedQuotes(t *testing.T) {
+	id := "11111111-2222-4333-8444-555555555555"
+	w := newWorkspaceScript("/work/proj", "/bin/et", id, "claude", "", "", false, `We're on Dan's \thread`)
+	if !strings.HasSuffix(w.Agent, ` 'We’re on Dan’s /thread'`) {
+		t.Fatalf("agent: %s", w.Agent)
+	}
+	if strings.Contains(paneSafePrompt(threadReassessPrompt(thread{Dir: "/v/x", Meta: threadMeta{Name: "it's"}})), "'") {
+		t.Fatal("reassess prompt still carries an apostrophe")
+	}
+}
+
 func stubThreadSeams(t *testing.T, osaErr error) (osaCalls, execCalls *int) {
 	t.Helper()
 	po, pe := threadsOsa, threadsExec

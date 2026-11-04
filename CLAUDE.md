@@ -295,7 +295,10 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   accountEnvPrefix's Keychain substitution, which must stay the shell's.
   `paneBin` resolves the agent to an absolute path first, since a login shell
   skips the rc files where `~/.local/bin` usually joins PATH. iTerm splits
-  `command` with shell quoting, `'\''` included (verified live, 3.6.11). The
+  `command` with shell quoting, `'\''` included (verified live, 3.6.11), but
+  only ONE level of it: an apostrophe in an agent prompt is escaped twice (once
+  by shQuote, again by paneCommand), and iTerm cut every `O` tab's prompt off
+  at it ("We\re"). `paneSafePrompt` swaps `'` and `\` out of every prompt. The
   cost: the resume line is no longer in shell history, so the `?` panel shows
   it (`resumeCommand`, under `session`). Both panes **pin a
   shared session id** — fresh: `<bin> --session-id <id>` + `entire-tail

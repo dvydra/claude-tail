@@ -225,7 +225,7 @@ func dropVisible(s string, n int) (string, string) {
 // thread from `O`: read the thread, check the world, report, then wait.
 func threadReassessPrompt(t thread) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "We're picking up the thread %q. ", threadDisplayName(t))
+	fmt.Fprintf(&b, "We are picking up the thread “%s”. ", threadDisplayName(t))
 	fmt.Fprintf(&b, "Read %s", filepath.Join(t.Dir, "thread.md"))
 	if _, err := os.Stat(filepath.Join(t.Dir, "knowledge.md")); err == nil {
 		fmt.Fprintf(&b, " and %s", filepath.Join(t.Dir, "knowledge.md"))
