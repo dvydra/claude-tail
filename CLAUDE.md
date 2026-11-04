@@ -564,7 +564,15 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `overlayCh` and the goroutine parks on `resumeCh` (single tty reader), and
   `Ctrl-X` (0x18) signals `treeCh` and STOPS reading so `tailSession` returns and
   `run`'s picker↔tail loop re-enters the tree (Claude/Amp only, gated by
-  `treeEnabled`; a no-op on codex/agy).
+  `treeEnabled`; a no-op on codex/agy). `Ctrl-R` then `y` (`restart.go`)
+  re-execs the tail on the binary installed NOW: the keyboard stops reading
+  like Ctrl-X does, and the render goroutine restores the tty and
+  `syscall.Exec`s. The new argv is built by `restartArgs`, not copied from the
+  old one, because a bare launch went through a picker and must come back to
+  the session it was on, which may be a lineage child argv never named.
+  `restartBinary` looks argv0 up again rather than using `os.Executable`, so a
+  replaced file is picked up. Any key other than `y` after Ctrl-R cancels and
+  is swallowed.
 - `jqutil.go` — tiny JSON-value-to-string helpers (replaces shelling out to `jq`)
 - `handover.go` — the `entire-tail handover` subcommand: `todaysSessions`
   enumerates Claude sessions and Amp threads active since local midnight

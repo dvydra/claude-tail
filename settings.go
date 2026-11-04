@@ -490,6 +490,7 @@ func settingsKeys(treeEnabled bool) []string {
 		kv("→", "focus subagents"),
 		kv("Ctrl-T", "type into the agent pane (Ctrl-T again to stop)"),
 		kv("Ctrl-W", "open workspace around this tail (unsplit iTerm tab only)"),
+		kv("Ctrl-R", "then y: restart this tail on the installed binary"),
 	}
 	if treeEnabled {
 		L = append(L, kv("Ctrl-X", "back to the tree picker"))

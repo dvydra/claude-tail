@@ -839,6 +839,32 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				} else {
 					msg = "workspace opened"
 				}
+			case keyRestartArm:
+				msg = "restart this tail with the current entire-tail binary? y = restart, any other key = cancel"
+			case keyRestartCancel:
+				msg = "restart cancelled"
+			case keyRestart:
+				// Ctrl-R y: pick up a freshly installed binary without losing
+				// the session. The keyboard goroutine has stopped reading, so
+				// hand the tty back exactly as the quit path does, then exec.
+				args := restartArgs(restartState{
+					Agent:    agent,
+					Cur:      cur,
+					Theme:    theme.Name,
+					Tools:    toolStyleKind(r.toolStyle.Load()),
+					WrapOff:  wrapOff,
+					Collapse: int(r.collapse.Load()),
+					Cfg:      cfg,
+				})
+				restoreTerm()
+				removePaneEntry(home, linkUUID)
+				out.Flush()
+				compose.stop()
+				r.endLine()
+				out.Flush()
+				fmt.Fprintln(os.Stderr, "\n⟳ restarting entire-tail…")
+				err := execRestart(args)
+				die("restart failed: " + err.Error())
 			case keyYank:
 				// No re-render: a yank copies, it doesn't change the view. It runs
 				// here rather than on the keyboard goroutine because it reads the

@@ -193,6 +193,7 @@ events show as they stream:
 | Ctrl-T         | **send mode** — every key goes to the agent pane in this iTerm tab (the claude or amp writing this session, or the only one in the tab) while the tail keeps streaming, and what you type is echoed under a `---` at the bottom; Ctrl-T again to stop. Ctrl-C still quits the tail, so use Esc to interrupt the agent |
 | Ctrl-X         | **back to the tree** — pop out of a Claude or Amp tail; pick another with `t`, or use `Enter`/`c`/`a` for a workspace |
 | Ctrl-W         | Open a workspace around the current Claude or Amp tail: keep the tail on the left, resume the agent above a shell on the right. Refuses if this iTerm tab already has split panes. |
+| Ctrl-R, `y`    | **restart the tail** on whatever `entire-tail` binary is installed now (run after `./install.sh`). Keeps the session it is following, the theme, tool style, wrap and collapse. Any key other than `y` cancels |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 
 `t`/`c` declutter the view on the fly — handy when an agent goes on a long
