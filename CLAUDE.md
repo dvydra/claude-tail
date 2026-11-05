@@ -181,8 +181,17 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   at reality (worktrees, trails, running sessions) and never blocks the first
   frame. `threads_view.go` is the pure triage screen, split reduce/render like
   `tree.go`, and `threads_run.go` is the tty driver plus `threadLaunch`, which
-  turns `⏎` into a resume or a fresh primed session in the 3-pane workspace
-  (unsplit iTerm tab only; otherwise a note). A session is registered before pane
+  turns `⏎` into a FRESH Claude session primed with `threadReassessPrompt` in
+  the 3-pane workspace (unsplit iTerm tab only; otherwise a note). It never
+  resumes an old session, even when the thread has one: that was the behaviour
+  once and Daniel rejected it, since the thread files are the handover and an
+  old session drags its stale context back. `threadFreshTarget` (claim first,
+  then the newest session's cwd; that session's account) is shared with `O`.
+  `r` (`threadResumeWith`) is the explicit resume of the newest session. The
+  running guards in `openThreadWith`/`planOpenAll` read ONLY the live list taken
+  at the keypress, never `ui.Facts`: the facts are a snapshot (reloaded right
+  after `O`, while its tabs run), so a tab closed since read as "already
+  running" and `⏎` refused. Neither function takes facts any more. A session is registered before pane
   A replaces the process. `threadsOsa`/`threadsExec` are seams, so tests never run
   osascript. `threads_park.go` holds the park kinds (`parkKinds`, listed from
   the BOTTOM up so the default "not today" sits by the footer and `p ⏎` parks),

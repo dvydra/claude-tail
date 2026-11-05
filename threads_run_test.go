@@ -31,65 +31,80 @@ func TestThreadLaunchNoCwd(t *testing.T) {
 	}
 }
 
-func TestThreadLaunchResumesClaude(t *testing.T) {
-	dir := t.TempDir()
-	id := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-	w, reg, refuse := launchThread(t, []threadSessionRef{{Agent: "claude", ID: id}}, dir, threadFacts{})
-	if refuse != "" {
-		t.Fatal(refuse)
-	}
-	if !strings.Contains(w.Agent, "--resume '"+id+"'") || !strings.Contains(w.Agent, dir) {
-		t.Fatalf("agent line: %s", w.Agent)
-	}
-	if reg.ID != id || reg.Agent != "claude" {
-		t.Fatalf("register = %+v", reg)
+// ⏎ opens a thread as a fresh session even when it has old ones: resuming
+// one brought its stale context back, which is not what opening a thread means.
+func TestThreadLaunchNeverResumes(t *testing.T) {
+	const fresh = "11111111-2222-4333-8444-555555555555"
+	for _, old := range []threadSessionRef{
+		{Agent: "claude", ID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"},
+		{Agent: "amp", ID: "T-abc"},
+	} {
+		dir := t.TempDir()
+		w, reg, refuse := launchThread(t, []threadSessionRef{old}, dir, threadFacts{})
+		if refuse != "" {
+			t.Fatal(refuse)
+		}
+		if strings.Contains(w.Agent, "--resume") || strings.Contains(w.Agent, "threads continue") || strings.Contains(w.Agent, old.ID) {
+			t.Errorf("%s: resumed the old session: %s", old.Agent, w.Agent)
+		}
+		if !strings.Contains(w.Agent, "--session-id '"+fresh+"'") || !strings.Contains(w.Agent, dir) {
+			t.Errorf("%s: agent line: %s", old.Agent, w.Agent)
+		}
+		if reg != (threadSessionRef{Agent: "claude", ID: fresh}) {
+			t.Errorf("%s: register = %+v", old.Agent, reg)
+		}
 	}
 }
 
 func TestThreadLaunchCwd(t *testing.T) {
 	claim, sess := t.TempDir(), t.TempDir()
 	id := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-	th := thread{Dir: "/v/foo", Meta: threadMeta{Claims: []threadClaim{{Kind: "worktree", Path: "/gone"}, {Kind: "worktree", Path: claim}}}}
+	th := thread{Dir: "/v/foo", Meta: threadMeta{Sessions: []threadSessionRef{{Agent: "claude", ID: id}}}}
 	env := func(cwd string) threadLaunchEnv {
 		return func(agent, id string) (string, string, string) { return "", "", cwd }
 	}
 	newID := func() string { return "11111111-2222-4333-8444-555555555555" }
 	cd := func(dir string) string { return "cd " + shQuote(dir) + " && " }
 
-	resume := th
-	resume.Meta.Sessions = []threadSessionRef{{Agent: "claude", ID: id}}
-	if w, _, r := threadLaunchWith(resume, threadFacts{}, "/bin/et", "claude", newID, env(sess)); r != "" || !strings.HasPrefix(w.Agent, cd(sess)) {
-		t.Errorf("resume should use the session's cwd: %q %q", w.Agent, r)
+	if w, _, r := threadLaunchWith(th, threadFacts{}, "/bin/et", "claude", newID, env(sess)); r != "" || !strings.HasPrefix(w.Agent, cd(sess)) {
+		t.Errorf("no claim should fall back to the newest session's cwd: %q %q", w.Agent, r)
 	}
-	if w, _, r := threadLaunchWith(resume, threadFacts{}, "/bin/et", "claude", newID, env("/gone/too")); r != "" || !strings.HasPrefix(w.Agent, cd(claim)) {
-		t.Errorf("resume with a gone session cwd should fall back to the first existing claim: %q %q", w.Agent, r)
+	claimed := th
+	claimed.Meta.Claims = []threadClaim{{Kind: "worktree", Path: "/gone"}, {Kind: "worktree", Path: claim}}
+	if w, _, r := threadLaunchWith(claimed, threadFacts{}, "/bin/et", "claude", newID, env(sess)); r != "" || !strings.HasPrefix(w.Agent, cd(claim)) {
+		t.Errorf("the first existing claim should win: %q %q", w.Agent, r)
 	}
-	if w, _, r := threadLaunchWith(th, threadFacts{}, "/bin/et", "claude", newID, env(sess)); r != "" || !strings.HasPrefix(w.Agent, cd(claim)) {
-		t.Errorf("fresh start should use the claim: %q %q", w.Agent, r)
+	if _, _, r := threadLaunchWith(th, threadFacts{}, "/bin/et", "claude", newID, env("/gone/too")); r != "no working directory recorded" {
+		t.Errorf("refuse = %q", r)
 	}
 }
 
-func TestThreadLaunchAmp(t *testing.T) {
-	dir := t.TempDir()
-	w, reg, refuse := launchThread(t, []threadSessionRef{{Agent: "amp", ID: "T-abc"}}, dir, threadFacts{})
-	if refuse != "" {
-		t.Fatal(refuse)
+// The fresh session runs as the account the thread last used.
+func TestThreadLaunchKeepsAccount(t *testing.T) {
+	th := thread{Dir: "/v/foo", Meta: threadMeta{
+		Sessions: []threadSessionRef{{Agent: "claude", ID: "old"}},
+		Claims:   []threadClaim{{Kind: "worktree", Path: t.TempDir()}},
+	}}
+	env := func(agent, id string) (string, string, string) {
+		if id == "old" {
+			return "CLAUDE_CONFIG_DIR=/p ", "", ""
+		}
+		return "", "", ""
 	}
-	if !strings.Contains(w.Agent, "threads continue 'T-abc'") {
-		t.Fatalf("agent line: %s", w.Agent)
-	}
-	if reg.Agent != "amp" || reg.ID != "T-abc" {
-		t.Fatalf("register = %+v", reg)
+	w, _, r := threadLaunchWith(th, threadFacts{}, "/bin/et", "claude", func() string { return "new" }, env)
+	if r != "" || !strings.Contains(w.Agent, "CLAUDE_CONFIG_DIR=/p ") {
+		t.Fatalf("agent line: %s %q", w.Agent, r)
 	}
 }
 
 func TestThreadLaunchFreshPrompt(t *testing.T) {
 	dir := t.TempDir()
+	th := thread{Dir: "/vault/Threads/foo", Meta: threadMeta{Slug: "foo"}}
 	w, reg, refuse := launchThread(t, nil, dir, threadFacts{})
 	if refuse != "" {
 		t.Fatal(refuse)
 	}
-	want := shQuote("Read /vault/Threads/foo/thread.md and /vault/Threads/foo/knowledge.md, then continue this thread.")
+	want := shQuote(paneSafePrompt(threadReassessPrompt(th)))
 	if !strings.HasSuffix(w.Agent, " "+want) {
 		t.Fatalf("agent line: %s", w.Agent)
 	}
@@ -155,7 +170,7 @@ func TestOpenThreadRefusesRunningWithoutFacts(t *testing.T) {
 	root, th := openFixture(t)
 	th.Meta.Sessions = []threadSessionRef{{Agent: "claude", ID: "sess-1"}}
 	live := []liveSession{{SessionID: "sess-1", PID: 7, Cwd: "/w"}}
-	note := openThreadWith(root, "", th, threadFacts{}, live, "/bin/et", "claude", nil, func() string { return "x" })
+	note := openThreadWith(root, "", th, false, live, "/bin/et", "claude", nil, func() string { return "x" })
 	if note != "already running in /w (pid 7)" || *execs != 0 {
 		t.Fatalf("note=%q execs=%d", note, *execs)
 	}
@@ -166,7 +181,7 @@ func TestOpenThreadRefusesAgentInWorktree(t *testing.T) {
 	root, th := openFixture(t)
 	wt := th.Meta.Claims[0].Path
 	live := []liveSession{{SessionID: "someone-else", PID: 11, Cwd: wt + "/sub"}}
-	note := openThreadWith(root, filepath.Dir(wt), th, threadFacts{}, live, "/bin/et", "claude", nil, func() string { return "x" })
+	note := openThreadWith(root, filepath.Dir(wt), th, false, live, "/bin/et", "claude", nil, func() string { return "x" })
 	if note != "an agent is already running in ~/"+filepath.Base(wt)+" (pid 11)" || *osas != 0 || *execs != 0 {
 		t.Fatalf("note=%q osas=%d execs=%d", note, *osas, *execs)
 	}
@@ -175,7 +190,7 @@ func TestOpenThreadRefusesAgentInWorktree(t *testing.T) {
 func TestOpenThreadFailedOsaRegistersNothing(t *testing.T) {
 	_, execs := stubThreadSeams(t, errors.New("boom"))
 	root, th := openFixture(t)
-	note := openThreadWith(root, "", th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return "11111111-2222-4333-8444-555555555555" })
+	note := openThreadWith(root, "", th, false, nil, "/bin/et", "claude", nil, func() string { return "11111111-2222-4333-8444-555555555555" })
 	if note != "boom" || *execs != 0 {
 		t.Fatalf("note=%q execs=%d", note, *execs)
 	}
@@ -188,7 +203,7 @@ func TestOpenThreadRegistersAfterOsaBeforeExec(t *testing.T) {
 	_, execs := stubThreadSeams(t, nil)
 	root, th := openFixture(t)
 	id := "11111111-2222-4333-8444-555555555555"
-	openThreadWith(root, "", th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return id })
+	openThreadWith(root, "", th, false, nil, "/bin/et", "claude", nil, func() string { return id })
 	if *execs != 1 {
 		t.Fatalf("execs=%d", *execs)
 	}

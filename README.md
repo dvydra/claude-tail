@@ -962,7 +962,8 @@ A thread is one piece of work that outlives any single agent session. Each lives
 
 | Key | Does |
 | --- | --- |
-| `⏎` | open the thread: resume its newest session, or start a fresh one primed with its files, in the 3-pane iTerm workspace (unsplit tab only) |
+| `⏎` | open the thread as a fresh Claude session primed to read its files and reassess where it stands, in the 3-pane iTerm workspace (unsplit tab only). It never resumes an old session |
+| `r` | reopen the thread's newest session: Claude resumes it, Amp continues it, in the same 3-pane workspace |
 | `O` | open every open thread in the (filtered) list, each as a fresh Claude session in a new tab of the current window, asked to reassess the thread and report before changing anything. Asks `y` first; skips threads with a session already running |
 | `p` | park: pick a reason, optionally type a note (see below) |
 | `u` | unpark |

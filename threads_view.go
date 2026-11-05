@@ -26,13 +26,13 @@ type threadsUI struct {
 
 // threadsAction is what the driver must do after a key. Kind is "" for none.
 type threadsAction struct {
-	Kind         string // ""|"open"|"openall"|"park"|"unpark"|"close"|"quit"
+	Kind         string // ""|"open"|"reopen"|"openall"|"park"|"unpark"|"close"|"quit"
 	Slug, Reason string
 	ParkKind     string   // park: a parkKinds key
 	Slugs        []string // openall: the open threads in view, in list order
 }
 
-const threadsFooter = "⏎ open   O open all…   p park…   u unpark   x close…   d details   k knowledge   / filter   q quit"
+const threadsFooter = "⏎ open   r reopen   O open all…   p park…   u unpark   x close…   d details   k knowledge   / filter   q quit"
 
 func threadSlugOf(t thread) string { return filepath.Base(t.Dir) }
 
@@ -201,6 +201,10 @@ func updateThreads(ui threadsUI, k treeKey, r rune) (threadsUI, threadsAction) {
 		case 'p':
 			if cur != nil {
 				ui.Mode, ui.Input, ui.ParkPick = "park", "", 0
+			}
+		case 'r':
+			if cur != nil {
+				a = threadsAction{Kind: "reopen", Slug: threadSlugOf(*cur)}
 			}
 		case 'O':
 			if open, _ := visibleThreads(ui); len(open) > 0 {

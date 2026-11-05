@@ -155,7 +155,7 @@ func TestPlanOpenAllFreshSessionsAndSkips(t *testing.T) {
 	live := []liveSession{{SessionID: "live-1", PID: 9, Cwd: "/x"}}
 	n := 0
 	ids := func() string { n++; return "11111111-2222-4333-8444-55555555555" + string(rune('0'+n)) }
-	picks, skipped := planOpenAll([]thread{ok, running, nowhere}, nil, live, "/bin/et", "claude", nil, ids)
+	picks, skipped := planOpenAll([]thread{ok, running, nowhere}, live, "/bin/et", "claude", nil, ids)
 	if len(picks) != 1 || picks[0].Slug != "ok" {
 		t.Fatalf("picks %+v", picks)
 	}
@@ -182,7 +182,7 @@ func TestOpenAllWithRegistersAfterWindow(t *testing.T) {
 	threadsOsa = func(s string) error { scripts = append(scripts, s); return nil }
 	t.Cleanup(func() { threadsOsa = prev })
 	id := "11111111-2222-4333-8444-555555555555"
-	picks, _ := planOpenAll([]thread{th}, nil, nil, "/bin/et", "claude", nil, func() string { return id })
+	picks, _ := planOpenAll([]thread{th}, nil, "/bin/et", "claude", nil, func() string { return id })
 	note := openAllWith(root, picks, []string{"x (already running)"})
 	if len(scripts) != 1 || !strings.Contains(scripts[0], "create tab") || strings.Contains(scripts[0], "create window") || strings.Count(scripts[0], "split ") != 2 || !strings.Contains(scripts[0], "select home") {
 		t.Fatalf("scripts %v", scripts)
@@ -201,7 +201,7 @@ func TestOpenAllWithFailedWindowRegistersNothing(t *testing.T) {
 	prev := threadsOsa
 	threadsOsa = func(string) error { return errors.New("boom") }
 	t.Cleanup(func() { threadsOsa = prev })
-	picks, _ := planOpenAll([]thread{th}, nil, nil, "/bin/et", "claude", nil, func() string { return "11111111-2222-4333-8444-555555555555" })
+	picks, _ := planOpenAll([]thread{th}, nil, "/bin/et", "claude", nil, func() string { return "11111111-2222-4333-8444-555555555555" })
 	if note := openAllWith(root, picks, nil); note != "could not open the tabs: boom" {
 		t.Fatalf("note %q", note)
 	}

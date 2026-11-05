@@ -27,10 +27,10 @@ var (
 // tap env prefixes for a Claude session and the cwd that session last worked in.
 type threadLaunchEnv func(agent, id string) (acctEnv, tapEnv, cwd string)
 
-// threadLaunch decides how to open a thread: resume its newest session, or
-// start a fresh one primed with the thread's files. Pure, no IO beyond
-// directory checks on worktree claims and the session's cwd; refuse is
-// non-empty when it must not open.
+// threadLaunch opens a thread as a FRESH Claude session primed with
+// threadReassessPrompt, never a resume of an old one: the thread's files are
+// the handover, and an old session brings back its stale context with it.
+// Pure, no IO beyond directory checks; refuse is non-empty when it must not open.
 func threadLaunch(t thread, f threadFacts, self, claudeBin string, newID func() string) (workspaceLaunch, threadSessionRef, string) {
 	return threadLaunchWith(t, f, self, claudeBin, newID, nil)
 }
@@ -39,54 +39,87 @@ func threadLaunchWith(t thread, f threadFacts, self, claudeBin string, newID fun
 	if f.Running != nil {
 		return workspaceLaunch{}, threadSessionRef{}, fmt.Sprintf("already running in %s (pid %d)", f.Running.Cwd, f.Running.PID)
 	}
-	var newest *threadSessionRef
-	if len(t.Meta.Sessions) > 0 {
-		newest = &t.Meta.Sessions[0]
-	}
-	acct, tap, sessCwd := "", "", ""
-	if newest != nil && env != nil {
-		acct, tap, sessCwd = env(newest.Agent, newest.ID)
-	}
-	claimCwd := ""
-	for _, c := range t.Meta.Claims {
-		if c.Kind == "worktree" && c.Path != "" && isDir(c.Path) {
-			claimCwd = c.Path
-			break
-		}
-	}
-	if sessCwd != "" && !isDir(sessCwd) {
-		sessCwd = ""
-	}
-	// A resume goes back where that session last worked; the first claim may be
-	// a different worktree of the thread. A fresh start goes to the claim.
-	cwd := firstNonEmpty(claimCwd, sessCwd)
-	if newest != nil {
-		cwd = firstNonEmpty(sessCwd, claimCwd)
-	}
+	id := newID()
+	cwd, acct, tap := threadFreshTarget(t, env, id)
 	if cwd == "" {
 		return workspaceLaunch{}, threadSessionRef{}, "no working directory recorded"
 	}
-	switch {
-	case newest != nil && newest.Agent == "amp":
-		bin, err := exec.LookPath("amp")
-		if err != nil {
-			bin = "amp"
-		}
-		return ampWorkspaceScript(cwd, newest.ID, self, bin, true), *newest, ""
-	case newest != nil:
-		return workspaceScript(cwd, newest.ID, self, paneBin(claudeBin), acct, tap), *newest, ""
-	}
-	id := newID()
-	if env != nil {
-		acct, tap, _ = env("claude", id)
-	}
-	prompt := "Read " + filepath.Join(t.Dir, "thread.md") + " and " + filepath.Join(t.Dir, "knowledge.md") + ", then continue this thread."
-	w := newWorkspaceScript(cwd, self, id, paneBin(claudeBin), acct, tap, true, prompt)
-	if !pinsSessionID(paneBin(claudeBin)) {
+	bin := paneBin(claudeBin)
+	w := newWorkspaceScript(cwd, self, id, bin, acct, tap, true, threadReassessPrompt(t))
+	if !pinsSessionID(bin) {
 		// A wrapper drops --session-id, so the id we minted is not the real one.
 		return w, threadSessionRef{}, ""
 	}
 	return w, threadSessionRef{Agent: "claude", ID: id}, ""
+}
+
+// threadFreshTarget is where a fresh session on t starts and as which account:
+// the first existing worktree claim, else the newest session's last cwd; the
+// newest session's account when it was Claude, else the default for id.
+func threadFreshTarget(t thread, env threadLaunchEnv, id string) (cwd, acct, tap string) {
+	sessCwd := ""
+	claude := len(t.Meta.Sessions) > 0 && t.Meta.Sessions[0].Agent != "amp"
+	if env != nil {
+		if len(t.Meta.Sessions) > 0 {
+			newest := t.Meta.Sessions[0]
+			var a, tp string
+			a, tp, sessCwd = env(newest.Agent, newest.ID)
+			if claude {
+				// The fresh session runs as the account the thread last used.
+				acct, tap = a, tp
+			}
+		}
+		if !claude {
+			acct, tap, _ = env("claude", id)
+		}
+	}
+	for _, c := range t.Meta.Claims {
+		if c.Kind == "worktree" && c.Path != "" && isDir(c.Path) {
+			return c.Path, acct, tap
+		}
+	}
+	if sessCwd != "" && isDir(sessCwd) {
+		return sessCwd, acct, tap
+	}
+	return "", acct, tap
+}
+
+// threadResumeWith reopens the thread's newest session (`r`): Claude resumes
+// it, Amp continues it, where it last worked, else in the first existing claim.
+func threadResumeWith(t thread, f threadFacts, self, claudeBin string, env threadLaunchEnv) (workspaceLaunch, threadSessionRef, string) {
+	if f.Running != nil {
+		return workspaceLaunch{}, threadSessionRef{}, fmt.Sprintf("already running in %s (pid %d)", f.Running.Cwd, f.Running.PID)
+	}
+	if len(t.Meta.Sessions) == 0 {
+		return workspaceLaunch{}, threadSessionRef{}, "no session to reopen; ⏎ starts a fresh one"
+	}
+	newest := t.Meta.Sessions[0]
+	acct, tap, cwd := "", "", ""
+	if env != nil {
+		acct, tap, cwd = env(newest.Agent, newest.ID)
+	}
+	if cwd != "" && !isDir(cwd) {
+		cwd = ""
+	}
+	if cwd == "" {
+		for _, c := range t.Meta.Claims {
+			if c.Kind == "worktree" && c.Path != "" && isDir(c.Path) {
+				cwd = c.Path
+				break
+			}
+		}
+	}
+	if cwd == "" {
+		return workspaceLaunch{}, threadSessionRef{}, "no working directory recorded"
+	}
+	if newest.Agent == "amp" {
+		bin, err := exec.LookPath("amp")
+		if err != nil {
+			bin = "amp"
+		}
+		return ampWorkspaceScript(cwd, newest.ID, self, bin, true), newest, ""
+	}
+	return workspaceScript(cwd, newest.ID, self, paneBin(claudeBin), acct, tap), newest, ""
 }
 
 // threadsStart is startWorkspace through the seams. It returns only on failure.
@@ -249,8 +282,8 @@ func runThreadsTUI(cfg Config) error {
 					ui.Facts = nil
 					loadFacts(ui.Threads)
 				}
-			case "open":
-				ui.Note = openThread(cfg, home, root, ui, a.Slug, tty, saved, restore)
+			case "open", "reopen":
+				ui.Note = openThread(cfg, home, root, ui, a.Slug, a.Kind == "reopen", tty, saved, restore)
 				io.WriteString(tty, "\x1b[?1049h\x1b[?25l")
 			case "openall":
 				ui.Note = openAllThreads(cfg, home, root, ui, a.Slugs)
@@ -278,26 +311,33 @@ func runningFor(t thread, live []liveSession) *liveSession {
 	return nil
 }
 
-// openThreadWith launches t's workspace. The running-session guards use the
-// live list read now, whether or not the background facts have arrived: one
-// of the thread's own sessions running anywhere, or any agent running inside
-// one of its worktrees. A session is registered only after the panes exist.
-// It returns a note on refusal or failure and does not return at all on success.
-func openThreadWith(root, home string, t thread, f threadFacts, live []liveSession, self, bin string, env threadLaunchEnv, newID func() string) string {
-	if f.Running == nil {
-		f.Running = runningFor(t, live)
-	}
+// openThreadWith launches t's workspace: a fresh session, or with resume its
+// newest one. The running-session guards use ONLY the live list read now,
+// never the background facts: those are a snapshot from when the screen last
+// loaded, and a tab closed since then would still read as running (it did:
+// `O`, close a tab, `⏎` refused). One of the thread's own sessions running
+// anywhere, or any agent running inside one of its worktrees, refuses. A
+// session is registered only after the panes exist. It returns a note on
+// refusal or failure and does not return at all on success.
+func openThreadWith(root, home string, t thread, resume bool, live []liveSession, self, bin string, env threadLaunchEnv, newID func() string) string {
+	f := threadFacts{Running: runningFor(t, live)}
 	if f.Running == nil {
 		if l, wt := agentInWorktree(t, live, isDir); l != nil {
 			return fmt.Sprintf("an agent is already running in %s (pid %d)", tildify(wt, home), l.PID)
 		}
 	}
-	w, ref, refuse := threadLaunchWith(t, f, self, bin, newID, env)
+	var w workspaceLaunch
+	var ref threadSessionRef
+	var refuse string
+	if resume {
+		w, ref, refuse = threadResumeWith(t, f, self, bin, env)
+	} else {
+		w, ref, refuse = threadLaunchWith(t, f, self, bin, newID, env)
+	}
 	if refuse != "" {
 		return refuse
 	}
 	slug := threadSlugOf(t)
-	resume := len(t.Meta.Sessions) > 0 && ref == t.Meta.Sessions[0]
 	err := threadsStart(w, func() error {
 		if ref.ID == "" {
 			return nil
@@ -319,7 +359,7 @@ func openThreadWith(root, home string, t thread, f threadFacts, live []liveSessi
 
 // openThread finds the thread and opens it. It leaves the alt screen first and
 // puts the terminal back when the launch fails.
-func openThread(cfg Config, home, root string, ui threadsUI, slug string, tty *os.File, saved string, restore func()) string {
+func openThread(cfg Config, home, root string, ui threadsUI, slug string, resume bool, tty *os.File, saved string, restore func()) string {
 	var t thread
 	found := false
 	for _, c := range ui.Threads {
@@ -351,7 +391,7 @@ func openThread(cfg Config, home, root string, ui threadsUI, slug string, tty *o
 		return accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(home)), cwd
 	}
 	restore()
-	note := openThreadWith(root, home, t, ui.Facts[slug], threadsLiveNow(home), selfPath(), bin, env, newSessionID)
+	note := openThreadWith(root, home, t, resume, threadsLiveNow(home), selfPath(), bin, env, newSessionID)
 	_, _ = setRawTimed(tty)
 	return strings.TrimSpace(warn.String() + " " + note)
 }
@@ -369,15 +409,12 @@ type openAllPick struct {
 // sessions running, or any agent inside one of its worktrees, is skipped (the
 // same guards as ⏎), and so is one with no directory to start in. Pure apart
 // from directory checks.
-func planOpenAll(ts []thread, facts map[string]threadFacts, live []liveSession, self, bin string, env threadLaunchEnv, newID func() string) (picks []openAllPick, skipped []string) {
+func planOpenAll(ts []thread, live []liveSession, self, bin string, env threadLaunchEnv, newID func() string) (picks []openAllPick, skipped []string) {
 	for _, t := range ts {
 		slug := threadSlugOf(t)
 		name := threadDisplayName(t)
-		f := facts[slug]
-		if f.Running == nil {
-			f.Running = runningFor(t, live)
-		}
-		if f.Running != nil {
+		// Live only, never the facts snapshot; see openThreadWith.
+		if runningFor(t, live) != nil {
 			skipped = append(skipped, name+" (already running)")
 			continue
 		}
@@ -385,29 +422,8 @@ func planOpenAll(ts []thread, facts map[string]threadFacts, live []liveSession, 
 			skipped = append(skipped, name+" (an agent is in its worktree)")
 			continue
 		}
-		acct, tap, sessCwd := "", "", ""
-		claude := len(t.Meta.Sessions) > 0 && t.Meta.Sessions[0].Agent != "amp"
-		if len(t.Meta.Sessions) > 0 && env != nil {
-			_, _, sessCwd = env(t.Meta.Sessions[0].Agent, t.Meta.Sessions[0].ID)
-			if claude {
-				// The fresh session runs as the account the thread last used.
-				acct, tap, _ = env(t.Meta.Sessions[0].Agent, t.Meta.Sessions[0].ID)
-			}
-		}
 		id := newID()
-		if !claude && env != nil {
-			acct, tap, _ = env("claude", id)
-		}
-		cwd := ""
-		for _, c := range t.Meta.Claims {
-			if c.Kind == "worktree" && c.Path != "" && isDir(c.Path) {
-				cwd = c.Path
-				break
-			}
-		}
-		if cwd == "" && sessCwd != "" && isDir(sessCwd) {
-			cwd = sessCwd
-		}
+		cwd, acct, tap := threadFreshTarget(t, env, id)
 		if cwd == "" {
 			skipped = append(skipped, name+" (no working directory recorded)")
 			continue
@@ -504,6 +520,6 @@ func openAllThreads(cfg Config, home, root string, ui threadsUI, slugs []string)
 		}
 		return accountEnvPrefix(prof), tapEnvPrefix(tapBaseURL(home)), cwd
 	}
-	picks, skipped := planOpenAll(ts, ui.Facts, threadsLiveNow(home), selfPath(), bin, env, newSessionID)
+	picks, skipped := planOpenAll(ts, threadsLiveNow(home), selfPath(), bin, env, newSessionID)
 	return strings.TrimSpace(warn.String() + " " + openAllWith(root, picks, skipped))
 }

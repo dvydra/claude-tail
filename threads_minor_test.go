@@ -88,29 +88,11 @@ func breakThreadFile(t *testing.T, th thread) {
 	}
 }
 
-func TestOpenThreadResumeExecsWhenRegisterFails(t *testing.T) {
-	_, execs := stubThreadSeams(t, nil)
-	var notes []string
-	prev := threadsNote
-	threadsNote = func(s string) { notes = append(notes, s) }
-	t.Cleanup(func() { threadsNote = prev })
-	root, th := openFixture(t)
-	th.Meta.Sessions = []threadSessionRef{{Agent: "claude", ID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}}
-	breakThreadFile(t, th) // after load, so registerSession fails
-	note := openThreadWith(root, "", th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return "x" })
-	if note != "" || *execs != 1 {
-		t.Fatalf("note=%q execs=%d", note, *execs)
-	}
-	if len(notes) != 1 || !strings.Contains(notes[0], "could not record the session") {
-		t.Fatalf("notes = %q", notes)
-	}
-}
-
 func TestOpenThreadFreshStopsWhenRegisterFails(t *testing.T) {
 	_, execs := stubThreadSeams(t, nil)
 	root, th := openFixture(t)
 	breakThreadFile(t, th)
-	note := openThreadWith(root, "", th, threadFacts{}, nil, "/bin/et", "claude", nil, func() string { return "11111111-2222-4333-8444-555555555555" })
+	note := openThreadWith(root, "", th, false, nil, "/bin/et", "claude", nil, func() string { return "11111111-2222-4333-8444-555555555555" })
 	if note == "" || *execs != 0 {
 		t.Fatalf("note=%q execs=%d", note, *execs)
 	}
