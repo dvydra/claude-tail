@@ -88,3 +88,8 @@ ln -sfn "$HOME/.agents/skills/threads-bootstrap" "$HOME/.claude/skills/threads-b
 # ── thread-title skill (/thread-title): same layout ──────────────────────────
 install_copy "$HERE/docs/skills/thread-title/SKILL.md" "$HOME/.agents/skills/thread-title/SKILL.md"
 ln -sfn "$HOME/.agents/skills/thread-title" "$HOME/.claude/skills/thread-title"
+
+# ── thread-link skill (/thread-link): same layout, plus Amp like thread-handover
+install_copy "$HERE/docs/skills/thread-link/SKILL.md" "$HOME/.agents/skills/thread-link/SKILL.md"
+ln -sfn "$HOME/.agents/skills/thread-link" "$HOME/.claude/skills/thread-link"
+install_copy "$HERE/docs/skills/thread-link/SKILL.md" "$HOME/.config/amp/skills/thread-link/SKILL.md"
