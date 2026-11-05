@@ -72,3 +72,36 @@ func TestHandoverEntryPointsRouteToThreads(t *testing.T) {
 		}
 	}
 }
+
+func TestThreadLinkSkillMentionsOnlyRealSubcommands(t *testing.T) {
+	known := map[string]bool{}
+	for _, s := range threadsSubcommands {
+		known[s] = true
+	}
+	data, err := os.ReadFile("docs/skills/thread-link/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, "—") {
+		t.Error("thread-link skill contains an em dash")
+	}
+	seen := map[string]bool{}
+	for _, m := range regexp.MustCompile(`entire-tail threads ([a-z]+)`).FindAllStringSubmatch(text, -1) {
+		if !known[m[1]] {
+			t.Errorf("thread-link skill mentions unknown subcommand %q", m[1])
+		}
+		seen[m[1]] = true
+	}
+	for _, w := range []string{"enabled", "lookup", "list", "new", "register"} {
+		if !seen[w] {
+			t.Errorf("thread-link skill never mentions %q", w)
+		}
+	}
+	// Linking only records the session; writing thread.md is /handover's job.
+	for _, w := range []string{"begin", "commit"} {
+		if seen[w] {
+			t.Errorf("thread-link skill must only link, but mentions %q", w)
+		}
+	}
+}
