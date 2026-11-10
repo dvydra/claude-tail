@@ -487,6 +487,7 @@ func settingsKeys(treeEnabled bool) []string {
 		kv("", "(press again within 3s to add the one before it)"),
 		kv("r", "re-render the history on demand"),
 		kv("d", "drift check — what you asked for vs what you're doing"),
+		kv("g", "trail status: agents, gates, findings for this session's trails"),
 		kv("→", "focus subagents"),
 		kv("Ctrl-T", "type into the agent pane (Ctrl-T again to stop)"),
 		kv("Ctrl-W", "open workspace around this tail (unsplit iTerm tab only)"),

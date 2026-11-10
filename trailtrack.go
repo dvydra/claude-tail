@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,6 +52,10 @@ type trailTracker struct {
 	path     string
 	refresh  bool
 	errs     map[string]string
+	branch   string // the session's branch, for the modal's "nothing found" line
+
+	wake  chan struct{} // Refresh: step now rather than at the next tick
+	steps atomic.Int64  // completed steps (tests)
 
 	// Below: touched only by step, which runs on one goroutine.
 	prev       map[string]*changeState
@@ -77,8 +82,18 @@ func newTrailTracker(deps trailTrackerDeps, out chan<- trailUpdate) *trailTracke
 		mentions: map[string]trailMention{}, errs: map[string]string{},
 		prev: map[string]*changeState{}, due: map[string]time.Time{}, dropped: map[string]bool{},
 		remotes: map[string]string{}, expansions: map[string]trailExpansion{},
+		wake: make(chan struct{}, 1),
 	}
 }
+
+// Branch is the session's current branch, as last read.
+func (t *trailTracker) Branch() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.branch
+}
+
+func (t *trailTracker) Steps() int64 { return t.steps.Load() }
 
 // Observe records mentions. Cheap and non-blocking: safe on the render goroutine.
 func (t *trailTracker) Observe(ms []trailMention) {
@@ -110,6 +125,10 @@ func (t *trailTracker) Refresh() {
 	t.mu.Lock()
 	t.refresh = true
 	t.mu.Unlock()
+	select {
+	case t.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (t *trailTracker) Errors() map[string]string {
@@ -142,6 +161,7 @@ func (t *trailTracker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+		case <-t.wake:
 		}
 	}
 }
@@ -188,6 +208,9 @@ func (t *trailTracker) updatePushing(ctx context.Context, path string, now time.
 	if branch == "" {
 		t.pushing, t.pushKey = trailRef{}, ""
 	}
+	t.mu.Lock()
+	t.branch = branch
+	t.mu.Unlock()
 	if head != "" && t.head != "" && head != t.head && !t.pushing.zero() {
 		forced = t.pushing.Key()
 	}
@@ -241,6 +264,7 @@ func (t *trailTracker) expand(ctx context.Context, p trailRef, now time.Time) []
 
 // step is one tick: work out what to track, and fetch whatever is due.
 func (t *trailTracker) step(ctx context.Context) {
+	defer t.steps.Add(1)
 	now := t.deps.Now()
 	t.mu.Lock()
 	path, refresh := t.path, t.refresh

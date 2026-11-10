@@ -24,7 +24,8 @@ const (
 	keyToggleMrkdwn
 	keyToggleWrap
 	keyDrift
-	keyFocus // not a keyActionFor result: the `→` escape sequence decodes to it
+	keyTrails // g: the trail status modal (trailview.go)
+	keyFocus  // not a keyActionFor result: the `→` escape sequence decodes to it
 	keySend
 	keySendOff // sent by the keyboard when send mode ends, so the render goroutine can say so
 	keyWorkspace
@@ -61,6 +62,8 @@ func keyActionFor(b byte) keyAction {
 		return keyToggleMrkdwn
 	case 'd', 'D':
 		return keyDrift
+	case 'g', 'G':
+		return keyTrails
 	case 'w', 'W':
 		return keyToggleWrap
 	case sendToggle:
@@ -205,6 +208,9 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 				<-resumeCh
 			case keyDrift:
 				overlayCh <- keyDrift
+				<-resumeCh
+			case keyTrails:
+				overlayCh <- keyTrails
 				<-resumeCh
 			case keySend:
 				overlayCh <- keySend

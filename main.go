@@ -468,6 +468,15 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	trailBandFor := func(n trailNoteRec) string {
 		return trailBand(n.Text, n.Sev, wrapWidth(os.Stdout, false))
 	}
+	applyTrailState := func(u trailUpdate) {
+		if k := u.State.Ref.Key(); u.Dropped {
+			delete(trailStates, k)
+		} else {
+			trailStates[k] = u.State
+		}
+	}
+	// pendingTrail holds updates that arrived while the g modal was up.
+	var pendingTrail []trailUpdate
 	// cur is the file currently being followed — it starts at `session` but rolls
 	// over to a Claude worktree-fork child (see rollover below), so poll/reload
 	// read cur, not the immutable `session` param. lineage is the set of session
@@ -778,6 +787,13 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		compose.around(func() { fmt.Fprintln(os.Stderr, lead+"entire-tail: "+msg) })
 	}
 
+	// printTrail prints a trail status line into the transcript and remembers
+	// it by offset so a re-render puts it back in place.
+	printTrail := func(u trailUpdate) {
+		n := trailNoteRec{Path: cur, Offset: offset, Text: trailLineText(u.State, u.Events, true), Sev: trailLineSev(u.Events)}
+		trailNotes = append(trailNotes, n)
+		r.trailNote(trailBandFor(n), n.Sev == trailSevBad)
+	}
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	// Save the iTerm layout while we run, so `entire-tail restore` can rebuild
@@ -831,15 +847,8 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// A trail this session watches changed (trailtrack.go). Printed into
 			// the transcript as a point-in-time line, and remembered by offset so
 			// a re-render puts it back where it was.
-			k := u.State.Ref.Key()
-			if u.Dropped {
-				delete(trailStates, k)
-			} else {
-				trailStates[k] = u.State
-			}
-			n := trailNoteRec{Path: cur, Offset: offset, Text: trailLineText(u.State, u.Events, true), Sev: trailLineSev(u.Events)}
-			trailNotes = append(trailNotes, n)
-			r.trailNote(trailBandFor(n), n.Sev == trailSevBad)
+			applyTrailState(u)
+			printTrail(u)
 			out.Flush()
 		case code := <-codeCh:
 			// Quit: restore the terminal and do the final flush here, on the
@@ -972,6 +981,33 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				runFocus(kbTTY, agent, cur, home, theme)
 			case keyDrift:
 				runDrift(kbTTY, cur, home, theme)
+			case keyTrails:
+				if tracker == nil {
+					overlayMsg = "trail status is off (--no-trails, no entire on PATH, or not a Claude/Amp tail)"
+					break
+				}
+				// The modal runs on this goroutine, so trailCh isn't drained by
+				// the select while it's up. Drain it here instead: the state
+				// shows in the modal at once, and the lines are printed into the
+				// transcript once the alt-screen is gone.
+				load := func() ([]changeState, []trailNoteRec, map[string]string, string) {
+					for {
+						select {
+						case u := <-trailCh:
+							pendingTrail = append(pendingTrail, u)
+							applyTrailState(u)
+							continue
+						default:
+						}
+						break
+					}
+					states := make([]changeState, 0, len(trailStates))
+					for _, s := range trailStates {
+						states = append(states, s)
+					}
+					return states, trailNotes, tracker.Errors(), tracker.Branch()
+				}
+				runTrailModal(kbTTY, theme, load, tracker.Refresh)
 			case keyHelp:
 				// The state shown is sampled HERE, not at startup: t/T/c/m/w may
 				// all have moved since the banner was printed.
@@ -1009,6 +1045,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				settingsDirty = false
 				rerender("⟳ settings")
 			}
+			for _, u := range pendingTrail {
+				printTrail(u)
+			}
+			pendingTrail = pendingTrail[:0]
+			out.Flush()
 			if overlayMsg != "" {
 				note(overlayMsg)
 			}
