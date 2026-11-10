@@ -1,0 +1,49 @@
+{
+  "id": "CH10",
+  "number": 10,
+  "title": "feat-x",
+  "branch": "feat-x",
+  "base": "main",
+  "status": "open",
+  "ready_for_review": true,
+  "agents": [
+    {
+      "agent": {"id": "A1", "name": "Code review"},
+      "signal": {"value_type": "boolean", "polarity": "lower_is_better"},
+      "reading": {"boolean_value": false, "percent_value": null, "size_value": null},
+      "latest_run": {"id": "RUN1", "status": "succeeded"},
+      "waiting_for": null,
+      "history": [
+        {"boolean_value": true, "percent_value": null, "size_value": null},
+        {"boolean_value": false, "percent_value": null, "size_value": null}
+      ]
+    },
+    {
+      "agent": {"id": "A2", "name": "Coverage"},
+      "signal": {"value_type": "percent", "polarity": "higher_is_better"},
+      "reading": {"boolean_value": null, "percent_value": 70, "size_value": null},
+      "latest_run": {"id": "RUN2", "status": "succeeded"},
+      "history": [{"boolean_value": null, "percent_value": 70, "size_value": null}]
+    },
+    {
+      "agent": {"id": "A3", "name": "Size"},
+      "signal": {"value_type": "size", "polarity": "lower_is_better"},
+      "reading": {"boolean_value": null, "percent_value": null, "size_value": "small"},
+      "latest_run": {"id": "RUN3", "status": "succeeded"},
+      "history": []
+    }
+  ],
+  "mergeability": {
+    "mergeable": false,
+    "behind_by": 0,
+    "comparison_status": "available",
+    "conflict_status": "clean",
+    "gates": [
+      {"gate_key": "approvals", "gate_type": "approvals", "state": "evaluated", "status": "passed", "outcome": "passed", "value": {"approved": 1, "required": 1}},
+      {"gate_key": "base_checks", "gate_type": "base_checks", "state": "evaluated", "status": "passed", "outcome": "passed", "value": {"branch": "main", "checks": [{"name": "test", "status": "completed", "conclusion": "success"}]}},
+      {"gate_key": "checks", "gate_type": "checks", "state": "evaluated", "status": "passed", "outcome": "passed", "value": {"state": "success", "total_count": 2, "checks": [{"name": "test", "status": "completed", "conclusion": "success"}, {"name": "lint", "status": "completed", "conclusion": "success"}]}},
+      {"gate_key": "findings", "gate_type": "findings", "state": "evaluated", "status": "failed", "outcome": "failed", "value": null, "finding_count": 1},
+      {"gate_key": "up_to_date", "gate_type": "up_to_date", "state": "disabled", "status": "skipped", "outcome": null, "value": {"behind_by": 0}}
+    ]
+  }
+}

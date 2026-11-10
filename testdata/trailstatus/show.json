@@ -1,0 +1,37 @@
+{
+  "project": {
+    "id": "PROJ1",
+    "name": "dvydra",
+    "provider": "entire",
+    "jurisdiction": "au",
+    "reference": {"forge": "et", "project": "dvydra"}
+  },
+  "id": "TRAIL32",
+  "number": 32,
+  "url": "https://entire.com/et/dvydra/-/trails/32",
+  "title": "Makuuchi archive",
+  "status": "open",
+  "changes": [
+    {
+      "id": "CH10",
+      "repositoryId": "REPO1",
+      "repository": "k3s-config",
+      "branch": "feat-x",
+      "number": 10,
+      "title": "feat-x",
+      "status": "open",
+      "url": "https://entire.com/et/dvydra/-/trails/32/changes/k3s-config/10",
+      "current": true
+    },
+    {
+      "id": "CH6",
+      "repositoryId": "REPO2",
+      "repository": "midnight-magic",
+      "branch": "",
+      "number": 6,
+      "title": "old",
+      "status": "merged",
+      "url": "https://entire.com/et/dvydra/-/trails/32/changes/midnight-magic/6"
+    }
+  ]
+}
