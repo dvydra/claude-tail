@@ -58,6 +58,51 @@ func TestRetargetNotes(t *testing.T) {
 	}
 }
 
+func TestTrailMentionsIgnoreFileContents(t *testing.T) {
+	url := "https://entire.com/et/dvydra/-/trails/32/changes/k3s-config/10"
+	for _, l := range []string{
+		`{"type":"assistant","timestamp":"2026-11-11T01:02:03.000Z","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/x_test.go","content":"want ` + url + `"}}]}}`,
+		`{"type":"assistant","timestamp":"2026-11-11T01:02:03.000Z","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/x.go","old_string":"a","new_string":"entire trail show k3s-config/10 --project et/dvydra"}}]}}`,
+	} {
+		if ms := trailMentionsInLine([]byte(l)); len(ms) != 0 {
+			t.Fatalf("file contents an agent writes are not mentions: %+v", ms)
+		}
+	}
+	heredoc := `{"type":"assistant","timestamp":"2026-11-11T01:02:03.000Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat >> x_test.go <<'EOF'\nwant ` + url + `\nEOF"}}]}}`
+	if ms := trailMentionsInLine([]byte(heredoc)); len(ms) != 0 {
+		t.Fatalf("a URL inside a shell command is not a mention: %+v", ms)
+	}
+	thinking := `{"type":"assistant","timestamp":"2026-11-11T01:02:03.000Z","message":{"content":[{"type":"thinking","thinking":"maybe ` + url + `"}]}}`
+	if ms := trailMentionsInLine([]byte(thinking)); len(ms) != 0 {
+		t.Fatalf("thinking is not a mention: %+v", ms)
+	}
+	both := `{"type":"assistant","timestamp":"2026-11-11T01:02:03.000Z","message":{"content":[{"type":"text","text":"see ` + url + `"},{"type":"tool_use","name":"Bash","input":{"command":"entire trail show 31 --project et/dvydra","description":"https://entire.com/et/dvydra/-/trails/99"}}]}}`
+	ms := trailMentionsInLine([]byte(both))
+	keys := map[string]bool{}
+	for _, m := range ms {
+		keys[m.Ref.Key()] = true
+	}
+	if len(ms) != 2 || !keys["et/dvydra/k3s-config/10"] || !keys["et/dvydra/-/31"] {
+		t.Fatalf("assistant text and the shell command still count, nothing else: %+v", ms)
+	}
+}
+
+func TestTrackerSkipsAlreadyMergedOnFirstLook(t *testing.T) {
+	h := newTrackHarness(t)
+	stubFixtureChange(t, h.f)
+	h.f.set(trailRunKey("", "entire", "api", "-j", "au", "/api/v1/repos/REPO1/trails/10"), bytes.Replace(readTrailFixture(t, "change.json"), []byte(`"status": "open"`), []byte(`"status": "merged"`), 1))
+	h.tr.Observe([]trailMention{mentionAt(fixtureChangeRef, 0)})
+	got := h.stepAt(time.Minute)
+	if len(eventful(got)) != 0 {
+		t.Fatalf("a change merged before we ever saw it prints nothing: %+v", got)
+	}
+	before := h.f.count()
+	h.stepAt(5 * time.Minute)
+	if h.f.count() != before {
+		t.Fatal("and is not fetched again")
+	}
+}
+
 // eventful drops the updates that carry state only.
 func eventful(us []trailUpdate) []trailUpdate {
 	var out []trailUpdate

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -135,6 +136,43 @@ var (
 	trailSelProject  = regexp.MustCompile(`^[0-9]+$`)
 )
 
+// trailMentionText is the part of a record that can name a trail: prose, where
+// a URL or an `entire trail` command counts, and shell commands, where only an
+// `entire trail` command does. A record with tool calls or thinking is narrowed
+// to its text blocks and each call's command: a file the agent writes (a test
+// fixture, a plan, a heredoc) is full of trail URLs nobody is working on, and
+// thinking is never shown. Any other record is all prose.
+func trailMentionText(line []byte, s string) (prose, cmds string) {
+	if !strings.Contains(s, `"tool_use"`) && !strings.Contains(s, `"thinking"`) {
+		return s, ""
+	}
+	var rec struct {
+		Message struct {
+			Content []struct {
+				Type  string `json:"type"`
+				Text  string `json:"text"`
+				Input struct {
+					Command string `json:"command"`
+					Cmd     string `json:"cmd"`
+				} `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &rec) != nil {
+		return "", ""
+	}
+	var p, c strings.Builder
+	for _, b := range rec.Message.Content {
+		switch b.Type {
+		case "text":
+			p.WriteString(b.Text + "\n")
+		case "tool_use":
+			c.WriteString(b.Input.Command + "\n" + b.Input.Cmd + "\n")
+		}
+	}
+	return p.String(), c.String()
+}
+
 // trailMentionsInLine finds trail references in one raw JSONL line. It runs on
 // every line the tail reads, so it uses regexes rather than a JSON decode.
 func trailMentionsInLine(line []byte) []trailMention {
@@ -148,12 +186,16 @@ func trailMentionsInLine(line []byte) []trailMention {
 	if strings.Contains(s, `"type":"tool_result"`) {
 		return nil
 	}
+	// The timestamp and cwd come from the whole record; the text searched for
+	// trails may be narrower (trailMentionText).
+	rec := s
+	s, cmds := trailMentionText(line, s)
 	var at time.Time
-	if m := trailMentionTS.FindStringSubmatch(s); m != nil {
+	if m := trailMentionTS.FindStringSubmatch(rec); m != nil {
 		at, _ = time.Parse(time.RFC3339Nano, m[1])
 	}
 	cwd := ""
-	if m := trailMentionCwd.FindStringSubmatch(s); m != nil {
+	if m := trailMentionCwd.FindStringSubmatch(rec); m != nil {
 		cwd = m[1]
 	}
 	seen := map[string]bool{}
@@ -175,7 +217,7 @@ func trailMentionsInLine(line []byte) []trailMention {
 			add(trailMention{Ref: r})
 		}
 	}
-	for _, m := range trailMentionCmd.FindAllStringSubmatch(s, -1) {
+	for _, m := range trailMentionCmd.FindAllStringSubmatch(s+"\n"+cmds, -1) {
 		sel, rest := m[1], m[2]
 		var forge, project string
 		if p := trailMentionProj.FindStringSubmatch(rest); p != nil {

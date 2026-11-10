@@ -398,6 +398,10 @@ func (t *trailTracker) fetch(ctx context.Context, ref trailRef, now time.Time, f
 	if done {
 		t.dropped[k] = true
 		delete(t.prev, k)
+		// Already finished the first time we look: old news, not an event.
+		if prev == nil {
+			evs = nil
+		}
 	}
 	return trailUpdate{State: s, Events: evs, Dropped: done}, true
 }
