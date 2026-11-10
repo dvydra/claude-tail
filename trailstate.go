@@ -33,6 +33,7 @@ const (
 type trailGate struct {
 	Key, Type string
 	Outcome   string // "passed", "failed", or "" while not finished
+	Last      string // the last finished outcome, carried across a rerun (settleGates)
 	Detail    string
 }
 
