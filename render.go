@@ -437,6 +437,16 @@ func (r *Renderer) emit(rec Record) {
 // every tool style: it isn't a tool call, it's the reason the agent woke up —
 // and one dim line is cheap enough that hiding it would only cost context. The
 // glyph matches the "waiting on something else" sense of a pending task.
+// trailNote prints a trail status line (trailevents.go) between turns. bell
+// rings once for a bad line, live only, like the question card's.
+func (r *Renderer) trailNote(line string, bell bool) {
+	r.endLine()
+	if bell && r.live {
+		io.WriteString(r.w, "\a")
+	}
+	io.WriteString(r.w, line+"\n")
+}
+
 func (r *Renderer) taskNote(body string) {
 	r.endLine()
 	io.WriteString(r.w, r.theme.DimANSI+"  ⧗ "+body+reset+"\n")

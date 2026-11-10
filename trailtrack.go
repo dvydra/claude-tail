@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,6 +62,13 @@ type trailTracker struct {
 	head       string
 	remotes    map[string]string // cwd → forge/owner/repo
 	expansions map[string]trailExpansion
+}
+
+// trailExecRun is the real command runner. Tests pass a fake instead.
+func trailExecRun(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	return cmd.Output()
 }
 
 func newTrailTracker(deps trailTrackerDeps, out chan<- trailUpdate) *trailTracker {

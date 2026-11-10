@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -435,6 +436,38 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			r.emit(rec)
 		}
 	}
+
+	// Trail status (trailtrack.go): a Claude or Amp tail on a terminal watches
+	// the trails this session pushes to or names, and prints a line when one
+	// changes. Off on pipes, so no golden moves.
+	var tracker *trailTracker
+	trailCh := make(chan trailUpdate, 16)
+	trailStates := map[string]changeState{}
+	var trailNotes []trailNoteRec
+	if (agent == AgentClaude || agent == AgentAmp) && isCharDevice(os.Stdout) && !cfg.NoTrails {
+		if _, err := exec.LookPath("entire"); err == nil {
+			tracker = newTrailTracker(trailTrackerDeps{Run: trailExecRun, Now: time.Now, Home: home}, trailCh)
+			tracker.Follow(session)
+			for _, l := range lines {
+				tracker.Observe(trailMentionsInLine(l))
+			}
+			trailCtx, trailStop := context.WithCancel(context.Background())
+			defer trailStop()
+			go tracker.Run(trailCtx)
+		}
+	}
+	// liveEmit is emit plus mention tracking, for lines read for the first
+	// time. rerender re-reads lines already observed, so it uses plain emit.
+	liveEmit := emit
+	if tracker != nil {
+		liveEmit = func(line []byte) {
+			tracker.Observe(trailMentionsInLine(line))
+			emit(line)
+		}
+	}
+	trailBandFor := func(n trailNoteRec) string {
+		return trailBand(n.Text, n.Sev, wrapWidth(os.Stdout, false))
+	}
 	// cur is the file currently being followed — it starts at `session` but rolls
 	// over to a Claude worktree-fork child (see rollover below), so poll/reload
 	// read cur, not the immutable `session` param. lineage is the set of session
@@ -463,7 +496,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			case ampSnapshotUnchanged:
 				return
 			case ampSnapshotAppend:
-				offset = appendStep(cur, offset, emit)
+				offset = appendStep(cur, offset, liveEmit)
 				ampPrior = d
 				return
 			}
@@ -488,7 +521,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				}
 			}
 		} else {
-			offset = appendStep(cur, offset, emit)
+			offset = appendStep(cur, offset, liveEmit)
 		}
 	}
 	// rerender re-renders the current transcript with the live settings — the
@@ -523,8 +556,20 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		var buf bytes.Buffer
 		prevW := r.w
 		r.w = &buf
+		var at int64
+		nextNote := 0
 		for _, l := range all {
 			emit(l)
+			at += int64(len(l)) + 1
+			var due []trailNoteRec
+			due, nextNote = notesUpTo(trailNotes, cur, at, nextNote)
+			for _, n := range due {
+				r.trailNote(trailBandFor(n), false)
+			}
+		}
+		due, _ := notesUpTo(trailNotes, cur, 1<<62, nextNote)
+		for _, n := range due {
+			r.trailNote(trailBandFor(n), false)
 		}
 		r.w = prevW
 
@@ -782,6 +827,20 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			if sourceErr != nil {
 				note("Amp refresh failed: " + sourceErr.Error())
 			}
+		case u := <-trailCh:
+			// A trail this session watches changed (trailtrack.go). Printed into
+			// the transcript as a point-in-time line, and remembered by offset so
+			// a re-render puts it back where it was.
+			k := u.State.Ref.Key()
+			if u.Dropped {
+				delete(trailStates, k)
+			} else {
+				trailStates[k] = u.State
+			}
+			n := trailNoteRec{Path: cur, Offset: offset, Text: trailLineText(u.State, u.Events, true), Sev: trailLineSev(u.Events)}
+			trailNotes = append(trailNotes, n)
+			r.trailNote(trailBandFor(n), n.Sev == trailSevBad)
+			out.Flush()
 		case code := <-codeCh:
 			// Quit: restore the terminal and do the final flush here, on the
 			// sole writer goroutine (130 for Ctrl-C/SIGINT, 0 for q/Ctrl-D/SIGTERM).
@@ -986,6 +1045,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					idle = 0
 				} else if idle++; idle >= rolloverIdleTicks {
 					if rollover() {
+						if tracker != nil {
+							tracker.Follow(cur)
+						}
 						poll()
 					}
 					idle = 0
@@ -1589,7 +1651,12 @@ OPTIONS:
                             through it (see the 'tap' subcommand) — a blocked
                             question then shows the card alone, with its
                             preamble arriving after you answer.
-      --wrap                Wrap prose to the terminal width, breaking between
+      --no-trails           Don't watch this session's Entire trails. By default
+                            a Claude or Amp tail on a terminal prints a coloured
+                            status line when a trail it pushes to or names
+                            changes (build, findings, agents, merge state), and
+                            g shows the full state. Same as ENTIRE_TAIL_NO_TRAILS=1.
+      --wrap               Wrap prose to the terminal width, breaking between
                             words. Off by default: each paragraph is one long
                             line the terminal soft-wraps (breaks land mid-word)
                             and rejoins on copy, so a mouse drag-select yields
