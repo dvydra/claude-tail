@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,14 +63,21 @@ func trailSeverityTitle(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
+// trailModalRow is one selectable change in the panel: its key, its page, and
+// the line its header is on.
+type trailModalRow struct {
+	Key, URL string
+	Line     int
+}
+
 // trailModalLines lays out every tracked change under its project trail, then
 // fetch errors for things with no state, then the status-line history newest
-// first. branch names what was checked when nothing is tracked.
-func trailModalLines(states []changeState, notes []trailNoteRec, errs map[string]string, branch string, theme Theme, w int) []string {
+// first. branch names what was checked when nothing is tracked; sel is the
+// selected change's key, marked with ▸.
+func trailModalLines(states []changeState, notes []trailNoteRec, errs map[string]string, branch string, theme Theme, w int, sel string) (L []string, rows []trailModalRow) {
 	dim := func(s string) string { return theme.DimANSI + s + reset }
 	bold := func(s string) string { return "\x1b[1m" + s + reset }
 	col := func(s trailSev, text string) string { return trailSevANSI(s, theme) + text + reset }
-	var L []string
 
 	sorted := append([]changeState(nil), states...)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -94,7 +102,12 @@ func trailModalLines(states []changeState, notes []trailNoteRec, errs map[string
 			lastProject = pk
 		}
 		shown[s.Ref.Key()] = true
-		head := "  " + bold(s.Ref.Label()) + "  " + s.Branch
+		mark := "  "
+		if s.Ref.Key() == sel {
+			mark = col(trailSevGood, "▸ ")
+		}
+		rows = append(rows, trailModalRow{Key: s.Ref.Key(), URL: s.URL, Line: len(L)})
+		head := mark + bold(s.Ref.Label()) + "  " + s.Branch
 		if s.Base != "" {
 			head += " → " + s.Base
 		}
@@ -185,7 +198,7 @@ func trailModalLines(states []changeState, notes []trailNoteRec, errs map[string
 			L = append(L, "  "+col(n.Sev, trailEscapes.ReplaceAllString(n.Text, "")))
 		}
 	}
-	return L
+	return L, rows
 }
 
 func inList(s string, list []string) bool {
@@ -197,9 +210,63 @@ func inList(s string, list []string) bool {
 	return false
 }
 
+type trailModalState struct{ Sel, Top int }
+
+type trailModalAction int
+
+const (
+	trailModalNone trailModalAction = iota
+	trailModalClose
+	trailModalRefresh
+	trailModalRemove // x: stop watching the selected change
+	trailModalOpen   // ⏎: open the selected change's page
+)
+
+// updateTrailModal is the panel's reducer. ↑↓ move between changes and keep
+// the selected one in view; past the first or last change they scroll, so the
+// findings under the last one are still reachable.
+func updateTrailModal(st trailModalState, rows []trailModalRow, nLines, body int, k treeKey, r rune) (trailModalState, trailModalAction) {
+	clampTop := func(top int) int { return min(max(top, 0), max(nLines-body, 0)) }
+	st.Sel = min(max(st.Sel, 0), max(len(rows)-1, 0))
+	switch {
+	case k == kEsc || k == kCtrlC || (k == kRune && (r == 'q' || r == 'Q' || r == 'g')):
+		return st, trailModalClose
+	case k == kDown && st.Sel < len(rows)-1:
+		st.Sel++
+		st.Top = scrollTo(st.Top, rows[st.Sel].Line, body, nLines)
+	case k == kDown:
+		st.Top = clampTop(st.Top + 1)
+	case k == kUp && st.Sel > 0:
+		st.Sel--
+		st.Top = scrollTo(st.Top, rows[st.Sel].Line, body, nLines)
+	case k == kUp:
+		st.Top = clampTop(st.Top - 1)
+	case k == kPageUp:
+		st.Top = clampTop(st.Top - body)
+	case k == kPageDown:
+		st.Top = clampTop(st.Top + body)
+	case k == kHome:
+		st.Top = 0
+	case k == kEnd:
+		st.Top = clampTop(nLines)
+	case k == kRune && (r == 'r' || r == 'R'):
+		return st, trailModalRefresh
+	case len(rows) == 0:
+	case k == kRune && (r == 'x' || r == 'X'):
+		return st, trailModalRemove
+	case k == kEnter:
+		return st, trailModalOpen
+	}
+	return st, trailModalNone
+}
+
+// trailOpenURL opens a page in the browser. A package var so tests never do.
+var trailOpenURL = func(url string) error { return exec.Command("open", url).Start() }
+
 // runTrailModal draws the modal until q/Esc. load is called every frame (the
-// read is timed, so new state shows up while it is open); refresh is `r`.
-func runTrailModal(tty *os.File, theme Theme, load func() ([]changeState, []trailNoteRec, map[string]string, string), refresh func()) {
+// read is timed, so new state shows up while it is open); refresh is `r`,
+// remove is `x` on the selected change.
+func runTrailModal(tty *os.File, theme Theme, load func() ([]changeState, []trailNoteRec, map[string]string, string), refresh func(), remove func(key string)) {
 	if tty == nil {
 		return
 	}
@@ -213,15 +280,27 @@ func runTrailModal(tty *os.File, theme Theme, load func() ([]changeState, []trai
 	}
 	defer io.WriteString(tty, "\x1b[?25h\x1b[?1049l")
 
-	top := 0
+	st := trailModalState{}
+	selKey := ""
 	buf := make([]byte, 16)
 	for {
 		states, notes, errs, branch := load()
 		w, h := termSize(tty)
-		lines := trailModalLines(states, notes, errs, branch, theme, w)
+		_, rows := trailModalLines(states, notes, errs, branch, theme, w, "")
+		// Keep the selection on the same change when others come and go.
+		for i, row := range rows {
+			if row.Key == selKey {
+				st.Sel = i
+			}
+		}
+		st.Sel = min(max(st.Sel, 0), max(len(rows)-1, 0))
+		if len(rows) > 0 {
+			selKey = rows[st.Sel].Key
+		}
+		lines, _ := trailModalLines(states, notes, errs, branch, theme, w, selKey)
 		body := helpBodyRows(len(lines), h)
-		top = max(min(top, len(lines)-body), 0)
-		io.WriteString(tty, drawPanel(lines, top, w, h, theme, " ↑↓ scroll · r refresh · q close "))
+		st.Top = min(max(st.Top, 0), max(len(lines)-body, 0))
+		io.WriteString(tty, drawPanel(lines, st.Top, w, h, theme, " ↑↓ select · ⏎ open · x remove · r refresh · q close "))
 
 		// A raw timed read reports a quiet interval as (0, io.EOF): a redraw
 		// tick, not the end of input (focus.go's gotcha).
@@ -233,23 +312,23 @@ func runTrailModal(tty *os.File, theme Theme, load func() ([]changeState, []trai
 			continue
 		}
 		k, r := decodeKey(buf[:n])
-		switch {
-		case k == kEsc || k == kCtrlC || (k == kRune && (r == 'q' || r == 'Q' || r == 'g')):
+		var act trailModalAction
+		st, act = updateTrailModal(st, rows, len(lines), body, k, r)
+		if len(rows) > 0 {
+			selKey = rows[st.Sel].Key
+		}
+		switch act {
+		case trailModalClose:
 			return
-		case k == kUp:
-			top--
-		case k == kDown:
-			top++
-		case k == kPageUp:
-			top -= body
-		case k == kPageDown:
-			top += body
-		case k == kHome:
-			top = 0
-		case k == kEnd:
-			top = len(lines)
-		case k == kRune && (r == 'r' || r == 'R'):
+		case trailModalRefresh:
 			refresh()
+		case trailModalRemove:
+			remove(selKey)
+			selKey = ""
+		case trailModalOpen:
+			if u := rows[st.Sel].URL; u != "" {
+				_ = trailOpenURL(u)
+			}
 		}
 	}
 }

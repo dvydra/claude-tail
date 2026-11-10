@@ -52,7 +52,8 @@ type trailTracker struct {
 	path     string
 	refresh  bool
 	errs     map[string]string
-	branch   string // the session's branch, for the modal's "nothing found" line
+	branch   string          // the session's branch, for the modal's "nothing found" line
+	ignored  map[string]bool // removed in the g panel: never tracked again this run
 
 	wake  chan struct{} // Refresh: step now rather than at the next tick
 	steps atomic.Int64  // completed steps (tests)
@@ -79,11 +80,20 @@ func trailExecRun(ctx context.Context, dir, name string, args ...string) ([]byte
 func newTrailTracker(deps trailTrackerDeps, out chan<- trailUpdate) *trailTracker {
 	return &trailTracker{
 		deps: deps, out: out,
-		mentions: map[string]trailMention{}, errs: map[string]string{},
+		mentions: map[string]trailMention{}, errs: map[string]string{}, ignored: map[string]bool{},
 		prev: map[string]*changeState{}, due: map[string]time.Time{}, dropped: map[string]bool{},
 		remotes: map[string]string{}, expansions: map[string]trailExpansion{},
 		wake: make(chan struct{}, 1),
 	}
+}
+
+// Untrack stops watching a change for the rest of this run, whatever mentions
+// it again (the `x` key in the g panel). Not persisted: a restart brings it back.
+func (t *trailTracker) Untrack(key string) {
+	t.mu.Lock()
+	t.ignored[key] = true
+	delete(t.errs, key)
+	t.mu.Unlock()
 }
 
 // Branch is the session's current branch, as last read.
@@ -273,7 +283,12 @@ func (t *trailTracker) step(ctx context.Context) {
 	for _, m := range t.mentions {
 		mentions = append(mentions, m)
 	}
+	ignored := make(map[string]bool, len(t.ignored))
+	for k := range t.ignored {
+		ignored[k] = true
+	}
 	t.mu.Unlock()
+	skip := func(k string) bool { return t.dropped[k] || ignored[k] }
 
 	forced := map[string]bool{}
 	if k := t.updatePushing(ctx, path, now); k != "" {
@@ -287,7 +302,7 @@ func (t *trailTracker) step(ctx context.Context) {
 	cands := map[string]cand{}
 	consider := func(r trailRef, at time.Time) {
 		k := r.Key()
-		if t.dropped[k] {
+		if skip(k) {
 			return
 		}
 		if c, ok := cands[k]; !ok || at.After(c.at) {
@@ -315,7 +330,7 @@ func (t *trailTracker) step(ctx context.Context) {
 		list = append(list, c)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].at.After(list[j].at) })
-	if !t.pushing.zero() && !t.dropped[t.pushing.Key()] {
+	if !t.pushing.zero() && !skip(t.pushing.Key()) {
 		pk := t.pushing.Key()
 		out := []cand{{t.pushing, now}}
 		for _, c := range list {
@@ -355,6 +370,12 @@ func (t *trailTracker) step(ctx context.Context) {
 	// modal quietly: Dropped with no events.
 	for k, p := range t.prev {
 		if tracked[k] || t.dropped[k] {
+			continue
+		}
+		// Removed by hand: the panel already forgot it, so no last fetch.
+		if ignored[k] {
+			delete(t.prev, k)
+			delete(t.due, k)
 			continue
 		}
 		u, ok := t.fetch(ctx, p.Ref, now, true)

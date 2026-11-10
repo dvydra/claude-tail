@@ -468,12 +468,20 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	trailBandFor := func(n trailNoteRec) string {
 		return trailBand(n.Text, n.Sev, wrapWidth(os.Stdout, false))
 	}
-	applyTrailState := func(u trailUpdate) {
-		if k := u.State.Ref.Key(); u.Dropped {
+	// trailRemoved is what `x` removed in the g panel. An update already queued
+	// on trailCh when it was removed must not bring it back.
+	trailRemoved := map[string]bool{}
+	applyTrailState := func(u trailUpdate) bool {
+		k := u.State.Ref.Key()
+		if trailRemoved[k] {
+			return false
+		}
+		if u.Dropped {
 			delete(trailStates, k)
 		} else {
 			trailStates[k] = u.State
 		}
+		return true
 	}
 	// pendingTrail holds updates that arrived while the g modal was up.
 	var pendingTrail []trailUpdate
@@ -850,8 +858,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// A trail this session watches changed (trailtrack.go). Printed into
 			// the transcript as a point-in-time line, and remembered by offset so
 			// a re-render puts it back where it was.
-			applyTrailState(u)
-			if len(u.Events) > 0 {
+			if applyTrailState(u) && len(u.Events) > 0 {
 				printTrail(u)
 				out.Flush()
 			}
@@ -999,10 +1006,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					for {
 						select {
 						case u := <-trailCh:
-							if len(u.Events) > 0 {
+							if applyTrailState(u) && len(u.Events) > 0 {
 								pendingTrail = append(pendingTrail, u)
 							}
-							applyTrailState(u)
 							continue
 						default:
 						}
@@ -1014,7 +1020,12 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					}
 					return states, trailNotes, tracker.Errors(), tracker.Branch()
 				}
-				runTrailModal(kbTTY, theme, load, tracker.Refresh)
+				remove := func(key string) {
+					tracker.Untrack(key)
+					trailRemoved[key] = true
+					delete(trailStates, key)
+				}
+				runTrailModal(kbTTY, theme, load, tracker.Refresh, remove)
 			case keyHelp:
 				// The state shown is sampled HERE, not at startup: t/T/c/m/w may
 				// all have moved since the banner was printed.

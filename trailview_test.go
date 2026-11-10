@@ -18,7 +18,8 @@ func TestTrailModalLines(t *testing.T) {
 	other.Ref = trailRef{trailRefChange, "et", "dvydra", "midnight-magic", 6}
 	other.Findings = nil
 	notes := []trailNoteRec{{Text: "⛬ k3s-config/10 (P32) · first"}, {Text: "⛬ k3s-config/10 (P32) · second"}}
-	got := modalText(trailModalLines([]changeState{s, other}, notes, nil, "feat-x", testTheme(), 100))
+	lines, _ := trailModalLines([]changeState{s, other}, notes, nil, "feat-x", testTheme(), 100, "")
+	got := modalText(lines)
 
 	if strings.Count(got, "P32") != 1+2 { // one project header, plus the two note lines
 		t.Fatalf("one header for two changes in one project:\n%s", got)
@@ -38,7 +39,8 @@ func TestTrailModalLines(t *testing.T) {
 }
 
 func TestTrailModalEmpty(t *testing.T) {
-	got := modalText(trailModalLines(nil, nil, nil, "feat", testTheme(), 80))
+	lines, _ := trailModalLines(nil, nil, nil, "feat", testTheme(), 80, "")
+	got := modalText(lines)
 	if !strings.Contains(got, "No trail for this session") || !strings.Contains(got, "branch feat checked") {
 		t.Fatalf("empty:\n%s", got)
 	}
@@ -47,7 +49,8 @@ func TestTrailModalEmpty(t *testing.T) {
 func TestTrailModalError(t *testing.T) {
 	s := fixtureState(t)
 	errs := map[string]string{s.Ref.Key(): "Error: not logged in", "et/dvydra/other/3": "Error: 404"}
-	got := modalText(trailModalLines([]changeState{s}, nil, errs, "", testTheme(), 80))
+	lines, _ := trailModalLines([]changeState{s}, nil, errs, "", testTheme(), 80, "")
+	got := modalText(lines)
 	if !strings.Contains(got, "not logged in") || !strings.Contains(got, "other/3") || !strings.Contains(got, "404") {
 		t.Fatalf("errors:\n%s", got)
 	}

@@ -374,7 +374,7 @@ Which trails:
 
 What prints a line: build failed or green again, main build red or green again, a plugin gate (e.g. buildkite) failing or recovering, falling behind main, a merge conflict or its fix, new findings, findings cleared, an agent's verdict flipping, needs review / approved, ready to merge, merged, closed. The first fetch of a trail prints one summary line so you know it is being watched. Nothing prints when nothing changed.
 
-`g` opens the full state in a scrollable panel: each change under its project trail, its agents with their last runs, its gates, the merge state, open findings by severity, and the status-line history. `r` in the panel refetches, `q` closes it.
+`g` opens the full state in a scrollable panel: each change under its project trail, its agents with their last runs, its gates, the merge state, open findings by severity, and the status-line history. In the panel, `↑↓` select a change, `⏎` opens its page on entire.com, `x` stops watching it for the rest of this tail (a restart brings it back), `r` refetches and `q` closes it.
 
 It polls through the `entire` CLI: every 10 seconds while an agent or gate is running, every 60 seconds otherwise, and right away when the session's HEAD moves. Tails on the same machine share fetched state, so several tails watching one trail cost about one set of calls. If `entire` is missing, logged out or offline, nothing prints; the `g` panel shows the error. Status lines survive `c`/`t`/`T`/`w`/`r` re-renders. `--no-trails` or `ENTIRE_TAIL_NO_TRAILS=1` turns it off.
 

@@ -103,6 +103,73 @@ func TestTrackerSkipsAlreadyMergedOnFirstLook(t *testing.T) {
 	}
 }
 
+func TestTrackerUntrack(t *testing.T) {
+	h := newTrackHarness(t)
+	stubFixtureChange(t, h.f)
+	h.tr.Observe([]trailMention{mentionAt(fixtureChangeRef, 0)})
+	h.stepAt(0)
+	h.tr.Untrack(fixtureChangeRef.Key())
+	h.tr.Observe([]trailMention{mentionAt(fixtureChangeRef, time.Minute)})
+	before := h.f.count()
+	if got := h.stepAt(5 * time.Minute); len(got) != 0 || h.f.count() != before {
+		t.Fatalf("a removed change is neither fetched nor sent again: %+v, %d calls", got, h.f.count()-before)
+	}
+}
+
+func TestTrackerUntrackPushing(t *testing.T) {
+	h := newTrackHarness(t)
+	stubRepoCwd(h, "aaa")
+	stubFixtureChange(t, h.f)
+	h.f.set(trailRunKey("", "entire", "trail", "show", "--branch", "feat-x", "--repo", "et/dvydra/k3s-config", "--json"), readTrailFixture(t, "show.json"))
+	h.tr.Follow(writeTranscript(t, "/r"))
+	h.stepAt(0)
+	h.tr.Untrack(fixtureChangeRef.Key())
+	if got := h.stepAt(5 * time.Minute); len(got) != 0 || h.f.calls[showKey("k3s-config/10")] != 1 {
+		t.Fatalf("the session's own change can be removed too: %+v", got)
+	}
+}
+
+func TestTrailModalRows(t *testing.T) {
+	s := fixtureState(t)
+	other := s
+	other.Ref = trailRef{trailRefChange, "et", "dvydra", "midnight-magic", 6}
+	lines, rows := trailModalLines([]changeState{other, s}, nil, nil, "", testTheme(), 100, other.Ref.Key())
+	if len(rows) != 2 || rows[0].Key != s.Ref.Key() || rows[1].Key != other.Ref.Key() {
+		t.Fatalf("one row per change, in display order: %+v", rows)
+	}
+	if !strings.Contains(lines[rows[1].Line], "▸") || strings.Contains(lines[rows[0].Line], "▸") {
+		t.Fatalf("only the selected change is marked:\n%s\n%s", lines[rows[0].Line], lines[rows[1].Line])
+	}
+}
+
+func TestUpdateTrailModal(t *testing.T) {
+	rows := []trailModalRow{{Key: "a", URL: "https://entire.com/a", Line: 1}, {Key: "b", URL: "https://entire.com/b", Line: 20}}
+	st := trailModalState{}
+	st, act := updateTrailModal(st, rows, 40, 10, kDown, 0)
+	if st.Sel != 1 || act != trailModalNone || st.Top != 11 {
+		t.Fatalf("down selects the next change and scrolls it into view: %+v %v", st, act)
+	}
+	if _, act = updateTrailModal(st, rows, 40, 10, kEnter, 0); act != trailModalOpen {
+		t.Fatalf("enter opens: %v", act)
+	}
+	if _, act = updateTrailModal(st, rows, 40, 10, kRune, 'x'); act != trailModalRemove {
+		t.Fatalf("x removes: %v", act)
+	}
+	if _, act = updateTrailModal(st, rows, 40, 10, kRune, 'r'); act != trailModalRefresh {
+		t.Fatalf("r refreshes: %v", act)
+	}
+	if _, act = updateTrailModal(st, rows, 40, 10, kEsc, 0); act != trailModalClose {
+		t.Fatalf("esc closes: %v", act)
+	}
+	st, _ = updateTrailModal(trailModalState{Sel: 1}, rows, 40, 10, kUp, 0)
+	if st.Sel != 0 {
+		t.Fatalf("up: %+v", st)
+	}
+	if _, act = updateTrailModal(trailModalState{}, nil, 5, 10, kEnter, 0); act != trailModalNone {
+		t.Fatalf("enter with nothing selected does nothing: %v", act)
+	}
+}
+
 // eventful drops the updates that carry state only.
 func eventful(us []trailUpdate) []trailUpdate {
 	var out []trailUpdate
