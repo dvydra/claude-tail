@@ -34,7 +34,7 @@ So the design is: when trail state changes, print a status line into the tail at
 
 Two sources, both re-evaluated as the session moves:
 
-1. **Pushing.** The session's current cwd (`sessionCwdNow` in `agentpane.go`, not `sessionCwd`, which is where it started). Its branch (`git branch --show-current`) is looked up with `entire trail show --branch <b> --repo <r> --json`. The entry in `changes[]` with `current: true` is the change; the top level is its project trail. Re-check when the cwd or branch changes (worktree hop, checkout). Exit code 1 with "no discoverable project trail" means "no trail", not an error (per herdrui-trails RECIPE).
+1. **Pushing.** The session's current cwd (`sessionCwdNow` in `agentpane.go`, not `sessionCwd`, which is where it started). Its branch (`git branch --show-current`) is looked up with `entire trail show --branch <b> --repo <r> --json`. The entry in `changes[]` with `current: true` is the change; the top level is its project trail. Re-check when the cwd or branch changes (worktree hop, checkout). Only Claude transcripts record a cwd, so Amp tails track mentioned trails only (my call). Exit code 1 with "no discoverable project trail" means "no trail", not an error (per herdrui-trails RECIPE).
 2. **Reviewing.** Trails the transcript names, in user messages, assistant text and tool-call input (my call):
    - entire.com and entire.io URLs in every form the `entire agent-help trail` table lists, including project-trail URLs (`<forge>/<project>/-/trails/<P>`) and nested change URLs. `parseTrailsURL` and the `trailURL` regex (`wtf_scan.go`) only match `https://entire.io/(gh|et)/<owner>/<repo>/trails/<n>` today, so they need extending; `threads_check.go` already handles the project-trail form.
    - `entire trail <subcommand> <selector>` in a tool call's input. `trailsLine` skips tool input on purpose (`trailClaimSource`), so this is a new parser. A bare selector is resolved against the repo of that tool call's cwd, using `--project` when the command has one.
@@ -65,7 +65,9 @@ On each fetch, diff the new state against the last one for that change. Each row
 
 | Event | Severity | Source |
 |---|---|---|
-| `<gate> failed` / `<gate> green again` | bad / good | each enabled `plugin` gate, named by its `gate_key` (e.g. "buildkite failed"), so a non-CI plugin gate isn't mislabelled "build" (my call) |
+| build failed / build green again | bad / good | the `checks` gate (`gate_key: "checks"`, value lists the CI runs) |
+| main build is red / main green again | bad / good | the `base_checks` gate (`value.branch` names the base, `value.checks[]` its runs) |
+| `<gate> failed` / `<gate> green again` | bad / good | each enabled `plugin` gate, named by its `gate_key` (e.g. "buildkite failed") (my call) |
 | out of date: N behind main | warn | `up_to_date` gate / `mergeability.behind_by`, printed when it goes from 0 to >0, not on every increase |
 | merge conflict / conflict resolved | bad / good | `mergeability.conflict_status` |
 | N new findings (k high) | bad if any high, else warn | open finding count went up |
@@ -112,7 +114,9 @@ With nothing tracked: "No trail for this session" and which branch was checked. 
 
 ## Opt-in or default
 
-My call: on by default for Claude and Amp tails on a tty, off on pipes. It shells out to `entire` and reaches the network, which is a change for a tool that's otherwise local; if that's unwelcome it becomes a `?` panel setting (persisted via `prefs.go`) defaulting off. Without `entire` on PATH it does nothing and says nothing.
+My call: on by default for Claude and Amp tails on a tty, off on pipes. It shells out to `entire` and reaches the network, which is a change for a tool that's otherwise local; if that's unwelcome it becomes a `?` panel setting (persisted via `prefs.go`) defaulting off. Without `entire` on PATH it does nothing and says nothing. `--no-trails` / `ENTIRE_TAIL_NO_TRAILS=1` turns it off for a run (my call).
+
+"Live" in the lifetime rule is measured by the mention's own timestamp: a mention older than 24 hours is ignored, so an old session opened from the tree tracks nothing it merely mentioned (my call; it needs no process check).
 
 ## Constraints
 
@@ -129,6 +133,9 @@ My call: on by default for Claude and Amp tails on a tty, off on pipes. It shell
 - Exact colours (use the theme where it has a fitting colour).
 - Caching across restarts.
 
-## Deferred
+## API shapes seen on 2026-11-11 (us, `entiredb/4844`)
 
-- **Main build is red.** Daniel asked for it, but the change and gates endpoints carry no base-branch CI status. Dropped from v1 until a source is found.
+- Gate `state` is `evaluated` or `disabled`; `outcome` is `passed`, `failed` or null (not finished). Gate keys seen: `approvals`, `base_checks`, `checks`, `findings`, `up_to_date`, `buildkite` (plugin).
+- `mergeability` carries `mergeable`, `behind_by`, `conflict_status` (`clean`, `unknown`, …), `checks.runs[]` and the same `gates[]` as the gates endpoint, so one call to the change endpoint covers agents and gates.
+- Agent: `agent.name`, `signal.value_type` (`boolean`, `percent`, `size`), `signal.polarity`, `reading.boolean_value|percent_value|size_value`, `latest_run.status`, `history[]`, `waiting_for`.
+- Finding: `id`, `severity` (`high`/`medium`/`low`/null), `status`, `body`, `actor_display_name`, `location.file_path`, `location.start_line`.
