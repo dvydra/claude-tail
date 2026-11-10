@@ -142,6 +142,12 @@ func trailMentionsInLine(line []byte) []trailMention {
 		return nil
 	}
 	s := string(line)
+	// A tool result is what the session READ (a `trail show --json` lists every
+	// change in the project), not a trail it is working on. Claude Code writes
+	// each tool result as its own user record, so the whole line is skipped.
+	if strings.Contains(s, `"type":"tool_result"`) {
+		return nil
+	}
 	var at time.Time
 	if m := trailMentionTS.FindStringSubmatch(s); m != nil {
 		at, _ = time.Parse(time.RFC3339Nano, m[1])

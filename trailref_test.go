@@ -86,6 +86,11 @@ func TestTrailMentionsInLine(t *testing.T) {
 		}
 	}
 
+	result := []byte(`{"type":"user","timestamp":"2026-11-11T01:02:03.000Z","message":{"content":[{"type":"tool_result","content":"https://entire.com/et/dvydra/-/trails/32/changes/k3s-config/10"}]}}`)
+	if ms := trailMentionsInLine(result); len(ms) != 0 {
+		t.Fatalf("a tool result is what the session read, not a mention: %+v", ms)
+	}
+
 	twice := []byte(`{"a":"https://entire.com/et/dvydra/-/trails/32 and https://entire.com/et/dvydra/-/trails/32"}`)
 	ms = trailMentionsInLine(twice)
 	if len(ms) != 1 || !ms[0].At.IsZero() {
