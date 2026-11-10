@@ -82,7 +82,7 @@ func TestTrackerMentionOnce(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		h.tr.Observe([]trailMention{mentionAt(fixtureChangeRef, time.Duration(i)*time.Second)})
 	}
-	n := len(h.stepAt(time.Minute)) + len(h.stepAt(2*time.Minute+time.Second))
+	n := len(eventful(h.stepAt(time.Minute))) + len(eventful(h.stepAt(2*time.Minute+time.Second)))
 	if n != 1 {
 		t.Fatalf("updates: %d", n)
 	}

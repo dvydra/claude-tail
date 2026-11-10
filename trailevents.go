@@ -133,11 +133,15 @@ func trailEvents(prev *changeState, cur changeState) []trailEvent {
 
 	// CI gates: build, main, then plugins.
 	ciGate := func(g trailGate) {
-		p, ok := prev.Gate(g.Key)
-		if !ok || g.Outcome == "" {
+		if g.Outcome == "" {
 			return
 		}
-		was := p.settledOutcome()
+		// A gate missing from prev (registered after the baseline) counts as
+		// never finished: first seen failed is still a failure.
+		was := ""
+		if p, ok := prev.Gate(g.Key); ok {
+			was = p.settledOutcome()
+		}
 		failed, green := trailGateName(g.Key)
 		switch {
 		case g.Outcome == "failed" && was != "failed":
@@ -193,13 +197,15 @@ func trailEvents(prev *changeState, cur changeState) []trailEvent {
 		add("findings cleared", trailSevGood)
 	}
 
-	before := map[string]string{}
+	// An agent line only when its rating changes bucket: a percent agent's
+	// verdict is the number itself, and 70% → 71% is not news.
+	before := map[string]trailAgent{}
 	for _, a := range prev.Agents {
-		before[a.Name] = a.Verdict
+		before[a.Name] = a
 	}
 	for _, a := range cur.Agents {
-		if b := before[a.Name]; b != "" && a.Verdict != "" && b != a.Verdict {
-			add(a.Name+": "+b+" → "+a.Verdict, a.Sev)
+		if b, ok := before[a.Name]; ok && b.Verdict != "" && a.Verdict != "" && b.Sev != a.Sev {
+			add(a.Name+": "+b.Verdict+" → "+a.Verdict, a.Sev)
 		}
 	}
 

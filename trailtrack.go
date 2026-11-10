@@ -329,41 +329,75 @@ func (t *trailTracker) step(ctx context.Context) {
 		list = list[:trailMaxTracked]
 	}
 
+	send := func(u trailUpdate) bool {
+		select {
+		case t.out <- u:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	tracked := map[string]bool{}
 	for _, c := range list {
 		k := c.ref.Key()
+		tracked[k] = true
 		if d, ok := t.due[k]; ok && now.Before(d) && !forced[k] && !refresh {
 			continue
 		}
-		if forced[k] || refresh {
-			_ = os.Remove(trailCachePath(t.deps.Home, c.ref))
-		}
-		s, err := fetchChangeState(ctx, t.deps.Run, c.ref, t.deps.Home, now)
-		if err != nil {
-			t.setErr(k, err.Error())
-			t.due[k] = now.Add(trailSlowPoll)
-			continue
-		}
-		t.setErr(k, "")
-		prev := t.prev[k]
-		evs := trailEvents(prev, s)
-		settled := settleGates(prev, s)
-		t.prev[k] = &settled
-		if s.Running() {
-			t.due[k] = now.Add(trailFastPoll)
-		} else {
-			t.due[k] = now.Add(trailSlowPoll)
-		}
-		done := s.Status == "merged" || s.Status == "closed"
-		if done {
-			t.dropped[k] = true
-		}
-		if len(evs) == 0 {
-			continue
-		}
-		select {
-		case t.out <- trailUpdate{State: s, Events: evs, Dropped: done}:
-		case <-ctx.Done():
+		u, ok := t.fetch(ctx, c.ref, now, forced[k] || refresh)
+		if ok && !send(u) {
 			return
 		}
 	}
+	// A change that left the list (its project trail no longer lists it once
+	// merged, its mention aged out, the cap or a branch switch pushed it off)
+	// gets one last fetch, so a merge still prints. Otherwise it leaves the
+	// modal quietly: Dropped with no events.
+	for k, p := range t.prev {
+		if tracked[k] || t.dropped[k] {
+			continue
+		}
+		u, ok := t.fetch(ctx, p.Ref, now, true)
+		if !ok || !u.Dropped {
+			u = trailUpdate{State: *p, Dropped: true}
+		}
+		delete(t.prev, k)
+		delete(t.due, k)
+		t.setErr(k, "")
+		if !send(u) {
+			return
+		}
+	}
+}
+
+// fetch reads one change and diffs it against the last fetch. Every success
+// is sent, events or not, so the modal always shows the latest state; the
+// render goroutine prints a line only when there are events.
+func (t *trailTracker) fetch(ctx context.Context, ref trailRef, now time.Time, force bool) (trailUpdate, bool) {
+	k := ref.Key()
+	if force {
+		_ = os.Remove(trailCachePath(t.deps.Home, ref))
+	}
+	s, err := fetchChangeState(ctx, t.deps.Run, ref, t.deps.Home, now)
+	if err != nil {
+		t.setErr(k, err.Error())
+		t.due[k] = now.Add(trailSlowPoll)
+		return trailUpdate{}, false
+	}
+	t.setErr(k, "")
+	prev := t.prev[k]
+	evs := trailEvents(prev, s)
+	settled := settleGates(prev, s)
+	t.prev[k] = &settled
+	if s.Running() {
+		t.due[k] = now.Add(trailFastPoll)
+	} else {
+		t.due[k] = now.Add(trailSlowPoll)
+	}
+	done := s.Status == "merged" || s.Status == "closed"
+	if done {
+		t.dropped[k] = true
+		delete(t.prev, k)
+	}
+	return trailUpdate{State: s, Events: evs, Dropped: done}, true
 }

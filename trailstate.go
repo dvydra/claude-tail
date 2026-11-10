@@ -270,11 +270,15 @@ func parseChangeState(ref trailRef, show, change, comments []byte) (changeState,
 	if err := json.Unmarshal(show, &sh); err != nil {
 		return changeState{}, err
 	}
-	s := changeState{Ref: ref, ProjectNumber: sh.Number, ProjectTitle: sh.Title, ProjectURL: sh.URL}
+	// Every string here is other people's (or agents') text, written to the tty
+	// raw: control bytes would be executed by the terminal, and a newline would
+	// break the modal's box. trailsSafe turns each into a space.
+	safe := trailsSafe
+	s := changeState{Ref: ref, ProjectNumber: sh.Number, ProjectTitle: safe(sh.Title), ProjectURL: sh.URL}
 	found := false
 	for _, c := range sh.Changes {
 		if strings.EqualFold(c.Repository, ref.Repo) && c.Number == ref.Number {
-			s.URL, s.Branch, s.Status = c.URL, c.Branch, c.Status
+			s.URL, s.Branch, s.Status = c.URL, safe(c.Branch), safe(c.Status)
 			found = true
 			break
 		}
@@ -286,15 +290,15 @@ func parseChangeState(ref trailRef, show, change, comments []byte) (changeState,
 	if err := json.Unmarshal(change, &ch); err != nil {
 		return changeState{}, err
 	}
-	s.Title, s.Base = ch.Title, ch.Base
+	s.Title, s.Base = safe(ch.Title), safe(ch.Base)
 	if ch.Branch != "" {
-		s.Branch = ch.Branch
+		s.Branch = safe(ch.Branch)
 	}
 	if ch.Status != "" {
-		s.Status = ch.Status
+		s.Status = safe(ch.Status)
 	}
 	for _, a := range ch.Agents {
-		ag := trailAgent{Name: a.Agent.Name}
+		ag := trailAgent{Name: safe(a.Agent.Name)}
 		if a.Reading != nil {
 			ag.Verdict, ag.Sev = agentVerdict(a.Signal.ValueType, a.Signal.Polarity, *a.Reading)
 		}
@@ -317,7 +321,7 @@ func parseChangeState(ref trailRef, show, change, comments []byte) (changeState,
 		if g.Outcome != nil {
 			out = *g.Outcome
 		}
-		s.Gates = append(s.Gates, trailGate{Key: g.Key, Type: g.Type, Outcome: out, Detail: gateDetail(g.Key, out, g.Value)})
+		s.Gates = append(s.Gates, trailGate{Key: safe(g.Key), Type: g.Type, Outcome: out, Detail: safe(gateDetail(g.Key, out, g.Value))})
 	}
 	var cm trailCommentsJSON
 	if len(comments) > 0 {
@@ -329,12 +333,12 @@ func parseChangeState(ref trailRef, show, change, comments []byte) (changeState,
 		if c.Status == "resolved" || c.Status == "dismissed" {
 			continue
 		}
-		f := trailFinding{ID: c.ID, Author: c.Author, Body: firstParagraph(c.Body)}
+		f := trailFinding{ID: c.ID, Author: safe(c.Author), Body: safe(firstParagraph(c.Body))}
 		if c.Severity != nil {
-			f.Severity = *c.Severity
+			f.Severity = safe(*c.Severity)
 		}
 		if c.Location != nil {
-			f.File = c.Location.File
+			f.File = safe(c.Location.File)
 			if c.Location.Line != nil {
 				f.Line = *c.Location.Line
 			}

@@ -15,6 +15,17 @@ type trailNoteRec struct {
 	Sev    trailSev
 }
 
+// retargetNotes moves notes from one transcript path to another, for a
+// relocation: Claude Code moved the same session file into another project dir,
+// so the content (and every offset) is unchanged and the notes still belong.
+func retargetNotes(notes []trailNoteRec, from, to string) {
+	for i := range notes {
+		if notes[i].Path == from {
+			notes[i].Path = to
+		}
+	}
+}
+
 // notesUpTo returns the notes for path at or before off, scanning from index
 // from, and the index to continue from. notes are in print order, so offsets
 // for one path only grow.

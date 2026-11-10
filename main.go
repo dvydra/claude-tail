@@ -659,6 +659,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				}
 				r.endLine() // close any open dot-streak bracket before the note
 				io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ following session into "+filepath.Base(filepath.Dir(rp))+reset+"\n\n")
+				// Same file, moved: its trail notes move with it, or the next
+				// re-render (which reprints from rp) would drop them all.
+				retargetNotes(trailNotes, cur, rp)
 				cur = rp
 				projectDir = filepath.Dir(rp)
 				agyLastSize, agyLastMtime = -1, -1
@@ -848,8 +851,10 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			// the transcript as a point-in-time line, and remembered by offset so
 			// a re-render puts it back where it was.
 			applyTrailState(u)
-			printTrail(u)
-			out.Flush()
+			if len(u.Events) > 0 {
+				printTrail(u)
+				out.Flush()
+			}
 		case code := <-codeCh:
 			// Quit: restore the terminal and do the final flush here, on the
 			// sole writer goroutine (130 for Ctrl-C/SIGINT, 0 for q/Ctrl-D/SIGTERM).
@@ -994,7 +999,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					for {
 						select {
 						case u := <-trailCh:
-							pendingTrail = append(pendingTrail, u)
+							if len(u.Events) > 0 {
+								pendingTrail = append(pendingTrail, u)
+							}
 							applyTrailState(u)
 							continue
 						default:
