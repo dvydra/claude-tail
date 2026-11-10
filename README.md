@@ -189,6 +189,7 @@ events show as they stream:
 | `T`            | cycle the color **theme** — steps through the bundled themes and re-renders the whole transcript in the new theme |
 | `c`            | toggle collapsing of long user pastes                         |
 | `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
+| `g`            | **trail status**: agents, gates, findings and merge state for every Entire trail this session watches (see "Trail status lines") |
 | `r`            | re-render the whole transcript with current settings (`t`/`T`/`c`/`m`/`w` already do this themselves) |
 | Ctrl-T         | **send mode** — every key goes to the agent pane in this iTerm tab (the claude or amp writing this session, or the only one in the tab) while the tail keeps streaming, and what you type is echoed under a `---` at the bottom; Ctrl-T again to stop. Ctrl-C still quits the tail, so use Esc to interrupt the agent |
 | Ctrl-X         | **back to the tree** — pop out of a Claude or Amp tail; pick another with `t`, or use `Enter`/`c`/`a` for a workspace |
@@ -354,6 +355,28 @@ recolored in place, so it appends a fresh copy in the new theme (a `⟳ theme:
 <name>` divider marks it). It steps through the bundled themes in order (same
 set as `--list-themes` / the `-t` flag), wrapping around; a `-s/--style` body
 override is not carried into the cycle.
+
+## Trail status lines
+
+A Claude or Amp tail on a terminal watches the Entire trails its session works on, and prints a coloured line into the transcript when one changes:
+
+```
+⛬ k3s-config/10 (P32) · build failed · 2 new findings (1 high)
+```
+
+The line is a full-width band: red when something broke, amber for something to look at, green when something got better, grey for merged or closed. A red line also rings the bell. The change id and the project trail id are links to entire.com.
+
+Which trails:
+
+- **Pushing:** the change on the session's current branch, found with `entire trail show --branch`. Claude only, since only Claude transcripts record a cwd.
+- **Reviewing:** a trail URL in your messages or the agent's text, or an `entire trail <subcommand> <selector>` command the agent ran, in the last 24 hours. Tool output doesn't count: a `trail show` that lists ten changes isn't ten trails you're working on. A project trail URL watches each of its open changes.
+- At most 10 changes. The pushing one always stays. A merged or closed change prints that and is dropped.
+
+What prints a line: build failed or green again, main build red or green again, a plugin gate (e.g. buildkite) failing or recovering, falling behind main, a merge conflict or its fix, new findings, findings cleared, an agent's verdict flipping, needs review / approved, ready to merge, merged, closed. The first fetch of a trail prints one summary line so you know it is being watched. Nothing prints when nothing changed.
+
+`g` opens the full state in a scrollable panel: each change under its project trail, its agents with their last runs, its gates, the merge state, open findings by severity, and the status-line history. `r` in the panel refetches, `q` closes it.
+
+It polls through the `entire` CLI: every 10 seconds while an agent or gate is running, every 60 seconds otherwise, and right away when the session's HEAD moves. Tails on the same machine share fetched state, so several tails watching one trail cost about one set of calls. If `entire` is missing, logged out or offline, nothing prints; the `g` panel shows the error. Status lines survive `c`/`t`/`T`/`w`/`r` re-renders. `--no-trails` or `ENTIRE_TAIL_NO_TRAILS=1` turns it off.
 
 ## Subagents & pending questions (Claude)
 
