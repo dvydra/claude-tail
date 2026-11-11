@@ -71,7 +71,7 @@ func TestTrackerPushingBranch(t *testing.T) {
 	h.f.set(trailRunKey("", "entire", "trail", "show", "--branch", "feat-x", "--repo", "et/dvydra/k3s-config", "--json"), readTrailFixture(t, "show.json"))
 	h.tr.Follow(writeTranscript(t, "/r"))
 	got := h.stepAt(0)
-	if len(got) != 1 || got[0].State.Ref != fixtureChangeRef || len(got[0].Events) != 1 {
+	if len(got) != 1 || got[0].State.Ref != fixtureChangeRef || len(got[0].Events) != 1 || !got[0].Baseline {
 		t.Fatalf("pushing baseline: %+v", got)
 	}
 }

@@ -444,6 +444,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 	trailCh := make(chan trailUpdate, 16)
 	trailStates := map[string]changeState{}
 	var trailNotes []trailNoteRec
+	trailFYI := func(string, trailUpdate) {}
 	if (agent == AgentClaude || agent == AgentAmp) && isCharDevice(os.Stdout) && !cfg.NoTrails {
 		if _, err := exec.LookPath("entire"); err == nil {
 			tracker = newTrailTracker(trailTrackerDeps{Run: trailExecRun, Now: time.Now, Home: home}, trailCh)
@@ -454,6 +455,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			trailCtx, trailStop := context.WithCancel(context.Background())
 			defer trailStop()
 			go tracker.Run(trailCtx)
+			// Trail FYIs (trailfyi.go): a change is also sent to the Claude being
+			// tailed, but only while it is busy, so it never starts a turn.
+			if agent == AgentClaude && !cfg.NoTrailFYI {
+				trailFYI = startTrailFYI(trailCtx, defaultTrailFYIDeps(home))
+			}
 		}
 	}
 	// liveEmit is emit plus mention tracking, for lines read for the first
@@ -861,6 +867,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			if applyTrailState(u) && len(u.Events) > 0 {
 				printTrail(u)
 				out.Flush()
+				trailFYI(sessionIDFromPath(cur), u)
 			}
 		case code := <-codeCh:
 			// Quit: restore the terminal and do the final flush here, on the
@@ -1008,6 +1015,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 						case u := <-trailCh:
 							if applyTrailState(u) && len(u.Events) > 0 {
 								pendingTrail = append(pendingTrail, u)
+								trailFYI(sessionIDFromPath(cur), u)
 							}
 							continue
 						default:
@@ -1715,6 +1723,11 @@ OPTIONS:
                             status line when a trail it pushes to or names
                             changes (build, findings, agents, merge state), and
                             g shows the full state. Same as ENTIRE_TAIL_NO_TRAILS=1.
+      --no-trail-fyi        Don't tell the tailed Claude about trail changes.
+                            By default each change is also sent to the Claude
+                            session as an FYI, only while it is busy, so it
+                            reads it between tool calls and never starts a new
+                            turn. Same as ENTIRE_TAIL_NO_TRAIL_FYI=1.
       --wrap               Wrap prose to the terminal width, breaking between
                             words. Off by default: each paragraph is one long
                             line the terminal soft-wraps (breaks land mid-word)

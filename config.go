@@ -32,6 +32,7 @@ type Config struct {
 	ClaudeBinSet     bool   // ClaudeBin came from a flag/env, not the built-in default
 	NoTap            bool   // --no-tap: ignore the API-stream tap even when its daemon is up
 	NoTrails         bool   // --no-trails / ENTIRE_TAIL_NO_TRAILS: no trail status lines
+	NoTrailFYI       bool   // --no-trail-fyi / ENTIRE_TAIL_NO_TRAIL_FYI: don't tell the busy Claude about trail changes
 	NoPaneLink       bool   // --no-pane-link: never register this pane, never offer the iTerm tab link
 	NoWrap           bool   // default; --wrap clears it. Don't wrap bodies; let the terminal soft-wrap (clean drag-select copy)
 	TapArgs          []string
@@ -122,6 +123,7 @@ func defaultConfig(getenv func(string) string, prefs savedPrefs) Config {
 		Days:             getenv("ENTIRE_TAIL_DAYS"),
 		MarkContinuation: envTrue(getenv("ENTIRE_TAIL_MARK_CONTINUATION")),
 		NoTrails:         envTrue(getenv("ENTIRE_TAIL_NO_TRAILS")),
+		NoTrailFYI:       envTrue(getenv("ENTIRE_TAIL_NO_TRAIL_FYI")),
 		// Wrap has no saved preference (see savedPrefs): flag, env, or the
 		// built-in default, which is OFF so a drag-select copies whole
 		// paragraphs.
@@ -327,6 +329,8 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 			c.NoTap = true
 		case a == "--no-trails":
 			c.NoTrails = true
+		case a == "--no-trail-fyi":
+			c.NoTrailFYI = true
 		case a == "--no-pane-link":
 			c.NoPaneLink = true
 		case a == "--no-status":

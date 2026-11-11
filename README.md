@@ -378,6 +378,8 @@ What prints a line: build failed or green again, main build red or green again, 
 
 It polls through the `entire` CLI: every 10 seconds while an agent or gate is running, every 60 seconds otherwise, and right away when the session's HEAD moves. Tails on the same machine share fetched state, so several tails watching one trail cost about one set of calls. If `entire` is missing, logged out or offline, nothing prints; the `g` panel shows the error. Status lines survive `c`/`t`/`T`/`w`/`r` re-renders. `--no-trails` or `ENTIRE_TAIL_NO_TRAILS=1` turns it off.
 
+A Claude tail also sends each change to the Claude session it follows, as a one-line FYI over Claude Code's cross-session messaging, so the agent can stop polling or sleeping on CI. It is sent only while the session is busy: a busy Claude reads it between tool calls, while an idle one would start a new turn on it. The first summary line is never sent, and several tails on one session send each FYI once. `--no-trail-fyi` or `ENTIRE_TAIL_NO_TRAIL_FYI=1` turns it off.
+
 ## Subagents & pending questions (Claude)
 
 When the agent you're tailing spawns **subagents** (the `Agent`/Task tool — often

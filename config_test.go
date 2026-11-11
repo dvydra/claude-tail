@@ -13,6 +13,23 @@ func envFunc(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
+func TestParseCLITrailFYI(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		env  map[string]string
+		want bool
+	}{
+		{nil, nil, false},
+		{[]string{"--no-trail-fyi"}, nil, true},
+		{nil, map[string]string{"ENTIRE_TAIL_NO_TRAIL_FYI": "1"}, true},
+	} {
+		c, _, err := parseCLI(tc.args, envFunc(tc.env), savedPrefs{})
+		if err != nil || c.NoTrailFYI != tc.want {
+			t.Errorf("%v %v: NoTrailFYI=%v err=%v", tc.args, tc.env, c.NoTrailFYI, err)
+		}
+	}
+}
+
 func TestParseCLIDefaults(t *testing.T) {
 	c, action, err := parseCLI(nil, envFunc(nil), savedPrefs{})
 	if err != nil || action != ActionRun {

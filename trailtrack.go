@@ -30,6 +30,9 @@ type trailUpdate struct {
 	State   changeState
 	Events  []trailEvent
 	Dropped bool // merged or closed: this was its last line
+	// Baseline is the first look at this change in this process: its state as
+	// found, not a change. Shown in the tail, never sent as a trail FYI.
+	Baseline bool
 }
 
 type trailTrackerDeps struct {
@@ -424,5 +427,5 @@ func (t *trailTracker) fetch(ctx context.Context, ref trailRef, now time.Time, f
 			evs = nil
 		}
 	}
-	return trailUpdate{State: s, Events: evs, Dropped: done}, true
+	return trailUpdate{State: s, Events: evs, Dropped: done, Baseline: prev == nil}, true
 }
