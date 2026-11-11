@@ -24,11 +24,14 @@ const (
 	keyToggleMrkdwn
 	keyToggleWrap
 	keyDrift
-	keyHunk
-	keyFocus // not a keyActionFor result: the `→` escape sequence decodes to it
+	keyTrails // g: the trail status modal (trailview.go)
+	keyFocus  // not a keyActionFor result: the `→` escape sequence decodes to it
 	keySend
 	keySendOff // sent by the keyboard when send mode ends, so the render goroutine can say so
 	keyWorkspace
+	keyRestartArm    // Ctrl-R: ask whether to restart the tail
+	keyRestart       // the `y` that confirms it; the keyboard stops reading
+	keyRestartCancel // any other key after Ctrl-R
 )
 
 // keyActionFor maps a raw input byte to an action. Ctrl-C is left to the signal
@@ -59,12 +62,14 @@ func keyActionFor(b byte) keyAction {
 		return keyToggleMrkdwn
 	case 'd', 'D':
 		return keyDrift
+	case 'g', 'G':
+		return keyTrails
 	case 'w', 'W':
 		return keyToggleWrap
-	case 'h', 'H':
-		return keyHunk
 	case sendToggle:
 		return keySend
+	case restartToggle:
+		return keyRestartArm
 	}
 	return keyNone
 }
@@ -153,6 +158,7 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 
 	go func() {
 		buf := make([]byte, 16)
+		restartArmed := false
 		for {
 			n, err := tty.Read(buf)
 			if err != nil {
@@ -160,6 +166,20 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 				return
 			}
 			if n == 0 {
+				continue
+			}
+			if restartArmed {
+				// The key after Ctrl-R answers the question and nothing else:
+				// `y` restarts, anything else cancels and is swallowed, so a
+				// mistyped chord can't also toggle a display setting.
+				restartArmed = false
+				if n == 1 && (buf[0] == 'y' || buf[0] == 'Y') {
+					// Stop reading, like Ctrl-X: the exec'd tail opens its
+					// own tty reader, and this one must not race it.
+					actionCh <- keyRestart
+					return
+				}
+				actionCh <- keyRestartCancel
 				continue
 			}
 			switch act := liveKey(buf[:n]); act {
@@ -189,11 +209,8 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 			case keyDrift:
 				overlayCh <- keyDrift
 				<-resumeCh
-			case keyHunk:
-				// Same hand-off again, though what takes the screen is a child
-				// process rather than an overlay we draw. The parking matters
-				// more here, not less: hunk reads this very fd.
-				overlayCh <- keyHunk
+			case keyTrails:
+				overlayCh <- keyTrails
 				<-resumeCh
 			case keySend:
 				overlayCh <- keySend
@@ -207,6 +224,9 @@ func startKeyboardOn(tty *os.File, saved string, treeEnabled bool, codeCh chan<-
 					codeCh <- 0
 					return
 				}
+			case keyRestartArm:
+				restartArmed = true
+				actionCh <- act
 			case keyNone:
 			default:
 				// Every display toggle is applied by the RENDER goroutine: each one

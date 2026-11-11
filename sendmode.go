@@ -14,11 +14,11 @@ import (
 // The keyboard goroutine does the forwarding itself, so the render goroutine
 // keeps streaming the transcript and you see the agent answer while you type.
 // The render goroutine's only part is working out WHICH pane (it owns cur), and
-// it answers on sendPaneCh. The pane is hunk's: the claude (or amp) in this iTerm
+// it answers on sendPaneCh. The pane is agentPaneFor's: the claude (or amp) in this iTerm
 // tab writing the tailed session, or a lone one in the tab, and "" when that
 // isn't certain, because keys typed into the wrong pane go into someone's work.
 //
-// Keys go through `write text … newline NO`, addressed by session id (hunk.go's
+// Keys go through `write text … newline NO`, addressed by session id (panelink.go's
 // rule: indexes shift). One osascript per keystroke would lag behind a typist,
 // so a sender goroutine batches whatever arrived while the last call ran.
 // Ctrl-C still signals this process (cbreak keeps ISIG); Esc is what interrupts

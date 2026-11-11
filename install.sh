@@ -20,8 +20,12 @@ if ! command -v go >/dev/null 2>&1; then
   echo "error: Go toolchain not found. Install Go (https://go.dev/dl/) and re-run." >&2
   exit 1
 fi
-echo "Building entire-tail..."
-( cd "$HERE" && go build -o "$BIN" . )
+VERSION="1.0.0-dev"
+if [ -x "$HERE/version.sh" ]; then
+  VERSION="$(cd "$HERE" && ./version.sh)"
+fi
+echo "Building entire-tail $VERSION..."
+( cd "$HERE" && go build -ldflags "-X main.version=$VERSION" -o "$BIN" . )
 echo "Built: $BIN"
 
 # ── standalone install: symlink into ~/.local/bin ────────────────────────────
@@ -54,3 +58,42 @@ else
   echo "note: 'entire' CLI not on \$PATH. Skipping plugin install."
   echo "      You can still run the standalone 'entire-tail' command."
 fi
+
+# ── thread-handover skill: one copy for Claude and Amp ───────────────────────
+mkdir -p "$HOME/.agents/skills/thread-handover" "$HOME/.claude/skills"
+cp "$HERE/docs/skills/thread-handover/SKILL.md" "$HOME/.agents/skills/thread-handover/SKILL.md"
+ln -sfn "$HOME/.agents/skills/thread-handover" "$HOME/.claude/skills/thread-handover"
+echo "Installed: ~/.agents/skills/thread-handover (linked from ~/.claude/skills/thread-handover)"
+
+# ── /handover command and batch handover skill (vendored copies) ─────────────
+# Never write through or replace a symlink: the target is owned elsewhere.
+install_copy() {
+  src="$1"; dst="$2"
+  mkdir -p "$(dirname "$dst")"
+  shown="~${dst#$HOME}"
+  if [ -L "$dst" ]; then
+    echo "skipping $shown: it is a symlink to $(readlink "$dst"); update that file from ${src#$HERE/}"
+    return 0
+  fi
+  cp "$src" "$dst"
+  echo "Installed: $shown"
+}
+install_copy "$HERE/docs/skills/handover-command.md" "$HOME/.claude/commands/handover.md"
+install_copy "$HERE/docs/handover-sessions-skill.md" "$HOME/.claude/skills/handover-sessions/SKILL.md"
+
+# ── Amp: "handover" resolves through ~/.config/amp/skills/handover ───────────
+install_copy "$HERE/docs/skills/amp-handover-skill.md" "$HOME/.config/amp/skills/handover/SKILL.md"
+install_copy "$HERE/docs/skills/thread-handover/SKILL.md" "$HOME/.config/amp/skills/thread-handover/SKILL.md"
+
+# ── threads-bootstrap skill: same layout as thread-handover ──────────────────
+install_copy "$HERE/docs/skills/threads-bootstrap/SKILL.md" "$HOME/.agents/skills/threads-bootstrap/SKILL.md"
+ln -sfn "$HOME/.agents/skills/threads-bootstrap" "$HOME/.claude/skills/threads-bootstrap"
+
+# ── thread-title skill (/thread-title): same layout ──────────────────────────
+install_copy "$HERE/docs/skills/thread-title/SKILL.md" "$HOME/.agents/skills/thread-title/SKILL.md"
+ln -sfn "$HOME/.agents/skills/thread-title" "$HOME/.claude/skills/thread-title"
+
+# ── thread-link skill (/thread-link): same layout, plus Amp like thread-handover
+install_copy "$HERE/docs/skills/thread-link/SKILL.md" "$HOME/.agents/skills/thread-link/SKILL.md"
+ln -sfn "$HOME/.agents/skills/thread-link" "$HOME/.claude/skills/thread-link"
+install_copy "$HERE/docs/skills/thread-link/SKILL.md" "$HOME/.config/amp/skills/thread-link/SKILL.md"

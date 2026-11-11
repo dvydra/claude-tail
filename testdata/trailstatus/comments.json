@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "id": "F1",
+      "actor_display_name": "reviewer",
+      "body": "Nil map write on first fetch.\n\nThe cache map is never initialised before the first store, so the first update panics.",
+      "severity": "high",
+      "status": "open",
+      "location": {"file_path": "trailtrack.go", "start_line": 42, "end_line": 44}
+    },
+    {
+      "id": "F2",
+      "actor_display_name": "reviewer",
+      "body": "Typo.",
+      "severity": "low",
+      "status": "resolved",
+      "location": {"file_path": "README.md", "start_line": 3, "end_line": 3}
+    }
+  ],
+  "event_cursor": "1"
+}

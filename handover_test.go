@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -139,7 +140,7 @@ func TestBuildManifestGroupsThrough(t *testing.T) {
 		{GroupID: "g1", Sessions: []handoverItem{{SessionID: "a", Path: "/p/a"}, {SessionID: "b", Path: "/p/b"}}},
 	}
 	m := buildManifest(groups, "/vault/Handover/2026-07-17", "2026-07-17", 0,
-		func(string) []sessionLink { return nil })
+		func(string) []sessionLink { return nil }, func() bool { return false }, nil)
 	if len(m.Groups) != 1 || len(m.Groups[0].Sessions) != 2 || m.Groups[0].GroupID != "g1" {
 		t.Fatalf("groups = %+v", m.Groups)
 	}
@@ -252,5 +253,57 @@ func TestUpdateHandoverPickPreview(t *testing.T) {
 func TestRowTag(t *testing.T) {
 	if rowTag(tagIndependent) != "[x]" || rowTag(tagExcluded) != "[ ]" || rowTag(3) != "[3]" {
 		t.Fatalf("rowTag mapping wrong: %q %q %q", rowTag(tagIndependent), rowTag(tagExcluded), rowTag(3))
+	}
+}
+
+func TestBuildManifestThreadsEnabled(t *testing.T) {
+	groups := []handoverGroup{{GroupID: "g1", Sessions: []handoverItem{{SessionID: "a", Path: "/p/a"}}}}
+	none := func(string) []sessionLink { return nil }
+	on := buildManifest(groups, "/v", "2026-07-17", 0, none, func() bool { return true }, nil)
+	if !on.ThreadsEnabled {
+		t.Fatal("ThreadsEnabled should be true")
+	}
+	off := buildManifest(groups, "/v", "2026-07-17", 0, none, func() bool { return false }, nil)
+	if off.ThreadsEnabled {
+		t.Fatal("ThreadsEnabled should be false")
+	}
+	b, err := json.Marshal(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"threadsEnabled":false`) {
+		t.Fatalf("threadsEnabled must always be present: %s", b)
+	}
+	if strings.Contains(string(b), `"thread"`) {
+		t.Fatalf("empty thread must be omitted: %s", b)
+	}
+	on.Groups[0].Thread = "my-thread"
+	b, _ = json.Marshal(on)
+	if !strings.Contains(string(b), `"thread":"my-thread"`) {
+		t.Fatalf("thread missing: %s", b)
+	}
+}
+
+func TestBuildManifestThreadFromRegistry(t *testing.T) {
+	root := t.TempDir()
+	slug, err := createThread(root, "Mirror checks", storeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerSession(root, slug, "claude", "b"); err != nil {
+		t.Fatal(err)
+	}
+	groups := []handoverGroup{
+		{GroupID: "g1", Sessions: []handoverItem{{SessionID: "a", Path: "/p/a"}, {SessionID: "b", Path: "/p/b"}}},
+		{GroupID: "g2", Sessions: []handoverItem{{SessionID: "c", Path: "/p/c"}}},
+	}
+	none := func(string) []sessionLink { return nil }
+	lookup := func(agent, id string) (string, bool) { return lookupSession(root, agent, id) }
+	m := buildManifest(groups, "/v", "2026-07-17", 0, none, func() bool { return true }, lookup)
+	if m.Groups[0].Thread != slug || m.Groups[1].Thread != "" {
+		t.Fatalf("threads = %q %q", m.Groups[0].Thread, m.Groups[1].Thread)
+	}
+	if off := buildManifest(groups, "/v", "2026-07-17", 0, none, func() bool { return false }, lookup); off.Groups[0].Thread != "" {
+		t.Fatalf("thread set with threads off: %q", off.Groups[0].Thread)
 	}
 }

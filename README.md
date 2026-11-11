@@ -188,12 +188,13 @@ events show as they stream:
 | `t`            | cycle tool-call rendering: **full → dots → hidden**           |
 | `T`            | cycle the color **theme** — steps through the bundled themes and re-renders the whole transcript in the new theme |
 | `c`            | toggle collapsing of long user pastes                         |
-| `h`            | **review in hunk** — hand the whole pane to [hunk](https://hunk.dev) for a diff of this session's working tree (see below) |
 | `→`            | **focus subagents** — open the session's subagent transcripts (see below) |
+| `g`            | **trail status**: agents, gates, findings and merge state for every Entire trail this session watches (see "Trail status lines") |
 | `r`            | re-render the whole transcript with current settings (`t`/`T`/`c`/`m`/`w` already do this themselves) |
-| Ctrl-T         | **send mode** — every key goes to the agent pane in this iTerm tab (the one `h` would prompt) while the tail keeps streaming, and what you type is echoed under a `---` at the bottom; Ctrl-T again to stop. Ctrl-C still quits the tail, so use Esc to interrupt the agent |
+| Ctrl-T         | **send mode** — every key goes to the agent pane in this iTerm tab (the claude or amp writing this session, or the only one in the tab) while the tail keeps streaming, and what you type is echoed under a `---` at the bottom; Ctrl-T again to stop. Ctrl-C still quits the tail, so use Esc to interrupt the agent |
 | Ctrl-X         | **back to the tree** — pop out of a Claude or Amp tail; pick another with `t`, or use `Enter`/`c`/`a` for a workspace |
 | Ctrl-W         | Open a workspace around the current Claude or Amp tail: keep the tail on the left, resume the agent above a shell on the right. Refuses if this iTerm tab already has split panes. |
+| Ctrl-R, `y`    | **restart the tail** on whatever `entire-tail` binary is installed now (run after `./install.sh`). Keeps the session it is following, the theme, tool style, wrap and collapse. Any key other than `y` cancels |
 | `q` / Ctrl-D / Ctrl-C | quit                                                   |
 
 `t`/`c` declutter the view on the fly — handy when an agent goes on a long
@@ -217,7 +218,7 @@ also answers "which tool style / theme am I in now?" after a few `t`/`T` presses
 have scrolled the banner away:
 
 ```
-╭─ entire-tail 0.26.0 ─────────────────────────────────────────────╮
+╭─ entire-tail 1.20261111.3 ───────────────────────────────────────╮
 │                                                                  │
 │ ▸ theme         ████████████████  tokyo-night                    │
 │   tools         dots                                             │
@@ -355,6 +356,28 @@ recolored in place, so it appends a fresh copy in the new theme (a `⟳ theme:
 set as `--list-themes` / the `-t` flag), wrapping around; a `-s/--style` body
 override is not carried into the cycle.
 
+## Trail status lines
+
+A Claude or Amp tail on a terminal watches the Entire trails its session works on, and prints a coloured line into the transcript when one changes:
+
+```
+⛬ k3s-config/10 (P32) · build failed · 2 new findings (1 high)
+```
+
+The line is a full-width band: red when something broke, amber for something to look at, green when something got better, grey for merged or closed. A red line also rings the bell. The change id and the project trail id are links to entire.com.
+
+Which trails:
+
+- **Pushing:** the change on the session's current branch, found with `entire trail show --branch`. Claude only, since only Claude transcripts record a cwd.
+- **Reviewing:** a trail URL in your messages or the agent's text, or an `entire trail <subcommand> <selector>` command the agent ran, in the last 24 hours. Tool output doesn't count: a `trail show` that lists ten changes isn't ten trails you're working on. A project trail URL watches each of its open changes.
+- At most 10 changes. The pushing one always stays. A merged or closed change prints that and is dropped.
+
+What prints a line: build failed or green again, main build red or green again, a plugin gate (e.g. buildkite) failing or recovering, falling behind main, a merge conflict or its fix, new findings, findings cleared, an agent's verdict flipping, needs review / approved, ready to merge, merged, closed. The first fetch of a trail prints one summary line so you know it is being watched. Nothing prints when nothing changed.
+
+`g` opens the full state in a scrollable panel: each change under its project trail, its agents with their last runs, its gates, the merge state, open findings by severity, and the status-line history. In the panel, `↑↓` select a change, `⏎` opens its page on entire.com, `x` stops watching it for the rest of this tail (a restart brings it back), `r` refetches and `q` closes it.
+
+It polls through the `entire` CLI: every 10 seconds while an agent or gate is running, every 60 seconds otherwise, and right away when the session's HEAD moves. Tails on the same machine share fetched state, so several tails watching one trail cost about one set of calls. If `entire` is missing, logged out or offline, nothing prints; the `g` panel shows the error. Status lines survive `c`/`t`/`T`/`w`/`r` re-renders. `--no-trails` or `ENTIRE_TAIL_NO_TRAILS=1` turns it off.
+
 ## Subagents & pending questions (Claude)
 
 When the agent you're tailing spawns **subagents** (the `Agent`/Task tool — often
@@ -369,39 +392,6 @@ orchestration isn't invisible:
   tail. The focused subagent **live-follows** — new turns stream in while you
   watch. entire-tail finds the subagent files next to the main transcript
   (`…/<sessionId>/subagents/agent-*.jsonl`).
-
-## Reviewing in hunk (`h`)
-
-Watching an agent work and reading what it actually changed are different jobs,
-and the second one wants a real diff viewer. Press **`h`** and
-[hunk](https://hunk.dev) takes the pane: a review of the tailed session's
-working tree, in its own full-screen UI. Quit hunk (`q`) and the tail comes
-back where it was.
-
-Two things happen besides the diff.
-
-**Your agent is told the review is open.** Hunk's TUI registers with a local
-loopback daemon when it starts; there's no session id to pass around, so an
-agent finds the review by asking the daemon (`hunk session get --repo .`). What
-hunk's docs prescribe is a prompt, and that's what entire-tail sends — into the
-`claude` sharing this iTerm tab, once the daemon confirms the session is live:
-
-> Load the Hunk skill and use it for this review. Run `hunk skill path` to get the skill path.
-
-From there the agent can narrate the changeset and leave inline comments on the
-hunks while you read them. It's the same tab-scoped placement the tree's nearby
-markers use — a claude in **another** tab is someone else's work and is never
-typed into. When the tab holds more than one claude (or you're not in iTerm),
-the prompt goes to your clipboard instead, one paste away.
-
-**Nothing happens if hunk isn't installed.** `h` says so and
-leaves the tail alone rather than blanking it for a beat. entire-tail looks on
-`PATH` and then in `~/.hunk/bin`, where hunk.dev's install script puts a
-standalone binary that isn't added to `PATH`.
-
-```sh
-brew install hunk          # or: curl -fsSL https://hunk.dev/install.sh | sh
-```
 
 When the agent asks you an **AskUserQuestion**, entire-tail renders a prominent
 card the instant it's asked — *before* you answer, since your answer is a
@@ -986,6 +976,28 @@ It searches three sources and merges them by agent and session id:
 recency breaks ties. Each row shows the **matching snippet** so you can see why
 it hit. `Enter`/`t` resume or tail the result like any tree row. Results are
 uncapped; use a narrower query when a common term returns too much.
+
+## Threads (`entire-tail threads`)
+
+A thread is one piece of work that outlives any single agent session. Each lives in its own folder under `$ENTIRE_TAIL_HANDOVER_VAULT/Entire/Threads/<slug>/`, with a `thread.md` (what it is, where it got to, what's in the way) and an optional `knowledge.md`. Closed threads move to `_closed/`.
+
+`entire-tail threads` on a terminal opens a triage view: open threads first, parked ones below. Each row says whether the thread is waiting on someone, whether it needs you, and whether its claims still hold (worktree gone, branch moved, trail state changed, a session already running). Checks run in the background, so the list shows at once and the notes fill in as they arrive.
+
+| Key | Does |
+| --- | --- |
+| `⏎` | open the thread as a fresh Claude session primed to read its files and reassess where it stands, in the 3-pane iTerm workspace (unsplit tab only). It never resumes an old session |
+| `r` | reopen the thread's newest session: Claude resumes it, Amp continues it, in the same 3-pane workspace |
+| `O` | open every open thread in the (filtered) list, each as a fresh Claude session in a new tab of the current window, asked to reassess the thread and report before changing anything. Asks `y` first; skips threads with a session already running |
+| `p` | park: pick a reason, optionally type a note (see below) |
+| `u` | unpark |
+| `x` | close |
+| `d` / `k` | details / knowledge |
+| `/` | filter |
+| `q` | quit |
+
+`p` opens a picker with five reasons: **not today** (the default, so `p ⏎` parks it), waiting on review, waiting on customer, waiting on someone, and someday. `↑↓` picks one, and typing adds a note to it. A "not today" park wakes the thread the next working day: it is back on the open list the first time `threads` or `threads list` runs on or after that date. The others stay parked until you unpark them. From the CLI: `entire-tail threads park <slug> --kind not-today|review|customer|someone|someday [note...]`; without `--kind` the reason is free text and required, as before.
+
+Piped, it prints the list as JSON. The agent-facing subcommands (`new`, `lookup`, `register`, `park`, `begin`, `commit`, and so on) run `entire-tail threads <subcommand>`.
 
 ## Handover docs
 

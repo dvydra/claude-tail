@@ -37,6 +37,8 @@ go vet ./... && go test -race ./...   # what CI/the review gate expects
 ./install.sh                     # build + symlink ~/.local/bin + register entire plugin
 ```
 
+Versions are `1.YYYYMMDD.N`: the local date of HEAD's commit and the count of commits on HEAD that day, plus `-dirty` for uncommitted tracked changes. `version.sh` works it out and `install.sh` passes it in with `-ldflags "-X main.version=..."`. A plain `go build` reports `1.0.0-dev`. There is no version const to bump.
+
 After editing source **or** a theme, rebuild (`go build -o entire-tail .` or
 `./install.sh`) — themes are **embedded into the binary** at build time.
 
@@ -174,6 +176,42 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   *before* taking the last N, because at a six-row budget three seams crowd out
   every line of text. Transcript tails are cached on the transcript's mtime, so
   the tick is a stat per session rather than a re-render
+- `threads*.go`: **`entire-tail threads`: long-running work as folders in the
+  handover vault.** `threads.go`/`threads_store.go` are the files (a `thread.md`
+  with frontmatter, an optional `knowledge.md`, a session registry, one lock) and
+  the agent-facing subcommands live in `threads_cmd.go`. `threads_check.go` looks
+  at reality (worktrees, trails, running sessions) and never blocks the first
+  frame. `threads_view.go` is the pure triage screen, split reduce/render like
+  `tree.go`, and `threads_run.go` is the tty driver plus `threadLaunch`, which
+  turns `⏎` into a FRESH Claude session primed with `threadReassessPrompt` in
+  the 3-pane workspace (unsplit iTerm tab only; otherwise a note). It never
+  resumes an old session, even when the thread has one: that was the behaviour
+  once and Daniel rejected it, since the thread files are the handover and an
+  old session drags its stale context back. `threadFreshTarget` (claim first,
+  then the newest session's cwd; that session's account) is shared with `O`.
+  `r` (`threadResumeWith`) is the explicit resume of the newest session. The
+  running guards in `openThreadWith`/`planOpenAll` read ONLY the live list taken
+  at the keypress, never `ui.Facts`: the facts are a snapshot (reloaded right
+  after `O`, while its tabs run), so a tab closed since read as "already
+  running" and `⏎` refused. Neither function takes facts any more. A session is registered before pane
+  A replaces the process. `threadsOsa`/`threadsExec` are seams, so tests never run
+  osascript. `threads_park.go` holds the park kinds (`parkKinds`, listed from
+  the BOTTOM up so the default "not today" sits by the footer and `p ⏎` parks),
+  the picker box drawn over the screen with `overlayRows`/`spliceVisible`, and
+  `wakeThreads`. Only "not today" has behaviour: it writes `wakes_on` (the next
+  working day), and the list paths (TUI start, `threads list`) unpark due
+  threads. There is no "until" date and no trail-driven wake, on purpose: keep
+  it simple. `O` (`planOpenAll`) opens every open thread in view as a FRESH
+  Claude session, never a resume, with `threadReassessPrompt`. Each is a new
+  3-pane tab in the CURRENT window (`openAllScript`). Don't make it open a new
+  window: that was asked for explicitly. It needs no unsplit tab, it selects
+  the triage tab again at the end, and sessions are registered only after the
+  tabs open. The prompt has the fresh session pick a 1 to 3 word title and run
+  `entire-tail threads title <title>` (`threads_title.go`, the embedded
+  `tabtitle.py` through `uv run --with iterm2`), which names the TAB via
+  `tab.async_set_title`, never the pane. No `ITERM_SESSION_ID` means not in
+  iTerm: exit 0, nothing done. The `thread-title` skill (`/thread-title`) runs
+  the same subcommand on demand.
 - `discovery.go` — find the session file for `$PWD` per agent
 - `tree.go` — the interactive session **tree** picker (the DEFAULT): Claude and
   Amp sessions grouped by repo/folder, marked `C`/`A`, arrow-key navigable,
@@ -211,7 +249,7 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   (`itermSinglePane`). This replaced tailing the lone sibling directly
   (`adoptPaneSession`): `--live`'s `⏎` gets there in one key and also handles
   a tab with two claudes. The rest below still describes how `nearby.go`,
-  `hunk.go` and `panelinkd.go` resolve a pane's claude. The
+  `agentpane.go` and `panelinkd.go` resolve a pane's claude. The
   session id isn't interrogable from a bare `claude` — it's absent from argv,
   env (no `CLAUDE_*` vars), and open files (the transcript is open-append-closed,
   never held; verified live) — so we pin the *process* and resolve its file. The
@@ -273,7 +311,10 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   accountEnvPrefix's Keychain substitution, which must stay the shell's.
   `paneBin` resolves the agent to an absolute path first, since a login shell
   skips the rc files where `~/.local/bin` usually joins PATH. iTerm splits
-  `command` with shell quoting, `'\''` included (verified live, 3.6.11). The
+  `command` with shell quoting, `'\''` included (verified live, 3.6.11), but
+  only ONE level of it: an apostrophe in an agent prompt is escaped twice (once
+  by shQuote, again by paneCommand), and iTerm cut every `O` tab's prompt off
+  at it ("We\re"). `paneSafePrompt` swaps `'` and `\` out of every prompt. The
   cost: the resume line is no longer in shell history, so the `?` panel shows
   it (`resumeCommand`, under `session`). Both panes **pin a
   shared session id** — fresh: `<bin> --session-id <id>` + `entire-tail
@@ -449,79 +490,19 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   on `resumeCh`, sharing the SAME tty fd (two fds on one tty race for input).
   **Gotcha:** a raw timed read reports a 0-byte timeout as `(0, io.EOF)` — treat
   that as a follow tick, not end-of-input, or the overlay exits instantly
-- `hunk.go` — the `h` key: **hand the whole pane to [hunk](https://hunk.dev)**
-  for a diff of the tailed session's working tree, and take it back on quit.
-  Same hand-off as `?`/`→` (keyboard signals `overlayCh` and parks on
-  `resumeCh`, one tty reader) with one difference that shapes the file: what
-  owns the screen is a CHILD PROCESS, not an overlay we draw. Six things are
-  deliberate. (1) **The terminal modes are left alone** around the spawn — hunk
-  sets its own raw mode and restores what it inherited (our cbreak), which is
-  exactly the state the keyboard reader needs back; a restore-to-cooked-then-
-  re-cbreak dance adds two failure paths and buys nothing. But **`inputModeReset`
-  IS sent after it exits**: a child that quits cleanly disables its own mouse
-  reporting (hunk does, and its mouse support is entirely its own — it works
-  because the child now holds the real pty), while one that CRASHES leaves the
-  terminal answering every mouse move with an escape sequence fed straight into
-  our keyboard reader, which reads as a possessed tail curable only by `reset`.
-  Sent unconditionally, since disabling a mode nothing enabled is a no-op. The alt screen is deliberately NOT in it: undoing `?1049` when the
-  child already left it restores a saved cursor and would move ours. (2) **`planHunk`
-  decides everything KNOWABLE before the screen is handed over**, which is what
-  keeps the two no-op cases (hunk not installed; the session's cwd deleted, the
-  normal end state of a worktree) from suspending the bar and blanking the tail
-  for a beat — a flicker for a key that was never going to do anything reads as
-  broken, not absent. Its `Msg` is a **refusal only**: what to say afterwards
-  depends on a daemon that hasn't started yet when the plan is made, so it comes
-  back from `runHunk` as a `hunkOutcome`. Shipped the other way first and the bar
-  reported "claude was told to load the skill" whether or not a byte had been
-  sent — and from the tail's side of the screen that is indistinguishable from
-  success, which is exactly why `hunkUnclaimed` says so out loud. (3) **`hunkBin` falls back to `~/.hunk/bin`**: hunk.dev's install.sh
-  drops a standalone binary there and does NOT add it to PATH, so a PATH-only
-  lookup reports "not installed" on a machine that has it (this one). (4) The
-  agent hand-off is **the one hunk's docs prescribe, not one we invented** —
-  there is no session id to pass, no env var and no handshake file; the TUI
-  registers with a local loopback daemon and the agent finds it with `hunk
-  session get --repo <path>`. So `runHunk` waits for the daemon to confirm the
-  session (bounded, `hunkReadyTimeout`) and then types `hunkPrompt` into the
-  claude in THIS iTerm tab. The tab is the whole horizon for the reason
-  nearby.go gives; within it the claude writing the tailed transcript wins, a
-  lone claude is taken on adopt.go's exactly-one rule, and anything ambiguous
-  gives back "" so the prompt goes to the clipboard rather than into someone
-  else's work. `hunkNotifyScript` addresses the pane **by session id, never by
-  index** (panelink.go's lesson: indexes shift) and wraps the write in `try`,
-  since the pane may have closed while hunk was up. Verified live against iTerm
-  3.6.11: the script matched a real session by uuid and typed the prompt
-  verbatim, backticks intact. (6) **The directory reviewed comes from the
-  TRANSCRIPT, not from our pwd** (`hunkReviewDir`). A hunk session's root is
-  fixed for its lifetime — `session reload --source` refuses any path outside
-  the root it launched from (measured) — so the cwd picked at spawn is the only
-  one that review will ever have. Our `pwd` is fixed when entire-tail starts
-  (re-based once, on adopt) while the session moves: an `EnterWorktree` keeps
-  the same id and moves `<id>.jsonl` into the new cwd's project dir, so
-  `relocatedSession` follows the file and the tail carries on from inside the
-  worktree while `pwd` still names the checkout it forked from — and `h` there
-  reviewed the PARENT checkout, a diff of a tree nobody was working in. Every
-  Claude user/assistant record carries its cwd, so `sessionCwdNow`/`tailCwd`
-  take the newest one from the same bounded tail window `loadClaudeMeta`
-  already uses — the tail for the reason `tailMeta` reads the *branch* from the
-  tail, since the head names where the session STARTED. Read at press time
-  rather than tracked, because a fact fetched when it's used can't go stale.
-  `pwd` remains the fallback (codex/agy records carry no cwd; an unreadable
-  transcript), but a cwd that no longer EXISTS is not fallen back on — the end
-  of a worktree is that its dir is deleted, and planHunk's refusal is the honest
-  answer there, not a review of the checkout next door. **Don't confuse it with
-  entire.go's `sessionCwd`**, which answers the same question from the HEAD
-  (where the session STARTED). A resumed workspace used to cd there, so a
-  session that had moved into a worktree reopened in the parent checkout; it
-  now uses `workspaceCwd` — this file's `sessionCwdNow` while that dir exists,
-  `sessionCwd` once the worktree is gone — and so does the `?` panel's resume
-  line, so the two always name the same folder.
-  Pure
-  `planHunk`/`hunkBin`/`hunkClaudePane`/`hunkNotifyScript`/`tailCwd`/
-  `hunkReviewDir` are unit-tested; the spawn and `osascript` are the thin IO
-  layer
+- `agentpane.go` — finds the agent pane beside this tail for Ctrl-T send mode
+  (`agentPaneFor` → `tabAgentPane`): a claude/amp in OUR iTerm tab, preferring the
+  one writing the tailed session, else a lone one in the tab (adopt.go's
+  exactly-one rule), else "" so keys never land in someone else's work. Also
+  `sessionCwdNow`/`tailCwd`: the newest user/assistant cwd from the transcript's
+  bounded tail window, i.e. where the session is NOW. **Don't confuse it with
+  entire.go's `sessionCwd`**, which reads the HEAD (where the session STARTED).
+  A resumed workspace uses `workspaceCwd`: `sessionCwdNow` while that dir
+  exists, `sessionCwd` once the worktree is gone, and so does the `?` panel's
+  resume line, so the two always name the same folder
 - `sendmode.go` — **Ctrl-T: type into the tail, keys land in the agent pane.**
   Not an overlay: the keyboard goroutine asks the render goroutine for the pane
-  (`overlayCh <- keySend`, answered on `sendPaneCh` with `hunkPaneForAgent`'s
+  (`overlayCh <- keySend`, answered on `sendPaneCh` with `agentPaneFor`'s
   pane, "" refuses) and then forwards keys itself (`forwardKeys`) until the next
   Ctrl-T, so the transcript keeps streaming while you type. Keys go through
   `write text <expr> newline NO` addressed by session id, control bytes as
@@ -624,7 +605,15 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `overlayCh` and the goroutine parks on `resumeCh` (single tty reader), and
   `Ctrl-X` (0x18) signals `treeCh` and STOPS reading so `tailSession` returns and
   `run`'s picker↔tail loop re-enters the tree (Claude/Amp only, gated by
-  `treeEnabled`; a no-op on codex/agy).
+  `treeEnabled`; a no-op on codex/agy). `Ctrl-R` then `y` (`restart.go`)
+  re-execs the tail on the binary installed NOW: the keyboard stops reading
+  like Ctrl-X does, and the render goroutine restores the tty and
+  `syscall.Exec`s. The new argv is built by `restartArgs`, not copied from the
+  old one, because a bare launch went through a picker and must come back to
+  the session it was on, which may be a lineage child argv never named.
+  `restartBinary` looks argv0 up again rather than using `os.Executable`, so a
+  replaced file is picked up. Any key other than `y` after Ctrl-R cancels and
+  is swallowed.
 - `jqutil.go` — tiny JSON-value-to-string helpers (replaces shelling out to `jq`)
 - `handover.go` — the `entire-tail handover` subcommand: `todaysSessions`
   enumerates Claude sessions and Amp threads active since local midnight
@@ -645,6 +634,7 @@ Everything downstream is agent-agnostic and consumes only `Record`s.
   `buildGroups` collapse, split from the tty driver `runHandoverPicker` — same
   reduce/render/driver split as `tree.go`.
 - `trails.go` / `trails_scan.go` / `trails_view.go` / `trailsdaemon.go`: the independent `entire trails` command, limited to Right now and Today. Canonical URLs retain forge identity; sessions are agent-qualified. Link mentions never establish active ownership: that requires matching repository and branch. Source cursors and associations persist together so failed saves do not skip events. Amp dedupes complete message IDs across exports and the live feed. One persistent `flock` file serializes foreground and daemon writers; never unlink it. `r` writes a unique request token acknowledged only after persistence. LaunchAgent `io.entire.entire-tail.trails` is opt-in and all launchctl operations have test seams. Tests must never load a real agent. It reuses inventory helpers but never invokes WTF scans or notifications.
+- `trailref.go` / `trailstate.go` / `trailevents.go` / `trailtrack.go` / `trailnote.go` / `trailview.go`: **trail status lines in the tail, and the `g` modal.** Design: `docs/superpowers/specs/2026-11-11-trail-status-design.md`. A tracker goroutine (`trailtrack.go`) watches the change on the session's branch plus trails the transcript names (`trailMentionsInLine`: URLs and `entire trail <sub> <sel>` commands, never tool results, only from the last 24h, at most 10), polls them through `entire` (10s while running, 60s settled, now on a new HEAD), diffs each fetch (`trailEvents`) and sends an update only when something changed. The render goroutine prints it as a full-width band (`trailBand`). Four things are load-bearing. (1) Project trails and changes never share a key (`P32` is `forge/project/-/32`, a change `forge/project/repo/n`), and a change is only ever looked up as `entire trail show <repo>/<n> --project <p>`, never `<n> --repo` (that returns project trail `<n>`, see `threads_check.go`); every lookup checks the identity it got back. (2) Lines are not in the transcript, so `rerender` would wipe them: each is kept as a `trailNoteRec` keyed by the transcript byte offset it was printed at, and `rerender` reinserts it after the line ending at or past that offset (`notesUpTo`). A note is tied to its file, so a lineage rollover doesn't replay the old file's notes. (3) `entire` errors never print to the tail, only to the modal (`trailTracker.Errors`): a logged-out tail must stay quiet. (4) Gate outcomes are carried across a rerun (`settleGates`, `trailGate.Last`), or failed → running → passed would never print "green again". The fetched state is cached per change under `~/.claude/entire-tail/trailstatus/` and shared by every tail. The modal runs on the render goroutine, so it drains `trailCh` itself while open and prints those lines after it closes. Its keys go through the pure `updateTrailModal`; `⏎` opens through the `trailOpenURL` package var (tests never launch a browser), and `x` calls `trailTracker.Untrack` plus main's `trailRemoved`, which also drops an update for that change already queued on `trailCh`. Off on pipes (no golden moves), without `entire`, and with `--no-trails` / `ENTIRE_TAIL_NO_TRAILS=1`.
 - `wtf.go` / `wtf_scan.go` / `wtf_summary.go` / `wtf_view.go` — the foreground
   `entire wtf` / `entire-tail wtf` dashboard. It loads the durable registry,
   reconciles exact Claude/Amp sessions, trail claims, worktrees and findings,

@@ -1,0 +1,181 @@
+---
+name: thread-handover
+description: Update a long-running thread in the Obsidian vault at the end of a session. Use when Daniel says "handover", "hand over", "/handover", "update the thread", or "park this thread". Works from Claude and Amp. Uses only `entire-tail threads` subcommands.
+---
+
+# Thread handover
+
+A thread is one piece of long-running work: a folder in the vault with `thread.md` (what is true now), `knowledge.md` (decisions, gotchas) and `log/<date>.md` (what happened, by day). A handover updates that thread. It does not write a new dated doc.
+
+Never edit `.registry.json` and never change `status` in the frontmatter yourself. Status moves only through `park`, `unpark`, `close`, `reopen`. Plain words, no em dashes, no hard-wrapped lines (one paragraph per line).
+
+First check the feature is on:
+
+```bash
+entire-tail threads enabled
+```
+
+If it exits non-zero, stop and tell Daniel threads are not enabled.
+
+## 1. Find your agent and session id
+
+Gather facts first. Never guess a value.
+
+```bash
+date +%Y-%m-%d
+git rev-parse --show-toplevel
+git branch --show-current
+git rev-parse --git-common-dir
+git log --oneline -3
+entire-tail threads path
+```
+
+`git rev-parse --git-common-dir` differs from `.git` when you are in a worktree.
+
+**Claude:** agent is `claude`. The session id is the UUID in your scratchpad path, `/private/tmp/claude-*/<project-slug>/<SESSION-ID>/scratchpad`.
+
+**Amp:** agent is `amp`. The session id is the thread id, `T-` followed by a UUID. Amp does not pass it in the prompt. Try, in order:
+
+```bash
+echo "$AMP_CURRENT_THREAD_ID"
+echo "$AMP_THREAD_ID"
+```
+
+Both names appear in the Amp binary, but neither is confirmed set in an interactive session. If both are empty, run `amp threads list --json --limit 5`, pick the thread whose title matches this conversation, and confirm it with Daniel. If you still cannot tell, ask him for the `T-…` id. Do not guess.
+
+## 2. Match the session to a thread
+
+```bash
+entire-tail threads lookup <agent> <session-id>
+```
+
+It prints `{"slug": "..."}` and exits 0 on a hit, exits 1 on a miss. Then check the thread's status with `entire-tail threads list --all` (look the slug up in the JSON).
+
+On a hit:
+
+- open: use it. Do not ask about status.
+- parked: the reason is `park_reason` in the frontmatter, which `begin` prints (`list` does not carry it). Say so and ask "This thread is parked (<reason>). Unpark it?" The default is no. Write the update either way. Only on a yes run `entire-tail threads unpark <slug>`.
+- closed: ask whether to reopen it or start a new thread. Nothing changes status without that answer.
+  - Reopen: run `entire-tail threads reopen <slug>`, then `register`, then `begin`.
+  - New: leave the closed thread untouched and follow the new-thread path below (steps 1 and 2 of the miss path, then `register`, then `begin`).
+  - No answer: stop and write nothing.
+
+On a miss:
+
+1. Run `entire-tail threads list`. Compare this session to the open and parked threads in this order: trail (the `trails` and trail claims), then worktree (the `claims` with `kind: worktree`), then topic. Propose the best match: "This looks like <name>. Update it?" Daniel confirms, picks another, or says new.
+2. For a new thread, propose a name from the work and let Daniel accept or edit it. Then run `entire-tail threads new "<name>"`. It prints the slug. Exit 2 means the slug exists; ask Daniel what to do.
+
+After a hit or a miss, check for drift. If this session clearly worked on something other than the matched thread, ask once which thread to file it under. Never split one session across two threads.
+
+Then record the mapping:
+
+```bash
+entire-tail threads register <slug> <agent> <session-id>
+```
+
+To pause a thread Daniel asks you to park, run `entire-tail threads park <slug> "<reason>"`. Daniel decides; do not park on your own.
+
+## 3. Write the update
+
+```bash
+entire-tail threads begin <slug>
+```
+
+It prints JSON: `base` (a hash of `thread.md`), `dir` (the thread folder), `thread_md` (the current text), `knowledge_base` (a hash of `knowledge.md`, empty if the file does not exist) and `knowledge_md` (its current text). Keep both hashes.
+
+Never write into `dir` yourself. `thread.md`, `knowledge.md` and the log all go through one `commit`, which takes a lock and refuses if another session wrote in between.
+
+Rewrite `thread.md` from scratch. Inputs: the old `thread.md`, this session, and live state (git status, the trail, the Linear issue). The rule is "only what's true now". Fetch real state with `git`, `entire trail show` and Linear. Never write state from memory. If a fetch fails, write "state unknown (fetch failed)".
+
+Write the new file to a scratch path outside the vault, not into `dir`. Make it with `mktemp` (for example `f=$(mktemp)`), in both Claude and Amp. Keep the frontmatter keys below. Leave `status`, `park_reason` and `parked_at` as they were in the old file; commit forces them back anyway.
+
+```markdown
+---
+name: Mirror GitHub checks
+status: open
+waiting_on: review from Sam on the trail
+needs_you: true
+customer: acme
+linear:
+  - ENT-482
+trails:
+  - gh/entirehq/-/1234
+claims:
+  - kind: worktree
+    path: /Users/dvydra/src/entirehq/entiredb/.claude/worktrees/mirror-checks
+    branch: mirror-checks
+    head: 9f3c2ab
+  - kind: trail
+    trail: gh/entirehq/-/1234
+    expect: open
+  - kind: linear
+    linear: ENT-482
+    expect: In Review
+sessions:
+  - agent: claude
+    id: 0b6e5f3a-1111-4222-8333-444455556666
+created: 2026-10-30
+updated: 2026-11-04
+as_of:
+  What it is: 2026-11-04
+  Where it got to: 2026-11-04
+  What's in the way: 2026-11-04
+  People: 2026-11-04
+  Recent: 2026-11-04
+---
+
+## What it is
+
+What the work is and why it matters.
+
+## Where it got to
+
+Current state in plain words. Bold the facts someone would otherwise re-derive: ids, branch names, which of two things is live.
+
+## What's in the way
+
+The next step. Mark it **needs you** when it needs Daniel.
+
+## People
+
+Who it waits on or overlaps with.
+
+## Recent
+
+- 2026-11-04: one line.
+- 2026-11-03: one line.
+- 2026-11-02: one line.
+```
+
+Rules for the file:
+
+- Five sections, in this order: What it is, Where it got to, What's in the way, People, Recent. No length limit, but no padding.
+- `waiting_on` is one line: who or what the thread waits on. `needs_you` is true only when the thing blocking the thread right now is Daniel's own action (a decision, a send, a merge he has to do). Waiting on a reviewer, a customer, another team or a reply is `needs_you: false`, even if a later step will need him. The test: if Daniel did nothing today, would the thread still move? If yes, it is false.
+- Claims are what triage checks against live state. Write one for every worktree (`path`, `branch`, and `head` set to the pushed SHA, or empty for unpushed), every trail (`expect`: `open`, `merged` or `closed`), and every Linear issue (`expect`: its current state name).
+- A trail is `<forge>/<project>/<repo>/<number>`, and the repo slot says which number it is. A project trail (URL `entire.com/<forge>/<project>/-/trails/<n>`) uses `-`: `gh/entirehq/-/22618`. A repo trail (URL `entire.io/<forge>/<project>/<repo>/trails/<n>`) uses the repo name: `gh/entirehq/entiredb/4103`. Copy the shape from the trail's URL; never put a repo name in front of a project trail's number, because the two number spaces overlap and triage would read a different trail.
+- Set `as_of` to today for every section you rewrote. Leave the old date on a section you did not touch. Triage dims a section older than 7 days.
+- Recent holds the last 3 working days only, one line each. A working day is a day with a log entry for this thread (a file in `<dir>/log/`, counting today's). Older lines move to the log.
+- `sessions` lists agent and id, newest first. Keep what is there; `register` already added this one.
+
+Nothing is lost by the rewrite. Write a second scratch file (`mktemp`) with today's log entry: what is leaving `thread.md` (finished steps, old SHAs, resolved blockers) and a short account of this session. Write only the new entry; `commit` adds it to the end of `log/<today>.md` and creates the file if needed.
+
+Write a third scratch file (`mktemp`) with the whole new `knowledge.md`, starting from `knowledge_md`. Revise it; do not just append. Add new decisions and gotchas. Replace a decision this session reversed: move the old one to a `## Rejected` section as one line with the date and `see log/<date>`.
+
+Then commit all three at once:
+
+```bash
+entire-tail threads commit <slug> --base <base> --file <new-thread.md> --knowledge <new-knowledge.md> --knowledge-base <knowledge_base> --log <log-entry.md>
+```
+
+Pass `--knowledge-base` exactly as `begin` printed it, including when it is empty (`--knowledge-base ""`). Leave out `--knowledge` and `--knowledge-base` only when knowledge did not change.
+
+- Exit 0: done. All three files are written.
+- Exit 3: someone else wrote `thread.md` or `knowledge.md` since `begin`, and nothing was written. Stdout is the current `begin` JSON. Merge your changes onto its `thread_md` and `knowledge_md`, then commit again with the new `base` and `knowledge_base` (the same log entry). Retry once. If it is stale again, stop and tell Daniel.
+- Exit 4: your new `thread.md` frontmatter does not parse. Fix the YAML and commit again.
+- Exit 5: the `thread.md` on disk is broken. Nothing was written. Stop and tell Daniel; do not try to repair it.
+
+`commit` keeps `sessions` and `created` as they are on disk, whatever your file says. `register` is the only way to add a session.
+
+## 4. Finish
+
+Print the thread path (`<dir>/thread.md`) and its `waiting_on` line, and nothing else.

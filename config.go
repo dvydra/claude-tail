@@ -31,12 +31,14 @@ type Config struct {
 	ClaudeBin        string // --claude-bin: the binary the workspace panes + handover launch
 	ClaudeBinSet     bool   // ClaudeBin came from a flag/env, not the built-in default
 	NoTap            bool   // --no-tap: ignore the API-stream tap even when its daemon is up
+	NoTrails         bool   // --no-trails / ENTIRE_TAIL_NO_TRAILS: no trail status lines
 	NoPaneLink       bool   // --no-pane-link: never register this pane, never offer the iTerm tab link
 	NoWrap           bool   // default; --wrap clears it. Don't wrap bodies; let the terminal soft-wrap (clean drag-select copy)
 	TapArgs          []string
 	LinkArgs         []string
 	WTFArgs          []string
 	TrailsArgs       []string
+	ThreadsArgs      []string
 	RestoreArgs      []string
 }
 
@@ -77,6 +79,7 @@ const (
 	ActionLink           // `entire-tail link <start|install|uninstall|stop|status>`
 	ActionWTF            // `entire-tail wtf`: today's session dashboard
 	ActionTrails         // `entire-tail trails`: trail-first today view
+	ActionThreads        // `entire-tail threads`: agent-facing thread commands
 	ActionRestore        // `entire-tail restore`: rebuild pre-reboot iTerm tabs
 )
 
@@ -118,6 +121,7 @@ func defaultConfig(getenv func(string) string, prefs savedPrefs) Config {
 		Pick:             firstNonEmpty(getenv("ENTIRE_TAIL_PICK"), "auto"),
 		Days:             getenv("ENTIRE_TAIL_DAYS"),
 		MarkContinuation: envTrue(getenv("ENTIRE_TAIL_MARK_CONTINUATION")),
+		NoTrails:         envTrue(getenv("ENTIRE_TAIL_NO_TRAILS")),
 		// Wrap has no saved preference (see savedPrefs): flag, env, or the
 		// built-in default, which is OFF so a drag-select copies whole
 		// paragraphs.
@@ -195,6 +199,10 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 	if len(args) > 0 && args[0] == "trails" {
 		c.TrailsArgs = append([]string(nil), args[1:]...)
 		return c, ActionTrails, nil
+	}
+	if len(args) > 0 && args[0] == "threads" {
+		c.ThreadsArgs = append([]string(nil), args[1:]...)
+		return c, ActionThreads, nil
 	}
 	if len(args) > 0 && args[0] == "restore" {
 		c.RestoreArgs = append([]string(nil), args[1:]...)
@@ -317,6 +325,8 @@ func parseCLI(args []string, getenv func(string) string, prefs savedPrefs) (Conf
 			c.NoHookInstall = true
 		case a == "--no-tap":
 			c.NoTap = true
+		case a == "--no-trails":
+			c.NoTrails = true
 		case a == "--no-pane-link":
 			c.NoPaneLink = true
 		case a == "--no-status":

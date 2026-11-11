@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +16,9 @@ import (
 	"time"
 )
 
-const version = "0.26.0"
+// version is 1.YYYYMMDD.N, set at build time by install.sh from version.sh
+// (-ldflags "-X main.version=..."). A plain `go build` is a dev build.
+var version = "1.0.0-dev"
 
 func main() {
 	cfg, action, err := parseCLI(commandArgs(os.Args[0], os.Args[1:]), os.Getenv, loadPrefs(homeDir()))
@@ -65,6 +68,9 @@ func main() {
 			die(err.Error())
 		}
 		return
+	case ActionThreads:
+		runThreads(cfg)
+		return
 	case ActionRestore:
 		if err := runRestore(cfg.RestoreArgs, cfg, firstNonEmpty(os.Getenv("HOME"), mustHome()), os.Stdin, os.Stdout); err != nil {
 			die("restore: " + err.Error())
@@ -87,6 +93,8 @@ func commandArgs(argv0 string, args []string) []string {
 		return append([]string{"wtf"}, args...)
 	case "entire-trails":
 		return append([]string{"trails"}, args...)
+	case "entire-threads":
+		return append([]string{"threads"}, args...)
 	}
 	return args
 }
@@ -430,6 +438,55 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			r.emit(rec)
 		}
 	}
+
+	// Trail status (trailtrack.go): a Claude or Amp tail on a terminal watches
+	// the trails this session pushes to or names, and prints a line when one
+	// changes. Off on pipes, so no golden moves.
+	var tracker *trailTracker
+	trailCh := make(chan trailUpdate, 16)
+	trailStates := map[string]changeState{}
+	var trailNotes []trailNoteRec
+	if (agent == AgentClaude || agent == AgentAmp) && isCharDevice(os.Stdout) && !cfg.NoTrails {
+		if _, err := exec.LookPath("entire"); err == nil {
+			tracker = newTrailTracker(trailTrackerDeps{Run: trailExecRun, Now: time.Now, Home: home}, trailCh)
+			tracker.Follow(session)
+			for _, l := range lines {
+				tracker.Observe(trailMentionsInLine(l))
+			}
+			trailCtx, trailStop := context.WithCancel(context.Background())
+			defer trailStop()
+			go tracker.Run(trailCtx)
+		}
+	}
+	// liveEmit is emit plus mention tracking, for lines read for the first
+	// time. rerender re-reads lines already observed, so it uses plain emit.
+	liveEmit := emit
+	if tracker != nil {
+		liveEmit = func(line []byte) {
+			tracker.Observe(trailMentionsInLine(line))
+			emit(line)
+		}
+	}
+	trailBandFor := func(n trailNoteRec) string {
+		return trailBand(n.Text, n.Sev, wrapWidth(os.Stdout, false))
+	}
+	// trailRemoved is what `x` removed in the g panel. An update already queued
+	// on trailCh when it was removed must not bring it back.
+	trailRemoved := map[string]bool{}
+	applyTrailState := func(u trailUpdate) bool {
+		k := u.State.Ref.Key()
+		if trailRemoved[k] {
+			return false
+		}
+		if u.Dropped {
+			delete(trailStates, k)
+		} else {
+			trailStates[k] = u.State
+		}
+		return true
+	}
+	// pendingTrail holds updates that arrived while the g modal was up.
+	var pendingTrail []trailUpdate
 	// cur is the file currently being followed — it starts at `session` but rolls
 	// over to a Claude worktree-fork child (see rollover below), so poll/reload
 	// read cur, not the immutable `session` param. lineage is the set of session
@@ -458,7 +515,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			case ampSnapshotUnchanged:
 				return
 			case ampSnapshotAppend:
-				offset = appendStep(cur, offset, emit)
+				offset = appendStep(cur, offset, liveEmit)
 				ampPrior = d
 				return
 			}
@@ -483,7 +540,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				}
 			}
 		} else {
-			offset = appendStep(cur, offset, emit)
+			offset = appendStep(cur, offset, liveEmit)
 		}
 	}
 	// rerender re-renders the current transcript with the live settings — the
@@ -518,8 +575,20 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		var buf bytes.Buffer
 		prevW := r.w
 		r.w = &buf
+		var at int64
+		nextNote := 0
 		for _, l := range all {
 			emit(l)
+			at += int64(len(l)) + 1
+			var due []trailNoteRec
+			due, nextNote = notesUpTo(trailNotes, cur, at, nextNote)
+			for _, n := range due {
+				r.trailNote(trailBandFor(n), false)
+			}
+		}
+		due, _ := notesUpTo(trailNotes, cur, 1<<62, nextNote)
+		for _, n := range due {
+			r.trailNote(trailBandFor(n), false)
 		}
 		r.w = prevW
 
@@ -600,6 +669,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				}
 				r.endLine() // close any open dot-streak bracket before the note
 				io.WriteString(out, "\n"+r.theme.DimANSI+"⟳ following session into "+filepath.Base(filepath.Dir(rp))+reset+"\n\n")
+				// Same file, moved: its trail notes move with it, or the next
+				// re-render (which reprints from rp) would drop them all.
+				retargetNotes(trailNotes, cur, rp)
 				cur = rp
 				projectDir = filepath.Dir(rp)
 				agyLastSize, agyLastMtime = -1, -1
@@ -728,6 +800,13 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		compose.around(func() { fmt.Fprintln(os.Stderr, lead+"entire-tail: "+msg) })
 	}
 
+	// printTrail prints a trail status line into the transcript and remembers
+	// it by offset so a re-render puts it back in place.
+	printTrail := func(u trailUpdate) {
+		n := trailNoteRec{Path: cur, Offset: offset, Text: trailLineText(u.State, u.Events, true), Sev: trailLineSev(u.Events)}
+		trailNotes = append(trailNotes, n)
+		r.trailNote(trailBandFor(n), n.Sev == trailSevBad)
+	}
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	// Save the iTerm layout while we run, so `entire-tail restore` can rebuild
@@ -776,6 +855,14 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 		case sourceErr := <-sourceErrors:
 			if sourceErr != nil {
 				note("Amp refresh failed: " + sourceErr.Error())
+			}
+		case u := <-trailCh:
+			// A trail this session watches changed (trailtrack.go). Printed into
+			// the transcript as a point-in-time line, and remembered by offset so
+			// a re-render puts it back where it was.
+			if applyTrailState(u) && len(u.Events) > 0 {
+				printTrail(u)
+				out.Flush()
 			}
 		case code := <-codeCh:
 			// Quit: restore the terminal and do the final flush here, on the
@@ -839,6 +926,32 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				} else {
 					msg = "workspace opened"
 				}
+			case keyRestartArm:
+				msg = "restart this tail with the current entire-tail binary? y = restart, any other key = cancel"
+			case keyRestartCancel:
+				msg = "restart cancelled"
+			case keyRestart:
+				// Ctrl-R y: pick up a freshly installed binary without losing
+				// the session. The keyboard goroutine has stopped reading, so
+				// hand the tty back exactly as the quit path does, then exec.
+				args := restartArgs(restartState{
+					Agent:    agent,
+					Cur:      cur,
+					Theme:    theme.Name,
+					Tools:    toolStyleKind(r.toolStyle.Load()),
+					WrapOff:  wrapOff,
+					Collapse: int(r.collapse.Load()),
+					Cfg:      cfg,
+				})
+				restoreTerm()
+				removePaneEntry(home, linkUUID)
+				out.Flush()
+				compose.stop()
+				r.endLine()
+				out.Flush()
+				fmt.Fprintln(os.Stderr, "\n⟳ restarting entire-tail…")
+				err := execRestart(args)
+				die("restart failed: " + err.Error())
 			case keyYank:
 				// No re-render: a yank copies, it doesn't change the view. It runs
 				// here rather than on the keyboard goroutine because it reads the
@@ -859,7 +972,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			if act == keySend {
 				// Not an overlay: the keyboard waits on sendPaneCh, not resumeCh,
 				// and forwards keys itself while we keep rendering.
-				pane := hunkPaneForAgent(home, agent, sessionIDFromPath(cur), cur)
+				pane := agentPaneFor(home, agent, sessionIDFromPath(cur), cur)
 				out.Flush()
 				// Only a refusal gets a note: when it starts, the compose area's
 				// own divider says where the keys go and how to stop.
@@ -882,11 +995,39 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				runFocus(kbTTY, agent, cur, home, theme)
 			case keyDrift:
 				runDrift(kbTTY, cur, home, theme)
-			case keyHunk:
-				// hunk takes the pane outright (it's a child process, not an
-				// overlay we draw), reviews the session's working tree, and
-				// hands the screen back when you quit it.
-				overlayMsg = hunkOverlay(kbTTY, home, agent, sessionIDFromPath(cur), cur, pwd)
+			case keyTrails:
+				if tracker == nil {
+					overlayMsg = "trail status is off (--no-trails, no entire on PATH, or not a Claude/Amp tail)"
+					break
+				}
+				// The modal runs on this goroutine, so trailCh isn't drained by
+				// the select while it's up. Drain it here instead: the state
+				// shows in the modal at once, and the lines are printed into the
+				// transcript once the alt-screen is gone.
+				load := func() ([]changeState, []trailNoteRec, map[string]string, string) {
+					for {
+						select {
+						case u := <-trailCh:
+							if applyTrailState(u) && len(u.Events) > 0 {
+								pendingTrail = append(pendingTrail, u)
+							}
+							continue
+						default:
+						}
+						break
+					}
+					states := make([]changeState, 0, len(trailStates))
+					for _, s := range trailStates {
+						states = append(states, s)
+					}
+					return states, trailNotes, tracker.Errors(), tracker.Branch()
+				}
+				remove := func(key string) {
+					tracker.Untrack(key)
+					trailRemoved[key] = true
+					delete(trailStates, key)
+				}
+				runTrailModal(kbTTY, theme, load, tracker.Refresh, remove)
 			case keyHelp:
 				// The state shown is sampled HERE, not at startup: t/T/c/m/w may
 				// all have moved since the banner was printed.
@@ -924,6 +1065,11 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 				settingsDirty = false
 				rerender("⟳ settings")
 			}
+			for _, u := range pendingTrail {
+				printTrail(u)
+			}
+			pendingTrail = pendingTrail[:0]
+			out.Flush()
 			if overlayMsg != "" {
 				note(overlayMsg)
 			}
@@ -960,6 +1106,9 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 					idle = 0
 				} else if idle++; idle >= rolloverIdleTicks {
 					if rollover() {
+						if tracker != nil {
+							tracker.Follow(cur)
+						}
 						poll()
 					}
 					idle = 0
@@ -1257,7 +1406,7 @@ func printBanner(cfg Config, agent Agent, session string, from, total, collapse 
 		if agent == AgentClaude || agent == AgentAmp {
 			back = "Ctrl-X=back to tree  "
 		}
-		fmt.Fprintln(w, "  keys:     ?=settings  y=copy as slack mrkdwn  m=mrkdwn view  w=wrap  t=tools  T=theme  c=collapse  h=hunk  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
+		fmt.Fprintln(w, "  keys:     ?=settings  y=copy as slack mrkdwn  m=mrkdwn view  w=wrap  t=tools  T=theme  c=collapse  →=subagents  r=re-render  "+back+"q/Ctrl-D=quit")
 	}
 	if toolStyle == toolDots {
 		fmt.Fprint(w, bannerLegend())
@@ -1563,7 +1712,12 @@ OPTIONS:
                             through it (see the 'tap' subcommand) — a blocked
                             question then shows the card alone, with its
                             preamble arriving after you answer.
-      --wrap                Wrap prose to the terminal width, breaking between
+      --no-trails           Don't watch this session's Entire trails. By default
+                            a Claude or Amp tail on a terminal prints a coloured
+                            status line when a trail it pushes to or names
+                            changes (build, findings, agents, merge state), and
+                            g shows the full state. Same as ENTIRE_TAIL_NO_TRAILS=1.
+      --wrap               Wrap prose to the terminal width, breaking between
                             words. Off by default: each paragraph is one long
                             line the terminal soft-wraps (breaks land mid-word)
                             and rejoins on copy, so a mouse drag-select yields
@@ -1605,14 +1759,6 @@ LIVE KEYS (while following, on an interactive terminal):
   y                         Copy the last agent message to the clipboard as
                             Slack mrkdwn. Press again within 3s to add the
                             message before it.
-  h                         Review in hunk: hand the whole pane to hunk
-                            (hunk.dev) for a diff of the session's working tree,
-                            and take it back when you quit hunk. Once the review
-                            is up, the matching agent in this iTerm tab is prompted to
-                            load hunk's review skill so it can narrate and leave
-                            inline comments; off iTerm (or when the tab holds
-                            more than one matching agent) that prompt goes to the
-                            clipboard instead. No-op with hunk not installed.
   →                         Focus Claude subagents or Amp child threads in an
                             alt-screen view. ←/→ cycles between them, ↑↓ scrolls,
                             r reloads, q/Esc returns. No-op when none exist.

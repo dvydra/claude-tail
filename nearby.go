@@ -55,12 +55,13 @@ func nearbySessions(home string, getenv func(string) string) map[string]paneProx
 		return nil
 	}
 	out := map[string]paneProximity{}
+	sessionOf := claudeSessionOf(home, psCommand)
 	for _, p := range claudeProcs() {
 		prox := proximityOf(p.itermID, tab)
 		if prox == paneFar {
 			continue
 		}
-		path := resolveClaudeSession(home, lsofCwd(p.pid), psCommand(p.pid))
+		path := sessionOf(p.pid)
 		if path == "" {
 			continue
 		}

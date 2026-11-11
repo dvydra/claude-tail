@@ -135,6 +135,7 @@ type manifestSession struct {
 
 type manifestGroup struct {
 	GroupID  string            `json:"groupId"`
+	Thread   string            `json:"thread,omitempty"`
 	Sessions []manifestSession `json:"sessions"`
 }
 
@@ -142,6 +143,7 @@ type handoverManifest struct {
 	Date             string          `json:"date"`
 	GeneratedAt      string          `json:"generatedAt"`
 	VaultHandoverDir string          `json:"vaultHandoverDir"`
+	ThreadsEnabled   bool            `json:"threadsEnabled"`
 	Groups           []manifestGroup `json:"groups"`
 }
 
@@ -215,17 +217,28 @@ func handoverTranscript(it handoverItem) string {
 }
 
 // buildManifest assembles the manifest; linksOf is injected so it's pure/testable
-// (production passes extractLinks).
-func buildManifest(groups []handoverGroup, vaultDir, date string, now int64, linksOf func(string) []sessionLink) handoverManifest {
+// (production passes extractLinks). With threads on, threadOf (a registry
+// lookup) names each group's thread from the first of its sessions already
+// registered to one; nil leaves Thread empty.
+func buildManifest(groups []handoverGroup, vaultDir, date string, now int64, linksOf func(string) []sessionLink, threadsEnabled func() bool, threadOf func(agent, id string) (string, bool)) handoverManifest {
 	m := handoverManifest{
 		Date:             date,
 		GeneratedAt:      time.Unix(now, 0).Format(time.RFC3339),
 		VaultHandoverDir: vaultDir,
 	}
+	if threadsEnabled != nil {
+		m.ThreadsEnabled = threadsEnabled()
+	}
 	for _, g := range groups {
 		mg := manifestGroup{GroupID: g.GroupID}
 		for _, it := range g.Sessions {
-			mg.Sessions = append(mg.Sessions, manifestSessionFrom(it, linksOf(it.Path)))
+			ms := manifestSessionFrom(it, linksOf(it.Path))
+			mg.Sessions = append(mg.Sessions, ms)
+			if m.ThreadsEnabled && threadOf != nil && mg.Thread == "" {
+				if slug, ok := threadOf(ms.Agent, ms.SessionID); ok {
+					mg.Thread = slug
+				}
+			}
 		}
 		m.Groups = append(m.Groups, mg)
 	}
@@ -251,7 +264,7 @@ func writeManifestTemp(m handoverManifest) (string, error) {
 // todaysSessions enumerates Claude and Amp sessions with activity since local
 // midnight (a 2-day crawl window is cheap and safely spans midnight).
 func todaysSessions(home string, now int64, loc *time.Location) []handoverItem {
-	tree := buildClaudeTree(home, "", 2, now, claudeLiveCwds())
+	tree := buildClaudeTree(home, "", 2, now, claudeLiveCwds(home))
 	amp, _ := buildAmpTree(home, "", 2, now, false)
 	tree = mergeAgentTrees(tree, amp)
 	return flattenToday(tree, localMidnight(now, loc), home)
@@ -291,7 +304,11 @@ func runHandover(cfg Config) {
 
 	date := time.Unix(now, 0).In(loc).Format("2006-01-02")
 	vaultDir := handoverVaultDir(os.Getenv, now, loc)
-	manifest := buildManifest(groups, vaultDir, date, now, extractLinks)
+	troot := threadsRoot(os.Getenv)
+	manifest := buildManifest(groups, vaultDir, date, now, extractLinks, func() bool {
+		_, err := os.Stat(filepath.Join(troot, ".enabled"))
+		return err == nil
+	}, func(agent, id string) (string, bool) { return lookupSession(troot, agent, id) })
 	path, err := writeManifestTemp(manifest)
 	if err != nil {
 		die("cannot write manifest: " + err.Error())

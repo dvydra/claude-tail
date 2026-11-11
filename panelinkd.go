@@ -138,12 +138,13 @@ func runningAgentPanes(home string) map[string]string {
 	if !pickerToolsAvailable() {
 		return out
 	}
+	sessionOf := claudeSessionOf(home, psCommand)
 	for _, p := range claudeProcs() {
 		uuid := paneUUIDFromSessionID(p.itermID)
 		if uuid == "" {
 			continue
 		}
-		path := resolveClaudeSession(home, lsofCwd(p.pid), psCommand(p.pid))
+		path := sessionOf(p.pid)
 		if path == "" {
 			continue
 		}
