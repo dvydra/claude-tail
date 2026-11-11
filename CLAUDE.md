@@ -37,6 +37,8 @@ go vet ./... && go test -race ./...   # what CI/the review gate expects
 ./install.sh                     # build + symlink ~/.local/bin + register entire plugin
 ```
 
+Versions are `1.YYYYMMDD.N`: the local date of HEAD's commit and the count of commits on HEAD that day, plus `-dirty` for uncommitted tracked changes. `version.sh` works it out and `install.sh` passes it in with `-ldflags "-X main.version=..."`. A plain `go build` reports `1.0.0-dev`. There is no version const to bump.
+
 After editing source **or** a theme, rebuild (`go build -o entire-tail .` or
 `./install.sh`) — themes are **embedded into the binary** at build time.
 

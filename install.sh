@@ -20,8 +20,12 @@ if ! command -v go >/dev/null 2>&1; then
   echo "error: Go toolchain not found. Install Go (https://go.dev/dl/) and re-run." >&2
   exit 1
 fi
-echo "Building entire-tail..."
-( cd "$HERE" && go build -o "$BIN" . )
+VERSION="1.0.0-dev"
+if [ -x "$HERE/version.sh" ]; then
+  VERSION="$(cd "$HERE" && ./version.sh)"
+fi
+echo "Building entire-tail $VERSION..."
+( cd "$HERE" && go build -ldflags "-X main.version=$VERSION" -o "$BIN" . )
 echo "Built: $BIN"
 
 # ── standalone install: symlink into ~/.local/bin ────────────────────────────

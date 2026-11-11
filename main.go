@@ -16,7 +16,9 @@ import (
 	"time"
 )
 
-const version = "0.26.0"
+// version is 1.YYYYMMDD.N, set at build time by install.sh from version.sh
+// (-ldflags "-X main.version=..."). A plain `go build` is a dev build.
+var version = "1.0.0-dev"
 
 func main() {
 	cfg, action, err := parseCLI(commandArgs(os.Args[0], os.Args[1:]), os.Getenv, loadPrefs(homeDir()))

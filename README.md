@@ -218,7 +218,7 @@ also answers "which tool style / theme am I in now?" after a few `t`/`T` presses
 have scrolled the banner away:
 
 ```
-╭─ entire-tail 0.26.0 ─────────────────────────────────────────────╮
+╭─ entire-tail 1.20261111.3 ───────────────────────────────────────╮
 │                                                                  │
 │ ▸ theme         ████████████████  tokyo-night                    │
 │   tools         dots                                             │
