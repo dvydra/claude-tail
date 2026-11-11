@@ -13,9 +13,9 @@ import (
 // being tailed, so it doesn't have to poll or sleep on CI. The message goes
 // over Claude Code's peer-message socket (the same path wtf warnings take,
 // wtf_notify.go). A busy session reads it between tool calls, so a running
-// tool is never cut off. An idle session would start a new turn on it, so an
-// idle session gets nothing: idle means it handed control back to the human,
-// and a turn starting under their prompt is the interruption this avoids.
+// tool is never cut off. An idle session starts a new turn on it: that is the
+// point when it ended its turn waiting on CI, and the cost is a turn that can
+// start while the human is typing.
 
 // trailFYIDedupWindow is how long one FYI text is claimed for a session. Every
 // tail on a session runs its own tracker, so without the claim each would send
@@ -50,9 +50,6 @@ func deliverTrailFYI(ctx context.Context, d trailFYIDeps, sessionID string, u tr
 	s, ok := d.Lookup(sessionID)
 	if !ok || s.SocketPath == "" {
 		return "no session"
-	}
-	if !s.Busy() {
-		return "idle"
 	}
 	text := trailFYIText(u)
 	if !d.Claim(sessionID, text) {

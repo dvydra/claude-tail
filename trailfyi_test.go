@@ -74,17 +74,17 @@ func TestDeliverTrailFYI(t *testing.T) {
 	}{
 		{"busy", base, "baseline"},
 		{"gone", fyiUpdate(), "no session"},
-		{"idle", fyiUpdate(), "idle"},
 		{"busy", trailUpdate{State: fyiUpdate().State}, "no events"},
 		{"busy", fyiUpdate(), "sent"},
 		{"busy", fyiUpdate(), "duplicate"},
+		{"idle", fyiUpdate(), "sent"},
 	}
 	for i, c := range cases {
 		if got := deliverTrailFYI(ctx, h.deps(), c.id, c.u); got != c.want {
 			t.Fatalf("case %d (%s): got %q want %q", i, c.id, got, c.want)
 		}
 	}
-	if len(h.sent) != 1 || !strings.HasPrefix(h.sent[0], "busy|/s/busy.sock|FYI from entire-tail") {
+	if len(h.sent) != 2 || !strings.HasPrefix(h.sent[0], "busy|/s/busy.sock|FYI from entire-tail") || !strings.HasPrefix(h.sent[1], "idle|/s/idle.sock|") {
 		t.Fatalf("sent: %q", h.sent)
 	}
 }

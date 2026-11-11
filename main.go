@@ -456,7 +456,7 @@ func tailSession(cfg Config, agent Agent, session, home, pwd string, scanner *co
 			defer trailStop()
 			go tracker.Run(trailCtx)
 			// Trail FYIs (trailfyi.go): a change is also sent to the Claude being
-			// tailed, but only while it is busy, so it never starts a turn.
+			// tailed. Busy, it reads it between tool calls; idle, it starts a turn.
 			if agent == AgentClaude && !cfg.NoTrailFYI {
 				trailFYI = startTrailFYI(trailCtx, defaultTrailFYIDeps(home))
 			}
@@ -1725,9 +1725,9 @@ OPTIONS:
                             g shows the full state. Same as ENTIRE_TAIL_NO_TRAILS=1.
       --no-trail-fyi        Don't tell the tailed Claude about trail changes.
                             By default each change is also sent to the Claude
-                            session as an FYI, only while it is busy, so it
-                            reads it between tool calls and never starts a new
-                            turn. Same as ENTIRE_TAIL_NO_TRAIL_FYI=1.
+                            session as an FYI: a busy one reads it between tool
+                            calls, an idle one starts a new turn on it.
+                            Same as ENTIRE_TAIL_NO_TRAIL_FYI=1.
       --wrap               Wrap prose to the terminal width, breaking between
                             words. Off by default: each paragraph is one long
                             line the terminal soft-wraps (breaks land mid-word)
