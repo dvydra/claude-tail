@@ -21,8 +21,9 @@ func agentPaneFor(home string, agent Agent, threadID, cur string) string {
 	}
 	tab := itermTab(os.Getenv("ITERM_SESSION_ID"))
 	if agent != AgentAmp {
+		sessionOf := claudeSessionOf(home, psCommand)
 		return tabAgentPane(tab, cur, claudeProcs(), func(p claudeProc) string {
-			return resolveClaudeSession(home, lsofCwd(p.pid), psCommand(p.pid))
+			return sessionOf(p.pid)
 		})
 	}
 	return tabAgentPane(tab, threadID, ampProcs(), func(p claudeProc) string {
@@ -55,7 +56,7 @@ func tabAgentPane(ownTab, cur string, procs []claudeProc, sessionOf func(claudeP
 		}
 	}
 	// One agent in the tab is the answer without asking which session it
-	// writes, and that question costs an lsof and a ps per process.
+	// writes. For Amp that question costs an lsof per process.
 	if len(inTab) == 1 {
 		return paneUUIDFromSessionID(inTab[0].itermID)
 	}

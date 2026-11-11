@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,11 +52,6 @@ func parseLsofCwd(out []byte) string {
 	return ""
 }
 
-type cwdCount struct {
-	Cwd   string
-	Count int
-}
-
 // pickerToolsAvailable reports whether pgrep and lsof are both on PATH; the
 // picker is silently disabled without them (matching the bash version).
 func pickerToolsAvailable() bool {
@@ -67,37 +61,6 @@ func pickerToolsAvailable() bool {
 		}
 	}
 	return true
-}
-
-// activeCwdCounts returns each distinct cwd with a running process named
-// procname, and how many such processes run there.
-func activeCwdCounts(procname string) []cwdCount {
-	out, err := exec.Command("pgrep", "-x", procname).Output()
-	if err != nil {
-		return nil
-	}
-	counts := map[string]int{}
-	var order []string
-	for _, pid := range parsePIDs(out) {
-		lo, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
-		if err != nil {
-			continue
-		}
-		cwd := parseLsofCwd(lo)
-		if cwd == "" {
-			continue
-		}
-		if _, seen := counts[cwd]; !seen {
-			order = append(order, cwd)
-		}
-		counts[cwd]++
-	}
-	sort.Strings(order)
-	out2 := make([]cwdCount, 0, len(order))
-	for _, c := range order {
-		out2 = append(out2, cwdCount{Cwd: c, Count: counts[c]})
-	}
-	return out2
 }
 
 // cwShort renders a cwd as its last two path components ("parent/base").

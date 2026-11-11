@@ -264,7 +264,7 @@ func writeManifestTemp(m handoverManifest) (string, error) {
 // todaysSessions enumerates Claude and Amp sessions with activity since local
 // midnight (a 2-day crawl window is cheap and safely spans midnight).
 func todaysSessions(home string, now int64, loc *time.Location) []handoverItem {
-	tree := buildClaudeTree(home, "", 2, now, claudeLiveCwds())
+	tree := buildClaudeTree(home, "", 2, now, claudeLiveCwds(home))
 	amp, _ := buildAmpTree(home, "", 2, now, false)
 	tree = mergeAgentTrees(tree, amp)
 	return flattenToday(tree, localMidnight(now, loc), home)

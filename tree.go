@@ -212,7 +212,7 @@ func sortSessions(ss []treeSession) {
 
 // applyTapActivity overlays the tap daemon's per-session activity table onto a
 // built tree. The tap is the only source that knows WHICH session is working:
-// liveCwds (pgrep+lsof) can see a claude process in a folder but not which of
+// liveCwds (pgrep + the session registry) can see a claude process in a folder but not which of
 // that folder's transcripts it's writing, so buildClaudeTree has to guess
 // "the newest N are the live ones".
 //
@@ -1162,19 +1162,6 @@ func writeColored(w io.Writer, line string, tier recencyTier, color bool) {
 }
 
 // ── driver (imperative tty; not unit-tested) ─────────────────────────────────
-
-// claudeLiveCwds returns each cwd with a running `claude` process mapped to its
-// process count, or nil when pgrep/lsof are unavailable.
-func claudeLiveCwds() map[string]int {
-	if !pickerToolsAvailable() {
-		return nil
-	}
-	m := map[string]int{}
-	for _, cc := range activeCwdCounts("claude") {
-		m[cc.Cwd] = cc.Count
-	}
-	return m
-}
 
 // treeResult distinguishes how the tree exited: a session was chosen to open as
 // an iTerm workspace (resume + tail + shell), a session was chosen to tail

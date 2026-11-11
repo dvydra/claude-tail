@@ -160,7 +160,7 @@ func fetchEntireSessions() ([]entireSession, error) {
 //	default   → repo-grouped local + entire titles from cache if warm.
 //	--cloud   → refresh entire's metadata (slow once), then enrich.
 func buildSessionTree(home, pwd string, days int, now int64, forceLocal, cloud bool) sessionTree {
-	local := buildClaudeTree(home, pwd, days, now, claudeLiveCwds())
+	local := buildClaudeTree(home, pwd, days, now, claudeLiveCwds(home))
 	// Exact per-session activity, when the tap daemon is running. Reads one
 	// small cached file — no network, no process scanning, so the tree stays
 	// instant whether or not the daemon is up.
