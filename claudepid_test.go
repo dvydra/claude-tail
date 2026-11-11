@@ -82,3 +82,37 @@ func TestLiveCwdCounts(t *testing.T) {
 		t.Errorf("liveCwdCounts = %v, want map[/a:2 /b:1]", got)
 	}
 }
+
+// No registry entries at all while claudes run means Claude Code moved or
+// dropped the registry. Fall back to the process cwd (lsof) rather than
+// leaving every pane unplaced.
+func TestClaudeSessionOfFallsBackToCwdWithoutARegistry(t *testing.T) {
+	home := t.TempDir()
+	id := "dddddddd-0000-0000-0000-000000000000"
+	want := writeClaudeTranscript(t, filepath.Join(home, ".claude"), "/tmp/z", id)
+
+	old := claudeProcCwd
+	t.Cleanup(func() { claudeProcCwd = old })
+	claudeProcCwd = func(int) string { return "/tmp/z" }
+
+	if got := claudeSessionOf(home, func(int) string { return "claude" })(400); got != want {
+		t.Errorf("sessionOf(400) = %q, want %q", got, want)
+	}
+}
+
+// While the registry has entries, an unregistered pid never costs an lsof.
+func TestClaudeSessionOfSkipsCwdWithARegistry(t *testing.T) {
+	home := t.TempDir()
+	writeRegistry(t, filepath.Join(home, ".claude", "sessions"), map[string]string{
+		"100.json": entry(100, "aaaaaaaa-0000-0000-0000-000000000000", "work", "idle", 1000),
+	})
+	old := claudeProcCwd
+	t.Cleanup(func() { claudeProcCwd = old })
+	calls := 0
+	claudeProcCwd = func(int) string { calls++; return "/tmp/x" }
+
+	claudeSessionOf(home, func(int) string { return "claude" })(500)
+	if calls != 0 {
+		t.Errorf("read the cwd %d times, want 0", calls)
+	}
+}
